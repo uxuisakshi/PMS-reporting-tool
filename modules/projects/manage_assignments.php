@@ -536,6 +536,19 @@ if (!$projectId) {
         if (isset($_GET['remove_page'])) {
             $removePageId = (int)$_GET['remove_page'];
 
+            // Check if this is a protected page
+            $pageStmt = $db->prepare("SELECT page_number FROM project_pages WHERE id = ? AND project_id = ?");
+            $pageStmt->execute([$removePageId, $projectId]);
+            $page = $pageStmt->fetch(PDO::FETCH_ASSOC);
+            if ($page) {
+                $pageNumber = trim($page['page_number'] ?? '');
+                if ($pageNumber === 'Global 1' || $pageNumber === 'Page 1') {
+                    $_SESSION['error'] = "Cannot delete protected page: $pageNumber";
+                    header("Location: manage_assignments.php?project_id=$projectId&tab=pages");
+                    exit;
+                }
+            }
+
             // Start transaction for complete cleanup
             $db->beginTransaction();
             try {
@@ -950,11 +963,15 @@ if (!$projectId) {
                 $checkStmt->execute($pageIds);
                 $existingPages = $checkStmt->fetchAll(PDO::FETCH_ASSOC);
                 
-                // Filter to only pages belonging to this project
+                // Filter to only pages belonging to this project and not protected pages
                 $validPageIds = [];
                 foreach ($existingPages as $page) {
                     if ((int)$page['project_id'] === (int)$projectId) {
-                        $validPageIds[] = (int)$page['id'];
+                        $pageNumber = trim($page['page_number'] ?? '');
+                        // Protect Global 1 and Page 1 from deletion
+                        if ($pageNumber !== 'Global 1' && $pageNumber !== 'Page 1') {
+                            $validPageIds[] = (int)$page['id'];
+                        }
                     }
                 }
                 

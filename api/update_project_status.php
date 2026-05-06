@@ -36,8 +36,12 @@ if (!$projectId || !$newStatus) {
     exit;
 }
 
-// Whitelist allowed status values
-$allowedStatuses = ['in_progress', 'on_hold', 'completed', 'cancelled', 'not_started'];
+// Get allowed status values from database
+$allowedStatuses = [];
+$statusOptions = getStatusOptions('project');
+foreach ($statusOptions as $option) {
+    $allowedStatuses[] = $option['status_key'];
+}
 if (!in_array($newStatus, $allowedStatuses, true)) {
     echo json_encode(['success' => false, 'message' => 'Invalid status value']);
     exit;
