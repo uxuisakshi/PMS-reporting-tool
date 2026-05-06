@@ -528,14 +528,20 @@ $(document).ready(function() {
         const $tbody = $('#metadataList');
         $tbody.empty();
 
+        // Helper to safely escape HTML for display
+        function esc(str) {
+            return $('<span>').text(str).html();
+        }
+
         metadataFields.forEach((f, idx) => {
             const $tr = $('<tr>');
             $tr.attr('data-id', f.id);
             $tr.attr('data-sort', f.sort_order);
             $tr.append(`<td><i class="fas fa-grip-vertical text-muted me-2" style="cursor:move;"></i>${idx + 1}</td>`);
-            $tr.append(`<td>${f.field_label}</td>`);
-            $tr.append(`<td><code>${f.field_key}</code></td>`);
-            $tr.append(`<td><small class="text-muted text-truncate d-block" style="max-width: 200px;">${(f.options || []).join(' | ')}</small></td>`);
+            $tr.append($('<td>').text(f.field_label));
+            $tr.append(`<td><code>${esc(f.field_key)}</code></td>`);
+            const optionsText = (f.options || []).map(esc).join(' | ');
+            $tr.append(`<td><small class="text-muted text-truncate d-block" style="max-width: 200px;">${optionsText}</small></td>`);
 
             const activeBadge = f.is_active
                 ? '<span class="badge bg-success">Yes</span>'
