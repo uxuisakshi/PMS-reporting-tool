@@ -17,6 +17,6 @@ if (isset($_SESSION['user_id'])) {
     redirect("/modules/{$moduleDir}/dashboard.php");
 } else {
     // Redirect to login page
-    redirect("/modules/auth/login.php"); 
-}
+    redirect("/modules/auth/login.php");   
+} 
 ?>
