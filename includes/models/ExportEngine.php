@@ -16,10 +16,10 @@ require_once __DIR__ . '/../../config/database.php';
  */
 class ExportEngine {
     
-    private $db;
-    private $exportDir;
-    private $maxFileAge;
-    private $allowedFormats;
+    protected $db;
+    protected $exportDir;
+    protected $maxFileAge;
+    protected $allowedFormats;
     
     public function __construct() {
         $this->db = Database::getInstance();
@@ -321,9 +321,17 @@ class ExportEngine {
     }
     
     /**
-     * Generate export file (to be implemented by subclasses)
+     * Generate the export file (to be implemented by subclasses)
+     * 
+     * @param int $requestId Export request ID
+     * @param string $exportType Export format
+     * @param string $reportType Type of analytics report
+     * @param array $projectIds Array of project IDs
+     * @param array $options Export configuration options
+     * @return string Path to generated file
+     * @throws Exception If generation fails
      */
-    protected function generateExportFile($requestId, $exportType, $reportType, $projectIds, $options) {
+    protected function generateExportFile($requestId, $exportType, $reportType, $projectIds, $options): string {
         throw new Exception('generateExportFile must be implemented by subclasses');
     }
     

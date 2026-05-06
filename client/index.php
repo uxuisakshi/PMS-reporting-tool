@@ -5,9 +5,14 @@
  * Implements role-based access control for all client endpoints
  */
 
-// Enable error reporting for development
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
+// Security: only display errors in development — never in production
+if (getenv('APP_ENV') === 'development') {
+    error_reporting(E_ALL);
+    ini_set('display_errors', 1);
+} else {
+    error_reporting(0);
+    ini_set('display_errors', 0);
+}
 
 // Include authentication system first (handles sessions, session paths, and constants)
 require_once __DIR__ . '/../includes/auth.php';
@@ -139,6 +144,17 @@ function requireAuth($path) {
         }
     }
     
+    // Check for force password reset (same as header.php check)
+    if (isset($_SESSION['user_id']) && ($_SESSION['force_reset'] ?? false)) {
+        $currentPage = $_SERVER['PHP_SELF'];
+        if (strpos($currentPage, 'modules/auth/force_reset.php') === false && 
+            strpos($currentPage, 'modules/auth/logout.php') === false) {
+            $baseDir = getBaseDir();
+            header('Location: ' . $baseDir . '/modules/auth/force_reset.php');
+            exit;
+        }
+    }
+    
     // Verify client role
     if ($_SESSION['client_role'] !== 'client') {
         http_response_code(403);
@@ -153,6 +169,17 @@ function requireAuth($path) {
 function isAjaxRequest() {
     return !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && 
            strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest';
+}
+
+function applyClientResponseHeaders($path) {
+    if ($path === '/download') {
+        return;
+    }
+
+    header('Cache-Control: private, no-store, no-cache, must-revalidate, max-age=0');
+    header('Pragma: no-cache');
+    header('Expires: 0');
+    header('X-Content-Type-Options: nosniff');
 }
 
 // Handle 404
@@ -173,6 +200,9 @@ try {
     
     // Apply authentication middleware
     requireAuth($path);
+
+    // Prevent authenticated client pages and JSON responses from being cached.
+    applyClientResponseHeaders($path);
     
     // Find matching route
     $methodRoutes = $routes[$requestMethod] ?? [];
@@ -234,13 +264,15 @@ try {
             handle404();
     }
     
-} catch (Exception $e) {
+} catch (Throwable $e) {
     error_log("Client router error: " . $e->getMessage());
     error_log("Stack trace: " . $e->getTraceAsString());
     
     http_response_code(500);
     if (isAjaxRequest()) {
-        echo json_encode(['error' => 'Internal server error', 'debug' => $e->getMessage()]);
+        // Security: never expose raw exception details to clients in production
+        $debugMode = (getenv('APP_ENV') === 'development');
+        echo json_encode(['error' => 'Internal server error', 'debug' => $debugMode ? $e->getMessage() : null]);
     } else {
         // Show detailed error in development
         if (ini_get('display_errors')) {

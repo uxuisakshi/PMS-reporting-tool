@@ -27,7 +27,7 @@ $dashboardController = new UnifiedDashboardController();
 
 // Get client user ID (either current user or admin viewing specific client)
 $clientUserId = $userId;
-if (in_array($userRole, ['admin', 'super_admin']) && isset($_GET['client_id'])) {
+if (in_array($userRole, ['admin']) && isset($_GET['client_id'])) {
     $clientUserId = intval($_GET['client_id']);
 }
 
@@ -49,7 +49,7 @@ try {
 
 // Determine actual client_id for export
 $actualClientId = 0;
-if (in_array($userRole, ['admin', 'super_admin']) && isset($_GET['client_id'])) {
+if (in_array($userRole, ['admin']) && isset($_GET['client_id'])) {
     $actualClientId = intval($_GET['client_id']);
 } elseif (!empty($dashboardData['assigned_projects'])) {
     // For client users, take the client_id from their first assigned project
@@ -57,7 +57,7 @@ if (in_array($userRole, ['admin', 'super_admin']) && isset($_GET['client_id'])) 
 }
 
 // Set page title for header.php
-$pageTitle = 'Analytics Dashboard - Client Reporting';
+$pageTitle = 'Analytics Dashboard';
 
 // Ensure baseDir is set correctly
 if (!isset($baseDir)) {
@@ -88,8 +88,8 @@ try {
         <div class="row">
             <div class="col-12">
                 <div class="alert alert-info">
-                    <h4>Welcome to Client Analytics Dashboard</h4>
-                    <p>No projects are currently assigned to you. Please contact your administrator to get access to projects.</p>
+                    <h4>Welcome to the Analytics Dashboard</h4>
+                    <p>No digital assets are currently assigned to you. Please contact your administrator to get access.</p>
                 </div>
             </div>
         </div>
@@ -139,33 +139,11 @@ try {
 }
 ?>
 
-<script>
-// Initialize dashboard
-initializeDashboard();
-
-function initializeDashboard() {
-    
-    // Set actualClientId in global scope for dashboard.js
-    window.actualClientId = '<?php echo $actualClientId; ?>';
-    window.selectedProjectId = '<?php echo $selectedProjectId ?? ""; ?>';
-    window.baseUrl = '<?php echo $baseDir; ?>';
-
-    // Add any missing functionality here
-    const buttons = document.querySelectorAll('.btn');
-    buttons.forEach(button => {
-        if (!button.onclick && button.getAttribute('onclick')) {
-            // Ensure onclick handlers work
-            const onclickAttr = button.getAttribute('onclick');
-            button.addEventListener('click', function() {
-                try {
-                    eval(onclickAttr);
-                } catch (e) {
-                    console.error('Button click error:', e);
-                }
-            });
-        }
-    });
-}
+<script nonce="<?php echo htmlspecialchars($cspNonce ?? '', ENT_QUOTES, 'UTF-8'); ?>">
+// Global config for dashboard.js
+window.actualClientId = <?php echo json_encode((int) $actualClientId); ?>;
+window.selectedProjectId = <?php echo json_encode((int) ($selectedProjectId ?? 0)); ?>;
+window.baseUrl = <?php echo json_encode($baseDir, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
+if (typeof initializeDashboard === "function") initializeDashboard();
 </script>
-
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<?php include __DIR__ . '/../../includes/footer.php'; 

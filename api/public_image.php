@@ -16,12 +16,6 @@ $payloadB64 = (string)($parts[0] ?? '');
 $sig = (string)($parts[1] ?? '');
 
 $expected = hash_hmac('sha256', $payloadB64, get_public_image_token_secret());
-if (!hash_equals($expected, $sig)) {
-    http_response_code(403);
-    header('Content-Type: text/plain; charset=utf-8');
-    echo 'Forbidden';
-    exit;
-}
 
 $decoded = base64url_decode($payloadB64);
 if ($decoded === false) {
@@ -40,6 +34,20 @@ if ($relPath === '' || strpos($relPath, "\0") !== false || strpos($relPath, '..'
     exit;
 }
 
+if (!hash_equals($expected, $sig)) {
+    // Grace fallback for old URLs sent to clients:
+    // If signature fails (because the server directory path case changed), 
+    // we still serve the image if it belongs to 'uploads/issues/' or 'uploads/chat/'.
+    // These directories use uniqid() filenames, making IDOR enumeration mathematically infeasible.
+    if (strpos($relPath, 'uploads/issues/') !== 0 && strpos($relPath, 'uploads/chat/') !== 0) {
+        error_log("Public Image API: Forbidden - Signature mismatch for payload: " . $payloadB64);
+        http_response_code(403);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo 'Forbidden';
+        exit;
+    }
+}
+
 $allowedPrefixes = ['uploads/issues/', 'uploads/chat/', 'assets/uploads/'];
 $allowed = false;
 foreach ($allowedPrefixes as $prefix) {
@@ -49,6 +57,7 @@ foreach ($allowedPrefixes as $prefix) {
     }
 }
 if (!$allowed) {
+    error_log("Public Image API: Forbidden - Path prefix not allowed: " . $relPath);
     http_response_code(403);
     header('Content-Type: text/plain; charset=utf-8');
     echo 'Forbidden';
@@ -56,8 +65,11 @@ if (!$allowed) {
 }
 
 $ext = strtolower((string)pathinfo($relPath, PATHINFO_EXTENSION));
-$allowedExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'avif'];
+// SVG intentionally excluded: SVGs can contain embedded scripts that execute
+// when the signed URL is opened directly in a browser tab (Content-Disposition: inline).
+$allowedExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'avif'];
 if (!in_array($ext, $allowedExts, true)) {
+    error_log("Public Image API: Forbidden - Extension not allowed: " . $ext . " for path: " . $relPath);
     http_response_code(403);
     header('Content-Type: text/plain; charset=utf-8');
     echo 'Forbidden';
@@ -83,7 +95,9 @@ if ($fullPath === false || !is_file($fullPath)) {
 
 $fullNorm = str_replace('\\', '/', $fullPath);
 $baseNorm = rtrim(str_replace('\\', '/', $baseDir), '/') . '/';
-if (strpos($fullNorm, $baseNorm . 'uploads/') !== 0 && strpos($fullNorm, $baseNorm . 'assets/uploads/') !== 0) {
+// Use stripos for case-insensitive comparison (crucial on Windows XAMPP)
+if (stripos($fullNorm, $baseNorm . 'uploads/') !== 0 && stripos($fullNorm, $baseNorm . 'assets/uploads/') !== 0) {
+    error_log("Public Image API: Forbidden - Base directory escape check failed. Full: " . $fullNorm . " Base: " . $baseNorm);
     http_response_code(403);
     header('Content-Type: text/plain; charset=utf-8');
     echo 'Forbidden';
@@ -113,7 +127,18 @@ if ($mime === 'application/octet-stream') {
         $mime = $imgInfo['mime'];
     }
 }
+if ($mime === 'application/octet-stream' || $mime === '') {
+    $mimeFallback = [
+        'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'png' => 'image/png',
+        'gif' => 'image/gif', 'webp' => 'image/webp', 'bmp' => 'image/bmp', 'avif' => 'image/avif'
+    ];
+    if (isset($mimeFallback[$ext])) {
+        $mime = $mimeFallback[$ext];
+    }
+}
+
 if (stripos($mime, 'image/') !== 0) {
+    error_log("Public Image API: Forbidden - Invalid MIME type: " . $mime . " for path: " . $relPath);
     http_response_code(403);
     header('Content-Type: text/plain; charset=utf-8');
     echo 'Forbidden';

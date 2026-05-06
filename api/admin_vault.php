@@ -1,11 +1,14 @@
 <?php
+ob_start();
 require_once '../config/database.php';
 require_once '../includes/auth.php';
 require_once '../includes/helpers.php';
+ob_end_clean();
 
 header('Content-Type: application/json');
 
-if (!isLoggedIn()) {
+$auth = new Auth();
+if (!$auth->isLoggedIn()) {
     http_response_code(401);
     echo json_encode(['success' => false, 'message' => 'Unauthorized']);
     exit;
@@ -17,7 +20,7 @@ $user_id = $_SESSION['user_id'];
 $user_role = $_SESSION['role'];
 
 // Only admins can access
-if (!in_array($user_role, ['admin', 'super_admin'])) {
+if (!in_array($user_role, ['admin'])) {
     http_response_code(403);
     echo json_encode(['success' => false, 'message' => 'Access denied']);
     exit;
@@ -33,10 +36,20 @@ function getVaultKey() {
         // Derive from APP_KEY env var or a server-specific secret
         $appKey = getenv('APP_KEY') ?: (defined('APP_SECRET') ? APP_SECRET : '');
         if (empty($appKey)) {
-            // Fallback: derive from server-specific values (not ideal but better than hardcoded)
-            $appKey = php_uname('n') . $_SERVER['SERVER_ADDR'] ?? 'fallback';
+            // No key configured - refuse to operate rather than use a weak predictable key
+            error_log('SECURITY: VAULT_ENCRYPTION_KEY or APP_KEY environment variable not set. Vault operations disabled.');
+            http_response_code(500);
+            echo json_encode(['success' => false, 'message' => 'Vault encryption key not configured. Set VAULT_ENCRYPTION_KEY environment variable.']);
+            exit;
         }
-        $key = hash('sha256', $appKey, true); // 32 bytes for AES-256
+        // Use PBKDF2 for proper key derivation from APP_KEY.
+        // Security: salt should come from env var, not a hardcoded constant.
+        // Set VAULT_KEY_SALT to a random base64 string in your .env file.
+        $salt = getenv('VAULT_KEY_SALT');
+        if (!$salt) {
+            throw new Exception('VAULT_KEY_SALT environment variable is required for vault security');
+        }
+        $key = hash_pbkdf2('sha256', $appKey, $salt, 100000, 32, true);
     } else {
         $key = base64_decode($key) ?: hash('sha256', $key, true);
     }
@@ -59,8 +72,13 @@ function decryptPassword($stored) {
     $raw = base64_decode($stored);
     if ($raw === false || strlen($raw) < 28) {
         // Legacy AES-128-ECB fallback (for old records only)
+        // SECURITY: Legacy AES-128-ECB fallback — ECB mode lacks diffusion and leaks plaintext patterns.
+        // This path is ONLY for migrating old records. REMOVE once all records are re-encrypted.
+        // To disable: unset VAULT_LEGACY_KEY from your environment after running migration.
         $legacyKey = getenv('VAULT_LEGACY_KEY') ?: '';
         if ($legacyKey) {
+            error_log('SECURITY WARNING: Legacy AES-128-ECB vault fallback triggered. '
+                . 'Re-encrypt this record and then unset VAULT_LEGACY_KEY to remove this risk.');
             $result = @openssl_decrypt(base64_decode($stored), 'AES-128-ECB', $legacyKey);
             return $result !== false ? $result : '';
         }
@@ -89,11 +107,27 @@ try {
             break;
 
         case 'get_credential_password':
-            $stmt = $pdo->prepare("SELECT password_encrypted FROM admin_credentials WHERE id = ? AND admin_id = ?");
-            $stmt->execute([$_GET['id'], $user_id]);
+            $credId = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+            $stmt = $pdo->prepare("SELECT id, title, password_encrypted FROM admin_credentials WHERE id = ? AND admin_id = ?");
+            $stmt->execute([$credId, $user_id]);
             $result = $stmt->fetch();
             if ($result) {
                 $password = decryptPassword($result['password_encrypted']);
+                // Audit log: every password reveal is recorded
+                try {
+                    $logStmt = $pdo->prepare("
+                        INSERT INTO activity_log (user_id, action, entity_type, entity_id, details, ip_address, created_at)
+                        VALUES (?, 'vault_password_revealed', 'admin_credential', ?, ?, ?, NOW())
+                    ");
+                    $logStmt->execute([
+                        $user_id,
+                        (int)$result['id'],
+                        json_encode(['credential_title' => $result['title'], 'accessed_by_role' => $user_role]),
+                        $_SERVER['REMOTE_ADDR'] ?? ''
+                    ]);
+                } catch (Exception $logEx) {
+                    error_log('Vault audit log failed: ' . $logEx->getMessage());
+                }
                 echo json_encode(['success' => true, 'password' => $password]);
             } else {
                 throw new Exception('Credential not found');
@@ -387,6 +421,7 @@ try {
             throw new Exception('Invalid action');
     }
 } catch (Exception $e) {
+    error_log('admin_vault.php error: ' . $e->getMessage());
     http_response_code(400);
-    echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+    echo json_encode(['success' => false, 'message' => 'An error occurred. Please try again.']);
 }

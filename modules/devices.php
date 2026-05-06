@@ -12,7 +12,7 @@ include '../includes/header.php';
             <h2><i class="fas fa-laptop"></i> Device Inventory</h2>
             <p class="text-muted">View all devices and their current assignments</p>
         </div>
-        <?php if (in_array($_SESSION['role'] ?? '', ['admin', 'super_admin'], true)): ?>
+        <?php if (in_array($_SESSION['role'] ?? '', ['admin'], true)): ?>
         <div class="col-auto d-flex align-items-start gap-2">
             <a href="../modules/admin/devices.php" class="btn btn-outline-primary">
                 <i class="fas fa-cogs"></i> Manage Devices
@@ -39,12 +39,44 @@ include '../includes/header.php';
 
     <!-- All Devices Section -->
     <div class="card mb-4">
-        <div class="card-header">
+        <div class="card-header d-flex justify-content-between align-items-center">
             <h5 class="mb-0"><i class="fas fa-list"></i> All Devices</h5>
+            <small class="text-muted" id="devicesShowingInfo">Loading...</small>
         </div>
         <div class="card-body">
-            <div class="mb-3">
-                <input type="text" class="form-control" id="searchDevice" placeholder="Search devices...">
+            <div class="row mb-3">
+                <div class="col-md-3">
+                    <input type="text" class="form-control" id="searchDevice" placeholder="Search devices...">
+                </div>
+                <div class="col-md-3">
+                    <select class="form-select" id="filterType">
+                        <option value="">All Types</option>
+                        <option value="Android">Android</option>
+                        <option value="iOS">iOS</option>
+                        <option value="Mac">Mac</option>
+                        <option value="Windows">Windows</option>
+                        <option value="BT Keyboard">BT Keyboard</option>
+                        <option value="Mouse">Mouse</option>
+                        <option value="Tablet">Tablet</option>
+                        <option value="Other">Other</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <select class="form-select" id="filterStatus">
+                        <option value="">All Status</option>
+                        <option value="Available">Available</option>
+                        <option value="Assigned">Assigned</option>
+                        <option value="Maintenance">Maintenance</option>
+                        <option value="Retired">Retired</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <select class="form-select" id="filterOwnership">
+                        <option value="">All Ownership</option>
+                        <option value="Owned">Owned</option>
+                        <option value="Leased">Leased</option>
+                    </select>
+                </div>
             </div>
             <div class="table-responsive">
                 <table class="table table-hover" id="devicesTable">
@@ -54,6 +86,9 @@ include '../includes/header.php';
                             <th>Type</th>
                             <th>Model</th>
                             <th>Version</th>
+                            <th>Ownership</th>
+                            <th>Storage</th>
+                            <th>Charger/Wire</th>
                             <th>Status</th>
                             <th>Assigned To</th>
                             <th>Action</th>
@@ -62,17 +97,33 @@ include '../includes/header.php';
                     <tbody></tbody>
                 </table>
             </div>
+            <div id="devicesPagination" class="mt-3"></div>
         </div>
     </div>
 
     <!-- Incoming Requests Section (Requests for my devices) -->
     <div class="card mb-4">
-        <div class="card-header bg-success text-white">
+        <div class="card-header bg-success text-white d-flex justify-content-between align-items-center">
             <h5 class="mb-0"><i class="fas fa-inbox"></i> Incoming Device Requests</h5>
+            <small id="incomingRequestsShowingInfo">Loading...</small>
         </div>
         <div class="card-body">
             <div class="alert alert-info">
                 <i class="fas fa-info-circle"></i> <strong>Requests for your devices:</strong> Other users have requested devices currently assigned to you. You can accept or reject these requests directly.
+            </div>
+            <div class="row mb-3">
+                <div class="col-md-6">
+                    <input type="text" class="form-control" id="searchIncomingRequests" placeholder="Search requests...">
+                </div>
+                <div class="col-md-6">
+                    <select class="form-select" id="filterIncomingRequestStatus">
+                        <option value="">All Status</option>
+                        <option value="Pending">Pending</option>
+                        <option value="Approved">Approved</option>
+                        <option value="Rejected">Rejected</option>
+                        <option value="Cancelled">Cancelled</option>
+                    </select>
+                </div>
             </div>
             <div class="table-responsive">
                 <table class="table table-hover" id="incomingRequestsTable">
@@ -89,13 +140,15 @@ include '../includes/header.php';
                     <tbody></tbody>
                 </table>
             </div>
+            <div id="incomingRequestsPagination" class="mt-3"></div>
         </div>
     </div>
 
     <!-- My Requests Section -->
     <div class="card">
-        <div class="card-header">
+        <div class="card-header d-flex justify-content-between align-items-center">
             <h5 class="mb-0"><i class="fas fa-exchange-alt"></i> My Device Switch Requests</h5>
+            <small class="text-muted" id="myRequestsShowingInfo">Loading...</small>
         </div>
         <div class="card-body">
             <div class="alert alert-info">
@@ -106,6 +159,20 @@ include '../includes/header.php';
                     <li>The device holder or an admin can approve your request</li>
                     <li>If approved, the device will be automatically assigned to you</li>
                 </ol>
+            </div>
+            <div class="row mb-3">
+                <div class="col-md-6">
+                    <input type="text" class="form-control" id="searchMyRequests" placeholder="Search requests...">
+                </div>
+                <div class="col-md-6">
+                    <select class="form-select" id="filterMyRequestStatus">
+                        <option value="">All Status</option>
+                        <option value="Pending">Pending</option>
+                        <option value="Approved">Approved</option>
+                        <option value="Rejected">Rejected</option>
+                        <option value="Cancelled">Cancelled</option>
+                    </select>
+                </div>
             </div>
             <div class="table-responsive">
                 <table class="table table-hover" id="requestsTable">
@@ -123,6 +190,7 @@ include '../includes/header.php';
                     <tbody></tbody>
                 </table>
             </div>
+            <div id="myRequestsPagination" class="mt-3"></div>
         </div>
     </div>
 </div>
@@ -164,6 +232,130 @@ include '../includes/header.php';
     </div>
 </div>
 
+<!-- Add/Edit Device Modal -->
+<div class="modal fade" id="deviceModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="deviceModalTitle">Edit Device</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="deviceForm">
+                    <input type="hidden" id="deviceId" name="device_id">
+                    <div class="mb-3">
+                        <label class="form-label">Device Name *</label>
+                        <input type="text" class="form-control" id="deviceName" name="device_name" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Device Type *</label>
+                        <select class="form-select" id="deviceType" name="device_type" required>
+                            <option value="Android">Android</option>
+                            <option value="iOS">iOS</option>
+                            <option value="Mac">Mac</option>
+                            <option value="Windows">Windows</option>
+                            <option value="BT Keyboard">BT Keyboard</option>
+                            <option value="Mouse">Mouse</option>
+                            <option value="Tablet">Tablet</option>
+                            <option value="Other">Other</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Model</label>
+                        <input type="text" class="form-control" id="model" name="model">
+                    </div>
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label">Storage Capacity (GB)</label>
+                            <input type="number" class="form-control" id="storageCapacity" name="storage_capacity" min="0">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label">Charger / Wire Details</label>
+                            <input type="text" class="form-control" id="chargerWire" name="charger_wire">
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Version</label>
+                        <input type="text" class="form-control" id="version" name="version">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Serial Number</label>
+                        <input type="text" class="form-control" id="serialNumber" name="serial_number">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Purchase Date</label>
+                        <input type="date" class="form-control" id="purchaseDate" name="purchase_date">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Status</label>
+                        <select class="form-select" id="status" name="status">
+                            <option value="Available">Available</option>
+                            <option value="Assigned">Assigned</option>
+                            <option value="Maintenance">Maintenance</option>
+                            <option value="Retired">Retired</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Ownership Type *</label>
+                        <select class="form-select" id="ownershipType" name="ownership_type" required onchange="toggleLeaseOwner(this.value)">
+                            <option value="Owned">Owned</option>
+                            <option value="Leased">Leased</option>
+                        </select>
+                    </div>
+                    <div class="mb-3 d-none" id="leaseOwnerWrap">
+                        <label class="form-label">Lease Owner / Vendor Name *</label>
+                        <input type="text" class="form-control" id="leaseOwner" name="lease_owner">
+                    </div>
+                    <div class="mb-3 d-none" id="editAssignWrap">
+                        <label class="form-label">Assign To</label>
+                        <select class="form-select" id="editAssignUserId" name="assigned_user_id">
+                            <option value="">-- Keep Current Assignment --</option>
+                        </select>
+                        <small class="text-muted">Select a user to reassign the device.</small>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Notes</label>
+                        <textarea class="form-control" id="notes" name="notes" rows="3"></textarea>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="saveDevice()">Save</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Assign Device Modal -->
+<div class="modal fade" id="assignModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Assign Device</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="assignForm">
+                    <input type="hidden" id="assignDeviceId" name="device_id">
+                    <div class="mb-3">
+                        <label class="form-label">Assign To *</label>
+                        <select class="form-select" id="assignUserId" name="user_id" required></select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Notes</label>
+                        <textarea class="form-control" id="assignNotes" name="notes" rows="3"></textarea>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="assignDeviceBtn">Assign</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <style>
 .device-card {
     border: 2px solid #dee2e6;
@@ -194,428 +386,14 @@ include '../includes/header.php';
 }
 </style>
 
-<script>
-let devices = [];
-let myRequests = [];
-let incomingRequests = [];
-const currentUserId = <?php echo $_SESSION['user_id']; ?>;
-
-$(document).ready(function() {
-    loadDevices();
-    loadMyRequests();
-    loadIncomingRequests();
-    
-    $('#searchDevice').on('keyup', function() {
-        filterDevices($(this).val());
-    });
-});
-
-function loadIncomingRequests() {
-    $.get('../api/devices.php?action=get_incoming_requests')
-        .done(function(response) {
-            if (response.success) {
-                incomingRequests = response.requests;
-                renderIncomingRequests();
-            } else {
-                showToast(response.message || 'Failed to load incoming requests', 'danger');
-            }
-        })
-        .fail(function(xhr) {
-            let msg = 'Failed to load incoming requests';
-            if (xhr?.responseJSON?.message) msg = xhr.responseJSON.message;
-            showToast(msg, 'danger');
-        });
-}
-
-function loadDevices() {
-    $.get('../api/devices.php?action=get_all_devices')
-        .done(function(response) {
-            if (response.success) {
-                devices = response.devices;
-                renderMyDevices();
-                renderAllDevices();
-            } else {
-                showToast(response.message || 'Failed to load devices', 'danger');
-            }
-        })
-        .fail(function(xhr) {
-            let msg = 'Failed to load devices';
-            if (xhr?.responseJSON?.message) msg = xhr.responseJSON.message;
-            showToast(msg, 'danger');
-        });
-}
-
-function loadMyRequests() {
-    $.get('../api/devices.php?action=get_switch_requests')
-        .done(function(response) {
-            if (response.success) {
-                myRequests = response.requests;
-                renderMyRequests();
-            } else {
-                showToast(response.message || 'Failed to load requests', 'danger');
-            }
-        })
-        .fail(function(xhr) {
-            let msg = 'Failed to load requests';
-            if (xhr?.responseJSON?.message) msg = xhr.responseJSON.message;
-            showToast(msg, 'danger');
-        });
-}
-
-function renderMyDevices() {
-    const container = $('#myDevices');
-    container.empty();
-    
-    const myDevices = devices.filter(d => d.assigned_user_id == currentUserId);
-    
-    if (myDevices.length === 0) {
-        container.html('<div class="col-12"><p class="text-muted">No devices assigned to you</p></div>');
-        return;
-    }
-    
-    myDevices.forEach(device => {
-        container.append(`
-            <div class="col-md-4">
-                <div class="device-card position-relative">
-                    <div class="d-flex align-items-center">
-                        <div class="device-icon me-3">
-                            <i class="fas fa-${getDeviceIcon(device.device_type)}"></i>
-                        </div>
-                        <div class="device-info">
-                            <h5 class="mb-1">${device.device_name}</h5>
-                            <p class="mb-0 text-muted">${device.device_type}</p>
-                            ${device.model ? `<small class="text-muted">${device.model}</small>` : ''}
-                            ${device.version ? `<br><small class="text-muted">Version: ${device.version}</small>` : ''}
-                        </div>
-                    </div>
-                    <div class="device-status">
-                        <span class="badge bg-success">Assigned to You</span>
-                    </div>
-                    ${device.notes ? `<div class="mt-2"><small class="text-muted"><i class="fas fa-info-circle"></i> ${device.notes}</small></div>` : ''}
-                    <div class="mt-3 d-flex gap-2">
-                        <button class="btn btn-sm btn-outline-success" onclick="submitDevice(${device.id})">
-                            <i class="fas fa-box-open"></i> Submit to Office
-                        </button>
-                    </div>
-                </div>
-            </div>
-        `);
-    });
-}
-
-function renderAllDevices() {
-    const tbody = $('#devicesTable tbody');
-    tbody.empty();
-    
-    devices.forEach(device => {
-        const statusBadge = getStatusBadge(device.status);
-        const assignedTo = device.assigned_to_name || '-';
-        const isMyDevice = device.assigned_user_id == currentUserId;
-        const canRequest = device.status === 'Assigned' && !isMyDevice;
-        const canRequestAvailable = device.status === 'Available';
-        
-        const actionBtn = canRequest ? 
-            `<button class="btn btn-sm btn-primary" onclick="showRequestModal(${device.id})">
-                <i class="fas fa-exchange-alt"></i> Request
-            </button>` : 
-            (canRequestAvailable ? 
-                `<button class="btn btn-sm btn-outline-primary" onclick="showRequestModal(${device.id})">
-                    <i class="fas fa-paper-plane"></i> Request
-                </button>` : 
-                (isMyDevice ? '<span class="badge bg-success">Your Device</span>' : '-'));
-        
-        tbody.append(`
-            <tr>
-                <td><strong>${device.device_name}</strong></td>
-                <td><i class="fas fa-${getDeviceIcon(device.device_type)}"></i> ${device.device_type}</td>
-                <td>${device.model || '-'}</td>
-                <td>${device.version || '-'}</td>
-                <td>${statusBadge}</td>
-                <td>${assignedTo}</td>
-                <td>${actionBtn}</td>
-            </tr>
-        `);
-    });
-}
-
-function renderMyRequests() {
-    const tbody = $('#requestsTable tbody');
-    tbody.empty();
-    
-    if (myRequests.length === 0) {
-        tbody.html('<tr><td colspan="7" class="text-center text-muted">No requests found. You can request devices from the "All Devices" section above.</td></tr>');
-        return;
-    }
-    
-    myRequests.forEach(request => {
-        const statusBadge = getRequestStatusBadge(request.status);
-        const response = request.response_notes || '-';
-        const canCancel = request.status === 'Pending';
-        
-        let statusIcon = '';
-        if (request.status === 'Approved') {
-            statusIcon = '<i class="fas fa-check-circle text-success"></i> ';
-        } else if (request.status === 'Rejected') {
-            statusIcon = '<i class="fas fa-times-circle text-danger"></i> ';
-        } else if (request.status === 'Pending') {
-            statusIcon = '<i class="fas fa-clock text-warning"></i> ';
-        }
-        
-        tbody.append(`
-            <tr class="${request.status === 'Approved' ? 'table-success' : (request.status === 'Rejected' ? 'table-danger' : '')}">
-                <td><strong>${request.device_name}</strong><br><small class="text-muted">${request.device_type}</small></td>
-                <td>${request.holder_full_name || request.holder_name || 'Office'}</td>
-                <td><small>${request.reason || '-'}</small></td>
-                <td><small>${new Date(request.requested_at).toLocaleString()}</small></td>
-                <td>${statusIcon}${statusBadge}</td>
-                <td><small>${response}</small></td>
-                <td>
-                    ${canCancel ? `
-                        <button class="btn btn-sm btn-danger" onclick="cancelRequest(${request.id})">
-                            <i class="fas fa-times"></i> Cancel
-                        </button>
-                    ` : '-'}
-                </td>
-            </tr>
-        `);
-    });
-}
-
-function cancelRequest(requestId) {
-    if (!confirm('Cancel this request?')) return;
-    
-    $.post('../api/devices.php', {
-        action: 'cancel_request',
-        request_id: requestId
-    }, function(response) {
-        if (response.success) {
-            showToast('Request cancelled', 'success');
-            loadMyRequests();
-        } else {
-            showToast(response.message, 'danger');
-        }
-    });
-}
-
-function renderIncomingRequests() {
-    const tbody = $('#incomingRequestsTable tbody');
-    tbody.empty();
-    
-    if (incomingRequests.length === 0) {
-        tbody.html('<tr><td colspan="6" class="text-center text-muted">No incoming requests</td></tr>');
-        return;
-    }
-    
-    incomingRequests.forEach(request => {
-        const statusBadge = getRequestStatusBadge(request.status);
-        const canRespond = request.status === 'Pending';
-        
-        tbody.append(`
-            <tr class="${request.status === 'Approved' ? 'table-success' : (request.status === 'Rejected' ? 'table-danger' : '')}">
-                <td><strong>${request.device_name}</strong><br><small class="text-muted">${request.device_type}</small></td>
-                <td>${request.requester_name}</td>
-                <td><small>${request.reason || '-'}</small></td>
-                <td><small>${new Date(request.requested_at).toLocaleString()}</small></td>
-                <td>${statusBadge}</td>
-                <td>
-                    ${canRespond ? `
-                        <button class="btn btn-sm btn-success me-1" onclick="respondToRequest(${request.id}, 'approve')">
-                            <i class="fas fa-check"></i> Accept
-                        </button>
-                        <button class="btn btn-sm btn-danger" onclick="respondToRequest(${request.id}, 'reject')">
-                            <i class="fas fa-times"></i> Reject
-                        </button>
-                    ` : `<span class="text-muted">${request.status}</span>`}
-                </td>
-            </tr>
-        `);
-    });
-}
-
-function respondToRequest(requestId, action) {
-    const actionText = action === 'approve' ? 'accept' : 'reject';
-    const notes = action === 'reject' ? prompt('Reason for rejection (optional):') : '';
-    
-    if (action === 'reject' && notes === null) return; // User cancelled
-
-    confirmAction(`Are you sure you want to ${actionText} this request?`, function() {
-        $.post('../api/devices.php', {
-            action: 'respond_to_request',
-            request_id: requestId,
-            response_action: action,
-            response_notes: notes || ''
-        }, function(response) {
-            if (response.success) {
-                showToast(`Request ${action === 'approve' ? 'accepted' : 'rejected'} successfully`, 'success');
-                loadIncomingRequests();
-                loadDevices(); // Refresh device list
-            } else {
-                showToast(response.message, 'danger');
-            }
-        });
-    });
-}
-
-function filterDevices(searchTerm) {
-    const rows = $('#devicesTable tbody tr');
-    
-    if (!searchTerm) {
-        rows.show();
-        return;
-    }
-    
-    searchTerm = searchTerm.toLowerCase();
-    
-    rows.each(function() {
-        const text = $(this).text().toLowerCase();
-        $(this).toggle(text.includes(searchTerm));
-    });
-}
-
-function getStatusBadge(status) {
-    const badges = {
-        'Available': 'success',
-        'Assigned': 'warning',
-        'Maintenance': 'info',
-        'Retired': 'secondary'
-    };
-    return `<span class="badge bg-${badges[status]}">${status}</span>`;
-}
-
-function getRequestStatusBadge(status) {
-    const badges = {
-        'Pending': 'warning',
-        'Approved': 'success',
-        'Rejected': 'danger',
-        'Cancelled': 'secondary'
-    };
-    return `<span class="badge bg-${badges[status]}">${status}</span>`;
-}
-
-function getDeviceIcon(type) {
-    const icons = {
-        'Android': 'mobile-alt',
-        'iOS': 'mobile-alt',
-        'Mac': 'laptop',
-        'Windows': 'laptop',
-        'BT Keyboard': 'keyboard',
-        'Mouse': 'mouse',
-        'Tablet': 'tablet-alt',
-        'Other': 'desktop'
-    };
-    return icons[type] || 'desktop';
-}
-
-function notify(message, variant) {
-    if (typeof showToast === 'function') {
-        showToast(message, variant || 'info');
-    }
-}
-
-function showRequestModal(deviceId) {
-    const device = devices.find(d => d.id == deviceId);
-    if (!device) return;
-    
-    $('#requestDeviceId').val(device.id);
-    $('#requestDeviceName').text(`${device.device_name} (${device.device_type})`);
-    if (device.status === 'Available') {
-        $('#requestModalTitle').text('Request Available Device');
-        $('#requestAction').val('request_available');
-        $('#requestCurrentHolder').text('Office');
-        $('#requestHelpText').text('Your request will be sent to admin for approval.');
-    } else {
-        $('#requestModalTitle').text('Request Device Switch');
-        $('#requestAction').val('request_switch');
-        $('#requestCurrentHolder').text(device.assigned_to_name || 'Unknown');
-        $('#requestHelpText').text('Your request will be sent to the device holder. They can accept your request, or an admin can approve it.');
-    }
-    $('#requestReason').val('');
-    $('#requestSubmitBtn').prop('disabled', false).html('Submit Request');
-    $('#requestModal').modal('show');
-}
-
-function submitRequest() {
-    const reason = $('#requestReason').val().trim();
-    if (!reason) {
-        notify('Please provide a reason for your request', 'warning');
-        return;
-    }
-    
-    const formData = new FormData($('#requestForm')[0]);
-    const action = $('#requestAction').val() || 'request_switch';
-    const $submitBtn = $('#requestSubmitBtn');
-    formData.append('action', action);
-
-    $submitBtn.prop('disabled', true).html('<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>Submitting...');
-    try {
-        const modalEl = document.getElementById('requestModal');
-        if (modalEl && window.bootstrap && bootstrap.Modal) {
-            bootstrap.Modal.getOrCreateInstance(modalEl).hide();
-        } else {
-            $('#requestModal').modal('hide');
-        }
-    } catch (e) {
-        $('#requestModal').modal('hide');
-    }
-    
-    $.ajax({
-        url: '../api/devices.php',
-        method: 'POST',
-        dataType: 'json',
-        data: formData,
-        processData: false,
-        contentType: false,
-        success: function(response) {
-            if (response.success) {
-                notify(response.message || 'Request submitted successfully', 'success');
-                loadMyRequests();
-            } else {
-                notify('Error: ' + (response.message || 'Request failed'), 'danger');
-                $('#requestModal').modal('show');
-            }
-        },
-        error: function(xhr) {
-            let msg = 'Request failed. Please try again.';
-            if (xhr && xhr.responseJSON && xhr.responseJSON.message) {
-                msg = xhr.responseJSON.message;
-            } else if (xhr && xhr.responseText) {
-                try {
-                    const parsed = JSON.parse(xhr.responseText);
-                    if (parsed && parsed.message) msg = parsed.message;
-                } catch (e) {}
-            }
-            notify(msg, 'danger');
-            $('#requestModal').modal('show');
-        },
-        complete: function() {
-            $submitBtn.prop('disabled', false).html('Submit Request');
-        }
-    });
-}
-
-function confirmAction(message, onConfirm) {
-    if (typeof confirmModal === 'function') {
-        confirmModal(message, onConfirm);
-        return;
-    }
-    if (confirm(message)) onConfirm();
-}
-
-function submitDevice(deviceId) {
-    confirmAction('Submit this device back to office? It will become Available.', function() {
-        $.post('../api/devices.php', {
-            action: 'submit_device',
-            device_id: deviceId
-        }, function(response) {
-            if (response.success) {
-                notify(response.message || 'Device submitted successfully', 'success');
-                loadDevices();
-            } else {
-                notify('Error: ' + (response.message || 'Action failed'), 'danger');
-            }
-        });
-    });
-}
+<script nonce="<?php echo $cspNonce ?? ''; ?>">
+window.DevicesConfig = { 
+    currentUserId: <?php echo (int)$_SESSION['user_id']; ?>,
+    canManageDevices: <?php echo (in_array($_SESSION['role'] ?? '', ['admin'], true) || !empty($_SESSION['can_manage_devices'])) ? 'true' : 'false'; ?>,
+    userRole: <?php echo json_encode($_SESSION['role'] ?? ''); ?>,
+    apiBasePath: '../api/' // User page: modules/ -> go up 1 level to root, then api/
+};
 </script>
+<script src="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/assets/js/devices.js"></script>
 
-<?php include '../includes/footer.php'; ?>
+<?php include '../includes/footer.php'; 

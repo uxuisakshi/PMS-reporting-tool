@@ -71,12 +71,12 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_events') {
 
     $events = [];
 
-    // Fetch explicit statuses in range and index them by user+date (exclude admin and super_admin)
+    // Fetch explicit statuses in range and index them by user+date (exclude admin and admin)
     $sql = "SELECT uds.*, u.full_name, u.role
          FROM user_daily_status uds
          JOIN users u ON uds.user_id = u.id
          WHERE uds.status_date BETWEEN ? AND ?
-         AND u.role NOT IN ('admin', 'super_admin')";
+         AND u.role NOT IN ('admin')";
     $params = [$start, $end];
     if ($selectedUser && $selectedUser !== 'all') {
         $sql .= " AND u.id = ?";
@@ -96,7 +96,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_events') {
                  FROM project_time_logs ptl
                  JOIN users u ON ptl.user_id = u.id
                  WHERE ptl.log_date BETWEEN ? AND ?
-                 AND u.role NOT IN ('admin','super_admin')";
+                 AND u.role NOT IN ('admin')";
     $hparams = [$start, $end];
     if ($selectedUser && $selectedUser !== 'all') {
         $hoursSql .= " AND ptl.user_id = ?";
@@ -109,16 +109,18 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_events') {
         $hours_map[$hr['user_id']][$hr['log_date']] = floatval($hr['total_hours']);
     }
 
-    // Fetch users to show "Not updated" where no status exists (exclude admin and super_admin)
+    // Fetch users to show "Not updated" where no status exists (exclude admin and admin)
     if ($selectedUser && $selectedUser !== 'all') {
-        $users = $db->prepare("SELECT id, full_name, role FROM users WHERE is_active = 1 AND id = ? AND role NOT IN ('admin', 'super_admin')");
+        $users = $db->prepare("SELECT id, full_name, role FROM users WHERE is_active = 1 AND id = ? AND role NOT IN ('admin')");
         $users->execute([$selectedUser]);
         $users = $users->fetchAll(PDO::FETCH_ASSOC);
     } else {
-        $users = $db->query("SELECT id, full_name, role FROM users WHERE is_active = 1 AND role NOT IN ('admin', 'super_admin') ORDER BY full_name")->fetchAll(PDO::FETCH_ASSOC);
+        $users = $db->query("SELECT id, full_name, role FROM users WHERE is_active = 1 AND role NOT IN ('admin') ORDER BY full_name")->fetchAll(PDO::FETCH_ASSOC);
     }
 
-    // Build date range
+    // Build date range.
+    // Future dates stay empty unless a user has explicitly saved a status for that date.
+    $todayDate = date('Y-m-d');
     $period = new DatePeriod(
         new DateTime($start), 
         new DateInterval('P1D'), 
@@ -153,7 +155,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_events') {
                     }
                 } else {
                     // Not updated
-                    if ($statusFilterAllows('not_updated')) {
+                    if ($d <= $todayDate && $statusFilterAllows('not_updated')) {
                         $date_users['not_updated'][] = [
                             'name' => $u['full_name'],
                             'id' => $u['id'],
@@ -182,7 +184,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_events') {
                 
                 $title = $statusLabel . ' (' . $count . ')';
                 if ($totalHours > 0) {
-                    $title .= ' — ' . $totalHours . 'h';
+                    $title .= ' - ' . $totalHours . 'h';
                 }
                 
                 $events[] = [
@@ -208,9 +210,9 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_events') {
                 
                 $userHours = $hours_map[$u['id']][$d] ?? 0;
                 if (empty($status_map[$u['id']][$d])) {
-                    if ($statusFilterAllows('not_updated')) {
+                    if ($d <= $todayDate && $statusFilterAllows('not_updated')) {
                         $title = $u['full_name'] . ' (Not updated)';
-                        if ($userHours > 0) $title .= ' — ' . $userHours . 'h';
+                        if ($userHours > 0) $title .= ' - ' . $userHours . 'h';
                         
                         // Truncate long titles for better display
                         $displayTitle = $title;
@@ -243,7 +245,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_events') {
                     }
                     $title = $st['full_name'] . ' (' . $statusLabelFn($stType) . ')';
                     $userHours = $hours_map[$u['id']][$d] ?? 0;
-                    if ($userHours > 0) $title .= ' — ' . $userHours . 'h';
+                    if ($userHours > 0) $title .= ' - ' . $userHours . 'h';
                     
                     // Truncate long titles for better display
                     $displayTitle = $title;
@@ -305,8 +307,8 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_edit_requests') {
 
 include __DIR__ . '/../../includes/header.php';
 
-// Fetch users for dropdown (exclude admin/super_admin)
-$allUsers = $db->query("SELECT id, full_name FROM users WHERE is_active = 1 AND role NOT IN ('admin', 'super_admin') ORDER BY full_name")->fetchAll(PDO::FETCH_ASSOC);
+// Fetch users for dropdown (exclude admin/admin)
+$allUsers = $db->query("SELECT id, full_name FROM users WHERE is_active = 1 AND role NOT IN ('admin') ORDER BY full_name")->fetchAll(PDO::FETCH_ASSOC);
 ?>
 
 <link href='https://cdn.jsdelivr.net/npm/fullcalendar@5.11.3/main.min.css' rel='stylesheet' />
@@ -767,8 +769,8 @@ $allUsers = $db->query("SELECT id, full_name FROM users WHERE is_active = 1 AND 
                     <i class="fas fa-users me-2 text-primary"></i>View Scope
                 </label>
                 <select id="userSelect" class="form-select">
-                    <option value="">👤 Individual Users</option>
-                    <option value="all">👥 All Users (Consolidated)</option>
+                    <option value="">&#128100; Individual Users</option>
+                    <option value="all">&#128101; All Users (Consolidated)</option>
                     <?php foreach ($allUsers as $au): ?>
                         <option value="<?php echo $au['id']; ?>" <?php echo ($selectedUser && $selectedUser == $au['id']) ? 'selected' : ''; ?>>
                             <?php echo htmlspecialchars($au['full_name'], ENT_QUOTES, 'UTF-8'); ?>
@@ -795,6 +797,18 @@ $allUsers = $db->query("SELECT id, full_name FROM users WHERE is_active = 1 AND 
                         </label>
                     <?php endforeach; ?>
                     
+                    <div class="vr mx-2"></div>
+
+                    <input type="checkbox" class="btn-check hours-filter-check" id="filterUnder8Hours" value="under_8_hours" checked autocomplete="off">
+                    <label class="btn btn-outline-warning" for="filterUnder8Hours">
+                        <i class="fas fa-hourglass-half me-2"></i>Under 8 Hours
+                    </label>
+
+                    <input type="checkbox" class="btn-check hours-filter-check" id="filterCompliantHours" value="compliant" checked autocomplete="off">
+                    <label class="btn btn-outline-success" for="filterCompliantHours">
+                        <i class="fas fa-check-circle me-2"></i>Compliant
+                    </label>
+
                     <div class="vr mx-2"></div>
                     
                     <input type="checkbox" class="btn-check" id="filterEditRequests" checked autocomplete="off" onchange="if(window.__adminCalendarToggleEditRequests){window.__adminCalendarToggleEditRequests();}">
@@ -862,568 +876,18 @@ $allUsers = $db->query("SELECT id, full_name FROM users WHERE is_active = 1 AND 
 
 <!-- Removed duplicate FullCalendar JS (already included at top) -->
 
-<script>
-window.availabilityStatusMeta = <?php echo json_encode($availabilityFilterOptions, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT); ?>;
+<script nonce="<?php echo $cspNonce ?? ''; ?>">
+window.AdminCalendarConfig = {
+    statusMeta: <?php echo json_encode($availabilityFilterOptions, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT); ?>,
+    eventsUrl: <?php echo json_encode($_SERVER['PHP_SELF'] . '?action=get_events', JSON_HEX_TAG | JSON_HEX_AMP); ?>,
+    editRequestsUrl: <?php echo json_encode($_SERVER['PHP_SELF'] . '?action=get_edit_requests', JSON_HEX_TAG | JSON_HEX_AMP); ?>,
+    userHoursUrl: <?php echo json_encode($baseDir . '/api/user_hours.php', JSON_HEX_TAG | JSON_HEX_AMP); ?>,
+    dailyStatusUrl: <?php echo json_encode($baseDir . '/modules/my_daily_status.php', JSON_HEX_TAG | JSON_HEX_AMP); ?>
+};
 
-function availabilityStatusLabel(statusKey) {
-    var key = String(statusKey || '').toLowerCase();
-    var meta = (window.availabilityStatusMeta && window.availabilityStatusMeta[key]) ? window.availabilityStatusMeta[key] : null;
-    return (meta && meta.status_label) ? String(meta.status_label) : key.replace(/_/g, ' ');
-}
-
-function availabilityStatusBadgeClass(statusKey, withBgPrefix) {
-    var key = String(statusKey || '').toLowerCase();
-    var meta = (window.availabilityStatusMeta && window.availabilityStatusMeta[key]) ? window.availabilityStatusMeta[key] : null;
-    var color = (meta && meta.badge_color) ? String(meta.badge_color).toLowerCase() : 'secondary';
-    var allowed = ['primary', 'secondary', 'success', 'danger', 'warning', 'info', 'dark', 'light'];
-    if (allowed.indexOf(color) === -1) color = 'secondary';
-    return withBgPrefix ? ('bg-' + color) : color;
-}
-
-document.addEventListener('DOMContentLoaded', function() {
-    var FC = window.FullCalendar || (typeof FullCalendar !== 'undefined' ? FullCalendar : null);
-    if (!FC) {
-        console.error('FullCalendar failed to load');
-        return;
-    }
-    var statusFilterStorageKey = 'admin_calendar_status_filters_v1';
-
-    var calendarEl = document.getElementById('calendar');
-    
-    // Define event sources
-    var mainEventsSource = {
-        id: 'mainEvents',
-        url: '', // will be set dynamically
-        extraParams: {}
-    };
-    
-    // Function to get current filters for main events
-    function getSelectedFilters() {
-        var checkboxes = document.querySelectorAll('.status-filter-check:checked');
-        var filters = Array.from(checkboxes).map(cb => cb.value);
-        return filters.length > 0 ? filters.join(',') : 'none';
-    }
-
-    function getSelectedFilterSet() {
-        return new Set(
-            Array.from(document.querySelectorAll('.status-filter-check:checked')).map(function(cb) {
-                return String(cb.value || '').toLowerCase();
-            })
-        );
-    }
-
-    function isStatusVisibleByFilter(statusType, selectedSet) {
-        var key = String(statusType || '').toLowerCase();
-        if (!selectedSet || selectedSet.size === 0) return false;
-        if (selectedSet.has(key)) return true;
-        if ((key === 'on_leave' || key === 'sick_leave') && selectedSet.has('leave')) return true;
-        return false;
-    }
-
-    function applyStatusFilterToRenderedEvents() {
-        var selectedSet = getSelectedFilterSet();
-        var eventEls = calendarEl.querySelectorAll('.fc-event[data-status-type], .fc-daygrid-event[data-status-type]');
-        eventEls.forEach(function(el) {
-            var statusType = String(el.getAttribute('data-status-type') || '').toLowerCase();
-            el.style.display = isStatusVisibleByFilter(statusType, selectedSet) ? '' : 'none';
-        });
-    }
-
-    function applySavedStatusFilters() {
-        try {
-            var raw = localStorage.getItem(statusFilterStorageKey);
-            if (!raw) return;
-            var saved = JSON.parse(raw);
-            if (!Array.isArray(saved)) return;
-            var boxes = document.querySelectorAll('.status-filter-check');
-            boxes.forEach(function(cb) {
-                cb.checked = saved.indexOf(cb.value) !== -1;
-            });
-        } catch (e) {}
-    }
-
-    function saveStatusFilters() {
-        try {
-            var selected = Array.from(document.querySelectorAll('.status-filter-check:checked')).map(function(cb) {
-                return cb.value;
-            });
-            localStorage.setItem(statusFilterStorageKey, JSON.stringify(selected));
-        } catch (e) {}
-    }
-    
-    // Helper to read current user selection
-    function getSelectedUserId() {
-        var select = document.getElementById('userSelect');
-        return select ? select.value : '';
-    }
-
-    // Function to construct URL for main events
-    function getEventsUrl() {
-        var userId = getSelectedUserId();
-        var url = '<?php echo $_SERVER["PHP_SELF"]; ?>?action=get_events' + (userId ? '&user_id=' + encodeURIComponent(userId) : '');
-
-        return url;
-    }
-
-    // Refresh only the main events source
-    function refreshMainEvents() {
-        // Show loading overlay
-        document.getElementById('calendar-loading').style.display = 'flex';
-
-        var source = window.calendar.getEventSourceById('mainEvents');
-        if (source) {
-            source.remove();
-        }
-
-        window.calendar.addEventSource({
-            id: 'mainEvents',
-            url: getEventsUrl(),
-            success: function(events) {
-                // Hide loading overlay
-                document.getElementById('calendar-loading').style.display = 'none';
-                
-                if (events.length === 0) {
-                    // Show empty state message
-                    showEmptyState();
-                }
-            },
-            failure: function(error) {
-                // Hide loading overlay
-                document.getElementById('calendar-loading').style.display = 'none';
-                console.error('Calendar: Failed to load events:', error);
-                showErrorState();
-            }
-        });
-    }
-    
-    function showEmptyState() {
-        // You can add a toast or notification here
-        if (typeof showToast === 'function') {
-            showToast('No events found for the selected filters', 'info');
-        }
-    }
-    
-    function showErrorState() {
-        if (typeof showToast === 'function') {
-            showToast('Failed to load calendar events. Please try again.', 'danger');
-        }
-    }
-    
-    // Function to adjust popover position to prevent overflow
-    function adjustPopoverPosition(popover, dayEl) {
-        if (!popover || !dayEl) return;
-        
-        var calendarContainer = document.querySelector('.calendar-container');
-        if (!calendarContainer) return;
-        
-        var containerRect = calendarContainer.getBoundingClientRect();
-        var popoverRect = popover.getBoundingClientRect();
-        var dayRect = dayEl.getBoundingClientRect();
-        
-        // Check if popover overflows right edge
-        if (popoverRect.right > containerRect.right) {
-            var overflowRight = popoverRect.right - containerRect.right;
-            var currentLeft = parseInt(popover.style.left) || 0;
-            popover.style.left = (currentLeft - overflowRight - 20) + 'px';
-        }
-        
-        // Check if popover overflows left edge
-        if (popoverRect.left < containerRect.left) {
-            var overflowLeft = containerRect.left - popoverRect.left;
-            var currentLeft = parseInt(popover.style.left) || 0;
-            popover.style.left = (currentLeft + overflowLeft + 20) + 'px';
-        }
-        
-        // Check if popover overflows bottom edge
-        if (popoverRect.bottom > containerRect.bottom) {
-            var overflowBottom = popoverRect.bottom - containerRect.bottom;
-            var currentTop = parseInt(popover.style.top) || 0;
-            popover.style.top = (currentTop - overflowBottom - 20) + 'px';
-        }
-        
-        // Check if popover overflows top edge
-        if (popoverRect.top < containerRect.top) {
-            var overflowTop = containerRect.top - popoverRect.top;
-            var currentTop = parseInt(popover.style.top) || 0;
-            popover.style.top = (currentTop + overflowTop + 20) + 'px';
-        }
-    }
-
-    // Edit requests source definition
-    function fetchEditRequests(fetchInfo, successCallback, failureCallback) {
-        var selectedUserId = getSelectedUserId();
-        var editUrl = '<?php echo $_SERVER["PHP_SELF"]; ?>?action=get_edit_requests';
-        if (selectedUserId && selectedUserId !== 'all') {
-            editUrl += '&user_id=' + encodeURIComponent(selectedUserId);
-        }
-
-        fetch(editUrl)
-            .then(response => response.json())
-            .then(data => {
-                if (data.success && data.requests) {
-                    var targetUserId = selectedUserId && selectedUserId !== 'all' ? parseInt(selectedUserId, 10) : null;
-                    var events = data.requests
-                        .filter(function(request) {
-                            return !targetUserId || Number(request.user_id) === targetUserId;
-                        })
-                        .map(function(request) {
-                            var reqStatus = (request.status || '').toLowerCase();
-                            var reqType = (request.request_type || 'edit').toLowerCase();
-                            var color = '#17a2b8';
-                            var textColor = '#ffffff';
-                            if (reqStatus === 'approved') color = '#28a745';
-                            else if (reqStatus === 'rejected') color = '#dc3545';
-                            else if (reqStatus === 'used') color = '#343a40';
-                            else if (reqStatus === 'pending' || reqStatus === '') color = '#17a2b8';
-
-                            var statusLabel = reqStatus ? reqStatus.charAt(0).toUpperCase() + reqStatus.slice(1) : 'Unknown';
-                            var typeLabel = reqType === 'delete' ? 'Delete Request' : 'Edit Request';
-                            return {
-                                title: typeLabel + ' [' + statusLabel + '] - ' + request.user_name,
-                                start: request.req_date,
-                                color: color,
-                                textColor: textColor,
-                                extendedProps: {
-                                    isEditRequest: true,
-                                    requestId: request.id,
-                                    userId: request.user_id,
-                                    userName: request.user_name,
-                                    reason: request.reason,
-                                    requestStatus: reqStatus,
-                                    requestType: reqType
-                                }
-                            };
-                        });
-                    successCallback(events);
-                } else {
-                    successCallback([]);
-                }
-            })
-            .catch(error => {
-                // console.error('Failed to load edit requests:', error);
-                failureCallback(error);
-            });
-    }
-
-    // Toggle edit requests overlay
-    function isEditRequestEvent(ev) {
-        if (!ev) return false;
-        var props = ev.extendedProps || {};
-        if (props.isEditRequest) return true;
-        try {
-            var src = typeof ev.getSource === 'function' ? ev.getSource() : null;
-            if (src && src.id === 'editRequests') return true;
-        } catch (e) {}
-        var title = (typeof ev.title === 'string') ? ev.title : '';
-        return title.indexOf('Edit Request') === 0 || title.indexOf('Delete Request') === 0;
-    }
-
-    function toggleEditRequestsOverlay() {
-        var toggleEl = document.getElementById('filterEditRequests');
-        var showEditRequests = toggleEl ? !!toggleEl.checked : false;
-        var source = window.calendar.getEventSourceById('editRequests');
-        var renderedEditEls = calendarEl.querySelectorAll('.fc-edit-request-event');
-
-        renderedEditEls.forEach(function(el) {
-            el.style.display = showEditRequests ? '' : 'none';
-        });
-
-        if (!showEditRequests) {
-            if (source) {
-                source.remove();
-            }
-            window.calendar.getEvents().forEach(function(ev){
-                if (isEditRequestEvent(ev)) {
-                    ev.remove();
-                }
-            });
-            if (typeof window.calendar.updateSize === 'function') {
-                window.calendar.updateSize();
-            }
-            return;
-        }
-
-        if (!source) {
-            source = window.calendar.addEventSource({
-                id: 'editRequests',
-                events: fetchEditRequests
-            });
-        }
-        if (source && typeof source.refetch === 'function') {
-            source.refetch();
-        } else if (typeof window.calendar.refetchEvents === 'function') {
-            window.calendar.refetchEvents();
-        }
-        if (typeof window.calendar.updateSize === 'function') {
-            window.calendar.updateSize();
-        }
-    }
-    window.__adminCalendarToggleEditRequests = toggleEditRequestsOverlay;
-    
-    var defaultView = window.innerWidth < 768 ? 'dayGridDay' : 'dayGridMonth';
-
-    // Use plugins exposed on the FullCalendar namespace
-    var plugins = [];
-    if (FC.dayGridPlugin) plugins.push(FC.dayGridPlugin);
-    // list view removed; no list plugin
-    if (FC.interactionPlugin) plugins.push(FC.interactionPlugin);
-
-    window.calendar = new FC.Calendar(calendarEl, {
-        plugins: plugins,
-        initialView: defaultView,
-        dayMaxEventRows: false,
-        views: {
-            dayGridMonth: { dayMaxEventRows: 4 },
-            dayGridDay: { dayMaxEventRows: false, dayHeaderFormat: { weekday: 'short', day: 'numeric', month: 'short' } }
-        },
-        moreLinkClick: function(info) {
-            // Custom popover positioning to prevent overflow
-            var popover = info.view.calendar.el.querySelector('.fc-popover');
-            if (popover) {
-                setTimeout(function() {
-                    adjustPopoverPosition(popover, info.dayEl);
-                }, 10);
-            }
-            return 'popover';
-        },
-        moreLinkText: function(num) {
-            return '+' + num + ' more';
-        },
-        headerToolbar: {
-            left: 'prev,next today',
-            center: 'title',
-            right: 'dayGridMonth,dayGridDay'
-        },
-        eventDisplay: 'block',
-        eventContent: function(arg) {
-            // Show richer cards in day view where there is ample space
-            if (!arg || !arg.view || arg.view.type !== 'dayGridDay') return;
-
-            var props = arg.event.extendedProps || {};
-            var card = document.createElement('div');
-            card.className = 'fc-day-detail';
-
-            var head = document.createElement('div');
-            head.className = 'd-flex justify-content-between align-items-start mb-1';
-
-            var title = document.createElement('div');
-            title.className = 'fc-day-detail-title me-2';
-            title.textContent = props.user_full_name || arg.event.title;
-            head.appendChild(title);
-
-            var badges = document.createElement('div');
-            badges.className = 'd-flex gap-1 flex-wrap justify-content-end';
-
-            var statusRaw = props.statusType || props.status || '';
-            var statusLabel = statusRaw ? availabilityStatusLabel(statusRaw) : 'Status';
-            
-            if (statusRaw) {
-                var badgeClass = availabilityStatusBadgeClass(statusRaw, true);
-
-                var statusBadge = document.createElement('span');
-                statusBadge.className = 'badge ' + badgeClass + ' badge-status';
-                statusBadge.textContent = statusLabel.charAt(0).toUpperCase() + statusLabel.slice(1);
-                badges.appendChild(statusBadge);
-            }
-
-            if (props.total_hours !== undefined && props.total_hours !== null) {
-                var hoursBadge = document.createElement('span');
-                hoursBadge.className = 'badge bg-light text-dark border badge-status';
-                hoursBadge.textContent = parseFloat(props.total_hours).toFixed(2) + ' h';
-                badges.appendChild(hoursBadge);
-            }
-
-            head.appendChild(badges);
-            card.appendChild(head);
-
-            if (props.notes) {
-                var notes = document.createElement('p');
-                notes.className = 'small text-muted mb-0';
-                notes.textContent = props.notes.replace(/<[^>]*>?/gm, ''); // strip any HTML
-                card.appendChild(notes);
-            }
-
-            return { domNodes: [card] };
-        },
-        // Remove initial events: getEventsUrl(), we will add it manually
-        eventDidMount: function(info) {
-            try {
-                var el = info.el || (info.elms && info.elms[0]);
-                if (el && info.event && info.event.extendedProps) {
-                    var props = info.event.extendedProps || {};
-                    
-                    // Add tooltip for truncated titles
-                    if (props.fullTitle && props.fullTitle !== info.event.title) {
-                        el.setAttribute('title', props.fullTitle);
-                        el.setAttribute('data-bs-toggle', 'tooltip');
-                        el.setAttribute('data-bs-placement', 'top');
-                        
-                        // Initialize Bootstrap tooltip
-                        if (typeof bootstrap !== 'undefined' && bootstrap.Tooltip) {
-                            new bootstrap.Tooltip(el);
-                        }
-                    }
-                    
-                    if (isEditRequestEvent(info.event)) {
-                        el.classList.add('fc-edit-request-event');
-                        var toggleEl = document.getElementById('filterEditRequests');
-                        if (toggleEl && !toggleEl.checked) {
-                            el.style.display = 'none';
-                        }
-                    }
-                    if (info.event.extendedProps.user_id) el.setAttribute('data-user-id', info.event.extendedProps.user_id);
-                    if (info.event.extendedProps.user_full_name) el.setAttribute('data-user-fullname', info.event.extendedProps.user_full_name);
-                    if (info.event.extendedProps.role) el.setAttribute('data-user-role', info.event.extendedProps.role);
-                    if (info.event.extendedProps.statusType) el.setAttribute('data-status-type', info.event.extendedProps.statusType);
-                    if (typeof info.event.startStr !== 'undefined') el.setAttribute('data-date', info.event.startStr);
-                    if (props.statusType) {
-                        var selectedSet = getSelectedFilterSet();
-                        if (!isStatusVisibleByFilter(props.statusType, selectedSet)) {
-                            el.style.display = 'none';
-                        }
-                    }
-                }
-            } catch (e) { /* ignore */ }
-        },
-        eventsSet: function() {
-            applyStatusFilterToRenderedEvents();
-        },
-        viewDidMount: function(info) {
-            // Adjust container based on view type
-            var container = document.querySelector('.calendar-container');
-            if (container) {
-                if (info.view.type === 'dayGridDay') {
-                    container.style.minHeight = '700px';
-                    container.style.maxHeight = '90vh';
-                    container.style.overflowY = 'auto';
-                } else {
-                    container.style.minHeight = '600px';
-                    container.style.maxHeight = 'none';
-                    container.style.overflowY = 'hidden';
-                }
-            }
-            
-            // Force calendar to recalculate size
-            setTimeout(function() {
-                if (window.calendar && typeof window.calendar.updateSize === 'function') {
-                    window.calendar.updateSize();
-                }
-            }, 100);
-        },
-        eventClick: function(info) {
-            // Handle Edit Request Click
-            if (info.event.extendedProps.isEditRequest) {
-                showEditRequestModal({
-                    userName: info.event.extendedProps.userName,
-                    reason: info.event.extendedProps.reason,
-                    date: info.event.startStr
-                });
-                return false;
-            }
-
-            var uid = info.event.extendedProps.user_id || info.event.extendedProps.userId;
-            var date = info.event.startStr;
-            var role = info.event.extendedProps.role || '';
-            
-            // Handle consolidated view
-            if (info.event.extendedProps.consolidated) {
-                showConsolidatedModal(info.event.extendedProps.userList, date, info.event.extendedProps.statusType);
-                return false;
-            }
-            
-            if (uid) {
-                try { info.jsEvent && info.jsEvent.preventDefault(); info.jsEvent && info.jsEvent.stopPropagation(); } catch(e){}
-                fetchUserHoursAndShow(uid, date, role);
-                return false;
-            }
-            
-            // fallback: show simple toast
-            var notes = info.event.extendedProps.notes;
-            var msg = 'User: ' + info.event.title + '\nRole: ' + info.event.extendedProps.role;
-            if (notes) msg += '\nNotes: ' + notes;
-            showToast(msg, 'info');
-        },
-        height: 'auto',
-        contentHeight: 600,
-        handleWindowResize: true,
-        windowResizeDelay: 100
-    });
-    
-    // Wait for fonts to load before rendering to ensure correct sizing
-    document.fonts.ready.then(function() {
-        // Small delay to ensure container is fully painted
-        setTimeout(function() {
-            window.calendar.render();
-            // Add initial event sources
-            refreshMainEvents();
-            toggleEditRequestsOverlay();
-            
-            // Watch for popover creation and adjust positioning
-            var observer = new MutationObserver(function(mutations) {
-                mutations.forEach(function(mutation) {
-                    mutation.addedNodes.forEach(function(node) {
-                        if (node.nodeType === 1 && node.classList && node.classList.contains('fc-popover')) {
-                            setTimeout(function() {
-                                adjustPopoverPosition(node);
-                            }, 50);
-                        }
-                    });
-                });
-            });
-            
-            observer.observe(document.body, {
-                childList: true,
-                subtree: true
-            });
-            
-            // Force one more update after a short delay to catch any layout shifts
-            setTimeout(function() {
-                window.calendar.updateSize();
-            }, 300);
-        }, 100);
-    });
-    
-    // Handle checkbox filter changes
-    document.querySelectorAll('.status-filter-check').forEach(function(checkbox) {
-        checkbox.addEventListener('change', function() {
-            saveStatusFilters();
-            applyStatusFilterToRenderedEvents();
-        });
-    });
-    
-    // Handle edit requests filter (explicit controlled toggle)
-    var editRequestsToggle = document.getElementById('filterEditRequests');
-    if (editRequestsToggle) {
-        editRequestsToggle.addEventListener('change', toggleEditRequestsOverlay);
-        editRequestsToggle.addEventListener('click', function() {
-            setTimeout(toggleEditRequestsOverlay, 0);
-        });
-    }
-    
-    // Handle user selection change
-    var userSelect = document.getElementById('userSelect');
-    if (userSelect) {
-        userSelect.addEventListener('change', function() {
-            refreshMainEvents();
-
-            var editSource = window.calendar.getEventSourceById('editRequests');
-            var showEditRequests = document.getElementById('filterEditRequests').checked;
-
-            if (showEditRequests && editSource && typeof editSource.refetch === 'function') {
-                editSource.refetch();
-            } else if (showEditRequests) {
-                toggleEditRequestsOverlay();
-            } else if (editSource) {
-                editSource.remove();
-            }
-        });
-    }
-
-    // Restore persisted filters after handlers are attached.
-    applySavedStatusFilters();
-    applyStatusFilterToRenderedEvents();
-});
+/* DOMContentLoaded logic moved to assets/js/admin-calendar.js */
 </script>
+<script src="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/assets/js/admin-calendar.js?v=<?php echo filemtime(__DIR__ . '/../../assets/js/admin-calendar.js'); ?>"></script>
 
 <!-- Summernote (AdminLTE editor) -->
 <link href="https://cdn.jsdelivr.net/npm/summernote@0.8.18/dist/summernote-bs4.min.css" rel="stylesheet">
@@ -1509,494 +973,7 @@ document.addEventListener('DOMContentLoaded', function() {
     </div>
 </div>
 
-<script>
-function enableAdminToolbarKeyboardA11y($el) {
-    if (!window.jQuery || !$el || !$el.length) return;
-    var $toolbar = $el.next('.note-editor').find('.note-toolbar').first();
-    if (!$toolbar.length || $toolbar.data('kbdA11yBound')) return;
-
-    function getItems() {
-        return $toolbar.find('.note-btn-group button').filter(function() {
-            var $b = jQuery(this);
-            if ($b.is(':hidden')) return false;
-            if ($b.prop('disabled')) return false;
-            if ($b.closest('.dropdown-menu').length) return false;
-            if ($b.attr('aria-hidden') === 'true') return false;
-            return true;
-        });
-    }
-
-    function setActiveIndex(idx) {
-        var $items = getItems();
-        if (!$items.length) return;
-        var next = Math.max(0, Math.min(idx, $items.length - 1));
-        $items.attr('tabindex', '-1');
-        $items.eq(next).attr('tabindex', '0');
-        $toolbar.data('kbdIndex', next);
-    }
-
-    function ensureOneTabStop() {
-        var $items = getItems();
-        if (!$items.length) return;
-        if (!$items.filter('[tabindex="0"]').length) {
-            $items.attr('tabindex', '-1');
-            $items.eq(0).attr('tabindex', '0');
-        }
-    }
-
-    function handleToolbarArrowNav(e) {
-        var key = e.key || (e.originalEvent && e.originalEvent.key);
-        if (key !== 'ArrowRight' && key !== 'ArrowLeft' && key !== 'Home' && key !== 'End') return;
-
-        var $items = getItems();
-        if (!$items.length) return;
-        var activeEl = document.activeElement;
-        var idx = $items.index(activeEl);
-        if (idx < 0 && activeEl && activeEl.closest) {
-            var parentBtn = activeEl.closest('button');
-            if (parentBtn) idx = $items.index(parentBtn);
-        }
-        if (idx < 0) {
-            var savedIdx = parseInt($toolbar.data('kbdIndex'), 10);
-            if (!isNaN(savedIdx) && savedIdx >= 0 && savedIdx < $items.length) idx = savedIdx;
-        }
-        if (idx < 0) idx = $items.index($items.filter('[tabindex="0"]').first());
-        if (idx < 0) idx = 0;
-
-        e.preventDefault();
-        if (e.stopPropagation) e.stopPropagation();
-        if (key === 'Home') idx = 0;
-        else if (key === 'End') idx = $items.length - 1;
-        else if (key === 'ArrowRight') idx = (idx + 1) % $items.length;
-        else if (key === 'ArrowLeft') idx = (idx - 1 + $items.length) % $items.length;
-
-        setActiveIndex(idx);
-        var $target = $items.eq(idx);
-        $target.focus();
-        if (document.activeElement !== $target.get(0)) {
-            setTimeout(function() { $target.focus(); }, 0);
-        }
-    }
-
-    $toolbar.attr('role', 'toolbar');
-    if (!$toolbar.attr('aria-label')) {
-        $toolbar.attr('aria-label', 'Editor toolbar');
-    }
-
-    setActiveIndex(0);
-    $toolbar.on('focusin', 'button', function() {
-        var $items = getItems();
-        var idx = $items.index(this);
-        if (idx >= 0) setActiveIndex(idx);
-    });
-    $toolbar.on('click', 'button', function() {
-        var $items = getItems();
-        var idx = $items.index(this);
-        if (idx >= 0) setActiveIndex(idx);
-    });
-    $toolbar.on('keydown', handleToolbarArrowNav);
-    if (!$toolbar.data('kbdA11yNativeKeyBound')) {
-        $toolbar.get(0).addEventListener('keydown', handleToolbarArrowNav, true);
-        $toolbar.data('kbdA11yNativeKeyBound', true);
-    }
-
-    var observer = new MutationObserver(function() { ensureOneTabStop(); });
-    observer.observe($toolbar[0], { subtree: true, attributes: true, attributeFilter: ['tabindex', 'class', 'disabled'] });
-    $toolbar.data('kbdA11yObserver', observer);
-    var fixTimer = setInterval(ensureOneTabStop, 1000);
-    $toolbar.data('kbdA11yTimer', fixTimer);
-    ensureOneTabStop();
-    $toolbar.data('kbdA11yBound', true);
-}
-
-function focusAdminEditorToolbar($el) {
-    if (!window.jQuery || !$el || !$el.length) return;
-    var $toolbar = $el.next('.note-editor').find('.note-toolbar').first();
-    if (!$toolbar.length) return;
-    var $items = $toolbar.find('.note-btn-group button').filter(function() {
-        var $b = jQuery(this);
-        if ($b.is(':hidden')) return false;
-        if ($b.prop('disabled')) return false;
-        if ($b.closest('.dropdown-menu').length) return false;
-        if ($b.attr('aria-hidden') === 'true') return false;
-        return true;
-    });
-    if (!$items.length) return;
-    $items.attr('tabindex', '-1');
-    $items.eq(0).attr('tabindex', '0').focus();
-}
-
-// initialize summernote on admin modal
-$(document).ready(function(){
-    try {
-        if ($.fn.summernote) {
-            // Initialize Summernote when modal is shown
-            $('#adminEditModal').on('shown.bs.modal', function() {
-                $('#a_personal_note').summernote({
-                    height: 120,
-                    toolbar: [
-                        ['style', ['bold', 'italic', 'underline', 'clear']],
-                        ['font', ['strikethrough']],
-                        ['para', ['ul', 'ol', 'paragraph']],
-                        ['insert', ['link']],
-                        ['view', ['codeview']]
-                    ],
-                    callbacks: {
-                        onInit: function() {
-                            var $editor = $('#a_personal_note');
-                            setTimeout(function() { enableAdminToolbarKeyboardA11y($editor); }, 0);
-                            setTimeout(function() { enableAdminToolbarKeyboardA11y($editor); }, 200);
-                        },
-                        onKeydown: function(e) {
-                            if (e && e.altKey && (e.key === 'F10' || e.keyCode === 121)) {
-                                e.preventDefault();
-                                focusAdminEditorToolbar($('#a_personal_note'));
-                            }
-                        }
-                    }
-                });
-                $('#a_notes').summernote({
-                    height: 120,
-                    toolbar: [
-                        ['style', ['bold', 'italic', 'underline', 'clear']],
-                        ['font', ['strikethrough']],
-                        ['para', ['ul', 'ol', 'paragraph']],
-                        ['insert', ['link']],
-                        ['view', ['codeview']]
-                    ],
-                    callbacks: {
-                        onInit: function() {
-                            var $editor = $('#a_notes');
-                            setTimeout(function() { enableAdminToolbarKeyboardA11y($editor); }, 0);
-                            setTimeout(function() { enableAdminToolbarKeyboardA11y($editor); }, 200);
-                        },
-                        onKeydown: function(e) {
-                            if (e && e.altKey && (e.key === 'F10' || e.keyCode === 121)) {
-                                e.preventDefault();
-                                focusAdminEditorToolbar($('#a_notes'));
-                            }
-                        }
-                    }
-                });
-                
-                // Initially disable editing
-                disableAdminEditing();
-            });
-            
-            // Destroy Summernote when modal is hidden
-            $('#adminEditModal').on('hide.bs.modal', function() {
-                try {
-                    $('#a_personal_note').summernote('destroy');
-                    $('#a_notes').summernote('destroy');
-                } catch(e) {
-                    // ignore errors
-                }
-            });
-        }
-    } catch(e) {
-        // Summernote initialization failed, will use plain textarea
-    }
-});
-
-// Enable editing mode for admin
-function enableAdminEditing() {
-    document.getElementById('a_status').disabled = false;
-    var modal = document.getElementById('adminEditModal');
-    if (modal) {
-        modal.classList.remove('admin-editor-readonly');
-    }
-    
-    // Wait a bit for Summernote to be initialized
-    setTimeout(function() {
-        if ($.fn.summernote && $('#a_notes').summernote('code') !== undefined) {
-            $('#a_notes').summernote('enable');
-            $('#a_personal_note').summernote('enable');
-            enableAdminToolbarKeyboardA11y($('#a_notes'));
-            enableAdminToolbarKeyboardA11y($('#a_personal_note'));
-        } else {
-            document.getElementById('a_notes').readOnly = false;
-            document.getElementById('a_personal_note').readOnly = false;
-        }
-    }, 200);
-}
-
-// Disable editing mode for admin
-function disableAdminEditing() {
-    document.getElementById('a_status').disabled = true;
-    var modal = document.getElementById('adminEditModal');
-    if (modal) {
-        modal.classList.add('admin-editor-readonly');
-    }
-    
-    // Wait a bit for Summernote to be initialized
-    setTimeout(function() {
-        if ($.fn.summernote && $('#a_notes').summernote('code') !== undefined) {
-            $('#a_notes').summernote('disable');
-            $('#a_personal_note').summernote('disable');
-        } else {
-            document.getElementById('a_notes').readOnly = true;
-            document.getElementById('a_personal_note').readOnly = true;
-        }
-    }, 200);
-}
-
-// Load production hours for admin modal
-function loadAdminProductionHours(userId, date) {
-    document.getElementById('adminHoursDate').textContent = '(' + date + ')';
-    
-    var url = '<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/api/user_hours.php?user_id=' + encodeURIComponent(userId) + '&date=' + encodeURIComponent(date);
-    
-    fetch(url)
-        .then(response => {
-            if (!response.ok) {
-                throw new Error('HTTP ' + response.status);
-            }
-            return response.json();
-        })
-        .then(data => {
-            if (data.success) {
-                var totalHours = parseFloat(data.total_hours || 0);
-                var utilizedHours = 0;
-                var benchHours = 0;
-                
-                document.getElementById('adminTotalHours').textContent = totalHours.toFixed(2) + ' hrs';
-                
-                if (data.entries && data.entries.length > 0) {
-                    var html = '<div class="list-group list-group-flush">';
-                    data.entries.forEach(function(entry) {
-                        var hours = parseFloat(entry.hours_spent || 0);
-                        var isUtilized = entry.is_utilized == 1 || entry.po_number !== 'OFF-PROD-001';
-                        
-                        if (isUtilized) {
-                            utilizedHours += hours;
-                        } else {
-                            benchHours += hours;
-                        }
-                        
-                        html += '<div class="list-group-item py-2">';
-                        html += '<div class="d-flex justify-content-between align-items-start">';
-                        html += '<div class="flex-grow-1">';
-                        html += '<h6 class="mb-1">' + escapeHtml(entry.project_title || 'Unknown Project') + '</h6>';
-                        if (entry.page_name) {
-                            html += '<p class="mb-1 text-muted small">Page: ' + escapeHtml(entry.page_name) + '</p>';
-                        }
-                        if (entry.comments) {
-                            html += '<p class="mb-0 small">' + escapeHtml(entry.comments) + '</p>';
-                        }
-                        html += '</div>';
-                        html += '<div class="text-end">';
-                        html += '<span class="badge ' + (isUtilized ? 'bg-success' : 'bg-secondary') + '">' + hours.toFixed(2) + 'h</span>';
-                        html += '</div>';
-                        html += '</div>';
-                        html += '</div>';
-                    });
-                    html += '</div>';
-                    document.getElementById('adminHoursEntries').innerHTML = html;
-                } else {
-                    document.getElementById('adminHoursEntries').innerHTML = '<p class="text-muted text-center">No time logged for this date</p>';
-                }
-                
-                // Update progress bars
-                document.getElementById('adminUtilizedHours').textContent = utilizedHours.toFixed(2);
-                document.getElementById('adminBenchHours').textContent = benchHours.toFixed(2);
-                
-                if (totalHours > 0) {
-                    var utilizedPercent = (utilizedHours / totalHours) * 100;
-                    var benchPercent = (benchHours / totalHours) * 100;
-                    document.getElementById('adminUtilizedProgress').style.width = utilizedPercent + '%';
-                    document.getElementById('adminBenchProgress').style.width = benchPercent + '%';
-                }
-            } else {
-                console.error('Admin API returned error:', data.error);
-                document.getElementById('adminHoursEntries').innerHTML = '<p class="text-danger text-center">Failed to load production hours: ' + (data.error || 'Unknown error') + '</p>';
-            }
-        })
-        .catch(error => {
-            console.error('Admin fetch error:', error);
-            document.getElementById('adminHoursEntries').innerHTML = '<p class="text-danger text-center">Error loading production hours: ' + error.message + '</p>';
-        });
-}
-
-function openAdminEditModal(userId, date, role, status, notes, personal_note) {
-    // Reset modal state
-    document.getElementById('a_user_id').value = userId;
-    document.getElementById('a_date').value = date;
-    document.getElementById('a_status').value = status || 'available';
-    
-    // Clear dynamic buttons
-    var modalFooter = document.querySelector('#adminEditModal .modal-footer');
-    var dynamicButtons = modalFooter.querySelectorAll('.dynamic-save-btn');
-    dynamicButtons.forEach(btn => btn.remove());
-    
-    // Show edit button and ensure it's enabled
-    var editBtn = document.getElementById('adminEditBtn');
-    editBtn.style.display = 'inline-block';
-    editBtn.disabled = false;
-    
-    // Load production hours
-    loadAdminProductionHours(userId, date);
-    
-    var modalEl = document.getElementById('adminEditModal');
-    if (!modalEl) {
-        showToast('Modal not found', 'warning');
-        return;
-    }
-    
-    var m = new bootstrap.Modal(modalEl);
-    m.show();
-    
-    // Load user data after modal is shown and initially disable editing
-    setTimeout(function() {
-        loadAdminUserData(userId, date);
-        // Start in readonly mode as requested
-        disableAdminEditing();
-    }, 300);
-}
-
-// Load user data for admin modal
-function loadAdminUserData(userId, date) {
-    var url = '<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/my_daily_status.php?action=get_personal_note&date=' + encodeURIComponent(date) + '&user_id=' + encodeURIComponent(userId);
-    
-    fetch(url)
-        .then(response => {
-            if (!response.ok) {
-                throw new Error('HTTP ' + response.status + ': ' + response.statusText);
-            }
-            
-            // Check if response is JSON
-            const contentType = response.headers.get('content-type');
-            if (!contentType || !contentType.includes('application/json')) {
-                return response.text().then(text => {
-                    throw new Error('Server returned HTML instead of JSON. Response: ' + text.substring(0, 200));
-                });
-            }
-            
-            return response.json();
-        })
-        .then(data => {
-            if (data.success) {
-                document.getElementById('a_status').value = data.status || 'not_updated';
-                
-                if ($.fn.summernote) {
-                    try {
-                        $('#a_notes').summernote('code', data.notes || '');
-                        $('#a_personal_note').summernote('code', data.personal_note || '');
-                    } catch(e) {
-                        document.getElementById('a_notes').value = data.notes || '';
-                        document.getElementById('a_personal_note').value = data.personal_note || '';
-                    }
-                } else {
-                    document.getElementById('a_notes').value = data.notes || '';
-                    document.getElementById('a_personal_note').value = data.personal_note || '';
-                }
-            } else {
-                showToast('Failed to load user data: ' + (data.error || 'Unknown error'), 'danger');
-            }
-        })
-        .catch(error => {
-            showToast('Failed to load user data: ' + error.message, 'danger');
-        });
-}
-
-// Handle admin edit button click
-document.addEventListener('click', function(e) {
-    if (e.target && e.target.id === 'adminEditBtn') {
-        enableAdminEditing();
-        
-        // Hide edit button and show save button
-        e.target.style.display = 'none';
-        
-        var modalFooter = document.querySelector('#adminEditModal .modal-footer');
-        var cancelBtn = modalFooter.querySelector('.btn-secondary');
-        
-        var saveBtn = document.createElement('button');
-        saveBtn.type = 'button'; // Changed from submit to button
-        saveBtn.className = 'btn btn-success dynamic-save-btn';
-        saveBtn.textContent = 'Save Changes';
-        saveBtn.onclick = function() {
-            // Manually trigger form submission
-            $('#adminCalendarEditForm').submit();
-        };
-        modalFooter.insertBefore(saveBtn, cancelBtn);
-    }
-});
-
-// Open admin edit from userHoursModal
-document.addEventListener('click', function(e){
-    var t = e.target;
-    if (t && t.matches && t.matches('.open-admin-edit')) {
-        var uid = t.getAttribute('data-user-id');
-        var date = t.getAttribute('data-date');
-        if (!uid || !date) {
-            return;
-        }
-        openAdminEditModal(uid, date, '', '', '', '');
-    }
-});
-
-// Submit admin edit form via AJAX
-$(document).on('submit', '#adminCalendarEditForm', function(e){
-    e.preventDefault();
-    
-    var userId = document.getElementById('a_user_id').value;
-    var date = document.getElementById('a_date').value;
-    var status = document.getElementById('a_status').value;
-    
-    var notes = '';
-    var personal = '';
-    
-    if ($.fn.summernote) {
-        try {
-            notes = $('#a_notes').summernote('code');
-            personal = $('#a_personal_note').summernote('code');
-        } catch(e) {
-            notes = document.getElementById('a_notes').value;
-            personal = document.getElementById('a_personal_note').value;
-        }
-    } else {
-        notes = document.getElementById('a_notes').value;
-        personal = document.getElementById('a_personal_note').value;
-    }
-
-    var data = {
-        update_status: 1,
-        user_id: userId,
-        status: status,
-        notes: notes,
-        personal_note: personal
-    };
-
-    var url = '<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/my_daily_status.php?date=' + encodeURIComponent(date);
-
-    $.ajax({
-        url: url,
-        method: 'POST',
-        data: data,
-        headers: { 'X-Requested-With': 'XMLHttpRequest' },
-        success: function(resp){
-            try { 
-                var j = typeof resp === 'object' ? resp : JSON.parse(resp); 
-            } catch(e){ 
-                showToast('Unexpected response from server', 'danger'); 
-                return; 
-            }
-            if (j.success) {
-                if (window.calendar && typeof window.calendar.refetchEvents === 'function') {
-                    window.calendar.refetchEvents();
-                }
-                var m = bootstrap.Modal.getInstance(document.getElementById('adminEditModal'));
-                if (m) m.hide();
-                showToast('Status updated successfully', 'success');
-            } else {
-                showToast('Failed to update: ' + (j.error || 'Unknown error'), 'danger');
-            }
-        },
-        error: function(xhr, status, error){ 
-            showToast('Request failed: ' + error + ' (Status: ' + xhr.status + ')', 'danger'); 
-        }
-    });
-});
-</script>
+<!-- JS moved to assets/js/admin-calendar.js -->
 
 <!-- Consolidated Users Modal -->
 <div class="modal fade" id="consolidatedModal" tabindex="-1">
@@ -2039,126 +1016,3 @@ $(document).on('submit', '#adminCalendarEditForm', function(e){
         </div>
     </div>
 </div>
-
-<script>
-function showConsolidatedModal(userList, date, statusType) {
-    var statusLabel = availabilityStatusLabel(statusType);
-    var modalTitle = statusLabel + ' Users - ' + date + ' (' + userList.length + ' users)';
-    
-    document.getElementById('consolidatedModalTitle').textContent = modalTitle;
-    
-    var html = '<div class="row">';
-    userList.forEach(function(user, index) {
-        var badgeClass = availabilityStatusBadgeClass(statusType, false);
-        if (user.hours > 0 && user.hours < 8) badgeClass = 'warning';
-        
-        html += '<div class="col-md-6 mb-3">';
-        html += '<div class="card h-100">';
-        html += '<div class="card-body p-3">';
-        html += '<div class="d-flex justify-content-between align-items-start mb-2">';
-        html += '<h6 class="card-title mb-0">' + escapeHtml(user.name) + '</h6>';
-        html += '<span class="badge bg-' + badgeClass + '">' + user.hours.toFixed(1) + 'h</span>';
-        html += '</div>';
-        html += '<p class="card-text small text-muted mb-2">Status: ' + ucfirst(user.status.replace('_', ' ')) + '</p>';
-        if (user.notes) {
-            html += '<p class="card-text small">' + escapeHtml(user.notes) + '</p>';
-        }
-        html += '<button class="btn btn-sm btn-primary" onclick="openAdminEditModal(' + user.id + ', \'' + date + '\', \'\', \'' + user.status + '\', \'' + escapeHtml(user.notes) + '\', \'\')">';
-        html += '<i class="fas fa-edit"></i> Edit';
-        html += '</button>';
-        html += '</div>';
-        html += '</div>';
-        html += '</div>';
-    });
-    html += '</div>';
-    
-    document.getElementById('consolidatedContent').innerHTML = html;
-    
-    var modal = new bootstrap.Modal(document.getElementById('consolidatedModal'));
-    modal.show();
-}
-
-// Show custom modal for edit requests
-function showEditRequestModal(data) {
-    try {
-        document.getElementById('ermUser').textContent = data.userName || '';
-        document.getElementById('ermDate').textContent = data.date || '';
-        document.getElementById('ermReason').textContent = data.reason || 'No reason provided';
-
-        var modalEl = document.getElementById('editRequestModal');
-        if (!modalEl) return;
-        var m = new bootstrap.Modal(modalEl);
-        m.show();
-    } catch (e) {
-        console.error('Failed to open edit request modal', e);
-        showToast('Edit Request from: ' + (data.userName || '') + '\nReason: ' + (data.reason || ''), 'info');
-    }
-}
-
-function showConsolidatedModal(userList, date, statusType) {
-    var statusLabel = availabilityStatusLabel(statusType);
-    var modalTitle = statusLabel + ' Users - ' + date + ' (' + userList.length + ' users)';
-    
-    document.getElementById('consolidatedModalTitle').textContent = modalTitle;
-    
-    var html = '<div class="row g-3">';
-    userList.forEach(function(user, index) {
-        var badgeClass = availabilityStatusBadgeClass(statusType, true);
-        if (user.hours > 0 && user.hours < 8) badgeClass = 'bg-warning text-dark';
-        
-        html += '<div class="col-md-6">';
-        html += '<div class="card h-100 shadow-sm border">';
-        html += '<div class="card-body p-3">';
-        html += '<div class="d-flex justify-content-between align-items-start mb-2">';
-        html += '<h6 class="card-title mb-0 fw-bold text-truncate" style="max-width: 70%;" title="' + escapeHtml(user.name) + '">' + escapeHtml(user.name) + '</h6>';
-        html += '<span class="badge ' + badgeClass + '">' + user.hours.toFixed(1) + 'h</span>';
-        html += '</div>';
-        
-        var statusText = ucfirst(user.status.replace('_', ' '));
-        html += '<div class="mb-2">';
-        html += '<span class="badge bg-light text-dark border me-1">' + statusText + '</span>';
-        html += '</div>';
-        
-        if (user.notes) {
-            html += '<div class="p-2 bg-light rounded small text-muted mb-3 text-truncate">' + escapeHtml(user.notes) + '</div>';
-        } else {
-            html += '<div class="mb-3"></div>';
-        }
-        
-        html += '<button class="btn btn-sm btn-outline-primary w-100" onclick="openAdminEditModal(' + user.id + ', \'' + date + '\', \'\', \'' + user.status + '\', \'' + escapeHtml(user.notes) + '\', \'\')">';
-        html += '<i class="fas fa-edit me-1"></i> Edit Status';
-        html += '</button>';
-        html += '</div>';
-        html += '</div>';
-        html += '</div>';
-    });
-    html += '</div>';
-    
-    document.getElementById('consolidatedContent').innerHTML = html;
-    
-    var modal = new bootstrap.Modal(document.getElementById('consolidatedModal'));
-    modal.show();
-}
-
-function ucfirst(str) {
-    if (!str) return '';
-    return str.charAt(0).toUpperCase() + str.slice(1);
-}
-
-</script>
-
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
-
-<script>
-function escapeHtml(str) {
-    if (!str) return '';
-    return String(str).replace(/[&"'<>]/g, function (s) {
-        return ({'&':'&amp;','"':'&quot;',"'":'&#39;','<':'&lt;','>':'&gt;'})[s];
-    });
-}
-
-function fetchUserHoursAndShow(userId, date, role) {
-    // For admin calendar, open the admin edit modal with same structure as user modal
-    openAdminEditModal(userId, date, role || '', '', '', '');
-}
-</script>

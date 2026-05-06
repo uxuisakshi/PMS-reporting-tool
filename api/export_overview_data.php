@@ -2,10 +2,12 @@
 /**
  * Returns all data needed to populate the Overview sheet of the client Excel report.
  */
+ob_start();
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../config/constants.php';
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/functions.php';
+ob_end_clean();
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -24,6 +26,14 @@ if (!$projectId) {
 }
 
 $db = Database::getInstance();
+
+// IDOR: verify user has access to this project
+require_once __DIR__ . '/../includes/project_permissions.php';
+if (!hasProjectAccess($db, $_SESSION['user_id'], $projectId)) {
+    http_response_code(403);
+    echo json_encode(['error' => 'Access denied']);
+    exit;
+}
 
 // ── 1. Project info ───────────────────────────────────────────────────────────
 $projStmt = $db->prepare("SELECT p.title, p.project_type, c.name as client_name FROM projects p LEFT JOIN clients c ON p.client_id = c.id WHERE p.id = ?");
@@ -49,7 +59,6 @@ $teamMembers = $teamStmt->fetchAll(PDO::FETCH_ASSOC);
 // Role label map
 $roleLabels = [
     'admin'        => 'Admin',
-    'super_admin'  => 'Super Admin',
     'project_lead' => 'Project Lead',
     'qa'           => 'QA',
     'at_tester'    => 'AT Tester',

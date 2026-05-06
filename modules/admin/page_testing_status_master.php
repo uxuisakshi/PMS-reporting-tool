@@ -10,6 +10,11 @@ $baseDir = getBaseDir();
 
 // Handle status updates
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error'] = 'Invalid request. Please try again.';
+        header('Location: page_testing_status_master.php');
+        exit;
+    }
     if (isset($_POST['update_status'])) {
         $statusId = (int)$_POST['status_id'];
         $statusLabel = sanitizeInput($_POST['status_label']);
@@ -160,6 +165,7 @@ include __DIR__ . '/../../includes/header.php';
     <div class="modal-dialog">
         <div class="modal-content">
             <form method="POST">
+                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                 <div class="modal-header">
                     <h5 class="modal-title">Add New Testing Status</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
@@ -210,6 +216,7 @@ include __DIR__ . '/../../includes/header.php';
     <div class="modal-dialog">
         <div class="modal-content">
             <form method="POST">
+                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                 <input type="hidden" name="status_id" id="edit_status_id">
                 <div class="modal-header">
                     <h5 class="modal-title">Edit Testing Status</h5>
@@ -260,18 +267,6 @@ include __DIR__ . '/../../includes/header.php';
     </div>
 </div>
 
-<script>
-function editStatus(status) {
-    document.getElementById('edit_status_id').value = status.id;
-    document.getElementById('edit_status_key').value = status.status_key;
-    document.getElementById('edit_status_label').value = status.status_label;
-    document.getElementById('edit_status_description').value = status.status_description || '';
-    document.getElementById('edit_badge_color').value = status.badge_color;
-    document.getElementById('edit_display_order').value = status.display_order;
-    document.getElementById('edit_is_active').checked = status.is_active == 1;
-    
-    new bootstrap.Modal(document.getElementById('editStatusModal')).show();
-}
-</script>
+<script src="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/assets/js/admin-page-testing-status.js"></script>
 
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<?php include __DIR__ . '/../../includes/footer.php'; 

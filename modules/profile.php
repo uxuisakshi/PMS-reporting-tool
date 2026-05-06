@@ -10,8 +10,20 @@ if (!isset($_SESSION['user_id'])) {
     exit;
 }
 
-// Get user ID from URL parameter
-$userId = isset($_GET['id']) ? intval($_GET['id']) : $_SESSION['user_id'];
+// IDOR fix: non-admin users can only view their own profile
+$requestedId = isset($_GET['id']) ? intval($_GET['id']) : (int)$_SESSION['user_id'];
+$currentSessionId = (int)$_SESSION['user_id'];
+$sessionRole = $_SESSION['role'] ?? '';
+$isAdminRole = in_array($sessionRole, ['admin'], true);
+
+// Only admins can view other users' profiles
+if (!$isAdminRole && $requestedId !== $currentSessionId) {
+    // Silently redirect to own profile instead of exposing the restriction
+    header("Location: " . $baseDir . "/modules/profile.php");
+    exit;
+}
+
+$userId = $requestedId ?: $currentSessionId;
 
 if (!$userId) {
     header("Location: " . $baseDir . "/index.php");
@@ -48,6 +60,12 @@ function ensureUsernameHistoryTable($db) {
 
 // Allow users to update only their own username
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_username'])) {
+    // CSRF protection
+    if (!isset($_POST['csrf_token']) || !verifyCsrfToken($_POST['csrf_token'])) {
+        $_SESSION['error'] = "Invalid security token. Please try again.";
+        header("Location: " . $baseDir . "/modules/profile.php?id=" . $userId);
+        exit;
+    }
     $currentUserId = (int)($_SESSION['user_id'] ?? 0);
     if ($currentUserId !== (int)$userId) {
         $_SESSION['error'] = "You can only update your own username.";
@@ -169,8 +187,14 @@ try {
     die("Error loading user: " . $e->getMessage());
 }
 
+// Pagination parameters for projects
+$projectsPage = max(1, intval($_GET['projects_page'] ?? 1));
+$projectsPerPage = 10;
+$projectsOffset = ($projectsPage - 1) * $projectsPerPage;
+
 // Get user's assigned projects with robust multi-source lookup
 $projects = [];
+$totalProjects = 0;
 try {
     $projectRoleMap = [];
     $rolePriority = [
@@ -238,6 +262,8 @@ try {
 
     if (!empty($projectRoleMap)) {
         $projectIds = array_keys($projectRoleMap);
+        $totalProjects = count($projectIds);
+        
         $placeholders = implode(',', array_fill(0, count($projectIds), '?'));
         $projStmt = $db->prepare("
             SELECT p.id, p.title, p.status, p.priority, p.created_at,
@@ -245,6 +271,7 @@ try {
             FROM projects p
             WHERE p.id IN ($placeholders)
             ORDER BY p.created_at DESC
+            LIMIT $projectsPerPage OFFSET $projectsOffset
         ");
         $projStmt->execute($projectIds);
         $projects = $projStmt->fetchAll(PDO::FETCH_ASSOC);
@@ -254,12 +281,14 @@ try {
         unset($p);
     }
 
-    $user['total_projects'] = count($projects);
+    $user['total_projects'] = $totalProjects;
     $completedCount = 0;
-    foreach ($projects as $p) {
-        if (($p['status'] ?? '') === 'completed') {
-            $completedCount++;
-        }
+    if (!empty($projectRoleMap)) {
+        $projectIds = array_keys($projectRoleMap);
+        $placeholders = implode(',', array_fill(0, count($projectIds), '?'));
+        $completedStmt = $db->prepare("SELECT COUNT(*) FROM projects WHERE id IN ($placeholders) AND status = 'completed'");
+        $completedStmt->execute($projectIds);
+        $completedCount = $completedStmt->fetchColumn();
     }
     $user['completed_projects'] = $completedCount;
 } catch (Exception $e) {
@@ -267,8 +296,31 @@ try {
     $projects = [];
 }
 
+// Pagination parameters for tasks
+$tasksPage = max(1, intval($_GET['tasks_page'] ?? 1));
+$tasksPerPage = 10;
+$tasksOffset = ($tasksPage - 1) * $tasksPerPage;
+
 // Get assigned task list (project pages/environment tasks)
+$totalTasks = 0;
 try {
+    // First get total count
+    $countStmt = $db->prepare("
+        SELECT COUNT(DISTINCT pp.id)
+        FROM project_pages pp
+        JOIN projects p ON p.id = pp.project_id
+        WHERE
+            pp.at_tester_id = ? OR pp.ft_tester_id = ? OR pp.qa_id = ?
+            OR EXISTS (
+                SELECT 1
+                FROM page_environments pe
+                WHERE pe.page_id = pp.id
+                  AND (pe.at_tester_id = ? OR pe.ft_tester_id = ? OR pe.qa_id = ?)
+            )
+    ");
+    $countStmt->execute([$userId, $userId, $userId, $userId, $userId, $userId]);
+    $totalTasks = $countStmt->fetchColumn();
+
     $taskStmt = $db->prepare("
         SELECT
             pp.id AS page_id,
@@ -288,7 +340,7 @@ try {
             )
         GROUP BY pp.id, pp.page_name, pp.status, p.id, p.title
         ORDER BY p.created_at DESC, pp.id DESC
-        LIMIT 30
+        LIMIT $tasksPerPage OFFSET $tasksOffset
     ");
     $taskStmt->execute([$userId, $userId, $userId, $userId, $userId, $userId]);
     $assignedTasks = $taskStmt->fetchAll();
@@ -297,8 +349,22 @@ try {
     $assignedTasks = [];
 }
 
+// Pagination parameters for activities
+$activitiesPage = max(1, intval($_GET['activities_page'] ?? 1));
+$activitiesPerPage = 10;
+$activitiesOffset = ($activitiesPage - 1) * $activitiesPerPage;
+
 // Get user's recent activity (include activity_log and project_time_logs)
+$totalActivities = 0;
 try {
+    // First get total count
+    $countSql = "(SELECT COUNT(*) FROM activity_log al WHERE al.user_id = ?)
+                 + 
+                 (SELECT COUNT(*) FROM project_time_logs ptl WHERE ptl.user_id = ?)";
+    $countStmt = $db->prepare("SELECT ($countSql) as total");
+    $countStmt->execute([$userId, $userId]);
+    $totalActivities = $countStmt->fetchColumn();
+
     $sql = "(SELECT al.id, al.user_id, al.action, al.entity_type, al.entity_id, al.details, al.ip_address, al.created_at, p.title as project_title, pp.page_name, COALESCE(p.id, pp.project_id) as project_ref_id
         FROM activity_log al
         LEFT JOIN projects p ON al.entity_id = p.id AND al.entity_type = 'project'
@@ -311,7 +377,7 @@ try {
         LEFT JOIN project_pages pp2 ON ptl.page_id = pp2.id
         WHERE ptl.user_id = ?)
         ORDER BY created_at DESC
-        LIMIT 10";
+        LIMIT $activitiesPerPage OFFSET $activitiesOffset";
     $stmt = $db->prepare($sql);
     $stmt->execute([$userId, $userId]);
     $activities = $stmt->fetchAll();
@@ -320,7 +386,7 @@ try {
     $activities = [];
 }
 
-$canViewUsernameHistory = in_array((string)($_SESSION['role'] ?? ''), ['admin', 'super_admin'], true);
+$canViewUsernameHistory = in_array((string)($_SESSION['role'] ?? ''), ['admin'], true);
 $usernameHistory = [];
 if ($canViewUsernameHistory) {
     ensureUsernameHistoryTable($db);
@@ -339,6 +405,8 @@ if ($canViewUsernameHistory) {
         $usernameHistory = [];
     }
 }
+
+$isClientViewer = isset($_SESSION['role'], $_SESSION['user_id']) && $_SESSION['role'] === 'client' && (int)$_SESSION['user_id'] === $userId;
 
 $flashSuccess = isset($_SESSION['success']) ? (string)$_SESSION['success'] : '';
 $flashError = isset($_SESSION['error']) ? (string)$_SESSION['error'] : '';
@@ -360,18 +428,19 @@ include __DIR__ . '/../includes/header.php';
         <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
     </div>
     <?php endif; ?>
-    <div class="row">
-        <!-- User Profile Card -->
-        <div class="col-md-4">
-            <div class="card">
-                <div class="card-body text-center">
-                    <div class="mb-3">
+    <div id="profilePage" class="container-fluid py-2">
+        <div class="row">
+            <!-- User Profile Card -->
+            <div class="<?php echo $isClientViewer ? 'col-12' : 'col-md-4'; ?>">
+                <div class="card">
+                    <div class="card-body text-center">
+                        <div class="mb-2">
                         <i class="fas fa-user-circle fa-5x text-primary"></i>
                     </div>
                     <h4><?php echo htmlspecialchars($user['full_name']); ?></h4>
                     <p class="text-muted">@<?php echo htmlspecialchars($user['username']); ?></p>
                     <span class="badge bg-<?php
-                        echo $user['role'] === 'super_admin' ? 'danger' :
+                        echo $user['role'] === 'admin' ? 'danger' :
                              ($user['role'] === 'admin' ? 'warning' :
                              ($user['role'] === 'project_lead' ? 'info' :
                              ($user['role'] === 'qa' ? 'success' : 'primary')));
@@ -379,10 +448,11 @@ include __DIR__ . '/../includes/header.php';
                         <?php echo ucfirst(str_replace('_', ' ', $user['role'])); ?>
                     </span>
                     <hr>
+                    <?php if (!$isClientViewer): ?>
                     <div class="row text-center">
                         <div class="col-4">
                             <h5 class="text-primary"><?php echo $user['total_projects']; ?></h5>
-                            <small>Projects</small>
+                            <small>Digital Assets</small>
                         </div>
                         <div class="col-4">
                             <h5 class="text-success"><?php echo $user['completed_projects']; ?></h5>
@@ -393,7 +463,10 @@ include __DIR__ . '/../includes/header.php';
                             <small>Pages</small>
                         </div>
                     </div>
-                    <?php if ($user['role'] === 'at_tester' || $user['role'] === 'ft_tester'): ?>
+                    <?php else: ?>
+                    <p class="text-muted small mb-0">This is your client profile. Use the menu to access your digital assets, issue summary, and preferences.</p>
+                    <?php endif; ?>
+                    <?php if (!$isClientViewer && ($user['role'] === 'at_tester' || $user['role'] === 'ft_tester')): ?>
                     <hr>
                     <div class="text-center">
                         <h6>Total Hours Spent</h6>
@@ -404,7 +477,7 @@ include __DIR__ . '/../includes/header.php';
             </div>
 
             <!-- Contact Information -->
-            <div class="card mt-3">
+            <div class="card mt-2">
                 <div class="card-header">
                     <h5 class="mb-0"><i class="fas fa-address-card"></i> Contact Information</h5>
                 </div>
@@ -413,6 +486,7 @@ include __DIR__ . '/../includes/header.php';
                     <?php if ((int)$userId === (int)($_SESSION['user_id'] ?? 0)): ?>
                     <form method="POST" action="<?php echo $baseDir; ?>/modules/profile.php?id=<?php echo (int)$userId; ?>" class="mb-2">
                         <input type="hidden" name="update_username" value="1">
+                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars(generateCsrfToken(), ENT_QUOTES, 'UTF-8'); ?>">
                         <label for="profileUsername" class="form-label mb-1"><strong>Username:</strong></label>
                         <div class="input-group input-group-sm">
                             <span class="input-group-text">@</span>
@@ -423,7 +497,7 @@ include __DIR__ . '/../includes/header.php';
                                    value="<?php echo htmlspecialchars($user['username']); ?>"
                                    minlength="3"
                                    maxlength="50"
-                                   pattern="[A-Za-z0-9._-]+"
+                                   pattern="[A-Za-z0-9._\-]+"
                                    required>
                             <button type="submit" class="btn btn-primary">Update</button>
                         </div>
@@ -432,7 +506,6 @@ include __DIR__ . '/../includes/header.php';
                     <?php else: ?>
                     <p><strong>Username:</strong> @<?php echo htmlspecialchars($user['username']); ?></p>
                     <?php endif; ?>
-                    <p><strong>Member Since:</strong> <?php echo date('M d, Y', strtotime($user['created_at'])); ?></p>
                     <p><strong>Status:</strong>
                         <span class="badge bg-<?php echo $user['is_active'] ? 'success' : 'danger'; ?>">
                             <?php echo $user['is_active'] ? 'Active' : 'Inactive'; ?>
@@ -440,9 +513,63 @@ include __DIR__ . '/../includes/header.php';
                     </p>
                 </div>
             </div>
+
+            <!-- Two-Factor Authentication Settings -->
+            <?php if ((int)$userId === (int)($_SESSION['user_id'] ?? 0)): ?>
+            <div class="card mt-2 border-<?php echo !empty($user['two_factor_enabled']) ? 'success' : 'warning'; ?>">
+                <div class="card-header bg-<?php echo !empty($user['two_factor_enabled']) ? 'success text-white' : 'light'; ?>">
+                    <h5 class="mb-0">
+                        <i class="fas fa-shield-alt"></i> Two-Factor Authentication (2FA)
+                        <?php if (!empty($user['two_factor_enabled'])): ?>
+                            <span class="badge bg-white text-success float-end"><i class="fas fa-check-circle"></i> Enabled</span>
+                        <?php else: ?>
+                            <span class="badge bg-warning text-dark float-end"><i class="fas fa-exclamation-triangle"></i> Disabled</span>
+                        <?php endif; ?>
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <?php if (empty($user['two_factor_enabled'])): ?>
+                        <p class="text-muted small">Enhance your account security by enabling 2FA. You will need an authenticator app like Google Authenticator.</p>
+                        <button class="btn btn-warning btn-sm" onclick="start2FASetup()">
+                            <i class="fas fa-qrcode"></i> Setup 2FA
+                        </button>
+                    <?php else: ?>
+                        <p class="text-success small">Your account is secured with Two-Factor Authentication.</p>
+                        <button class="btn btn-outline-danger btn-sm" onclick="disable2FA()">
+                            <i class="fas fa-times-circle"></i> Disable 2FA
+                        </button>
+                    <?php endif; ?>
+                </div>
+            </div>
+            
+            <!-- 2FA Setup Modal -->
+            <div class="modal fade" id="modal2FASetup" tabindex="-1" aria-hidden="true">
+                <div class="modal-dialog">
+                    <div class="modal-content">
+                        <div class="modal-header bg-warning">
+                            <h5 class="modal-title"><i class="fas fa-shield-alt"></i> Setup Two-Factor Authentication</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                        </div>
+                        <div class="modal-body text-center">
+                            <p>1. Scan this QR code with your Google Authenticator app.</p>
+                            <div class="mb-3 p-3 bg-light border rounded" id="qrCodeContainer">
+                                <div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div>
+                            </div>
+                            <p class="small text-muted">Or enter this secret manually: <code id="secretText" class="user-select-all fw-bold fs-6"></code></p>
+                            <hr>
+                            <p>2. Enter the 6-digit code from the app to verify.</p>
+                            <div class="input-group mb-3 px-4">
+                                <input type="text" id="verificationCode" class="form-control text-center fs-4 tracking-widest" placeholder="000000" maxlength="6" autocomplete="off" oninput="this.value = this.value.replace(/[^0-9]/g, '');">
+                                <button class="btn btn-success" type="button" id="btnVerify2FA" onclick="verifyAndEnable2FA()">Verify & Enable</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <?php endif; ?>
             <!-- Admin: View Production Hours By Day -->
-            <?php if (isset($_SESSION['role']) && in_array($_SESSION['role'], ['admin','super_admin'])): ?>
-            <div class="card mt-3">
+            <?php if (isset($_SESSION['role']) && in_array($_SESSION['role'], ['admin'])): ?>
+            <div class="card mt-2">
                 <div class="card-header">
                     <h5 class="mb-0"><i class="fas fa-clock"></i> Production Hours (By Day)</h5>
                 </div>
@@ -454,7 +581,7 @@ include __DIR__ . '/../includes/header.php';
                         <div class="col-auto">
                             <button id="ph_fetch" class="btn btn-primary">View</button>
                         </div>
-                        <div class="col-12 mt-3">
+                        <div class="col-12 mt-2">
                             <div id="ph_result">
                                 <p class="text-muted">Select a date and click <strong>View</strong> to load production hours.</p>
                             </div>
@@ -466,21 +593,28 @@ include __DIR__ . '/../includes/header.php';
         </div>
 
         <!-- User Details -->
+        <?php if (!$isClientViewer): ?>
         <div class="col-md-8">
-            <!-- Recent Projects -->
-            <div class="card">
-                <div class="card-header">
-                    <h5 class="mb-0"><i class="fas fa-project-diagram"></i> Projects (<?php echo count($projects); ?>)</h5>
+            <?php if (!$isClientViewer): ?>
+            <!-- Recent Digital Assets -->
+            <div class="card" id="digital-assets">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0"><i class="fas fa-folder-open"></i> Digital Assets (<?php echo $totalProjects; ?>)</h5>
+                    <?php if ($totalProjects > $projectsPerPage): ?>
+                    <small class="text-muted">
+                        Showing <?php echo min($projectsOffset + 1, $totalProjects); ?>-<?php echo min($projectsOffset + $projectsPerPage, $totalProjects); ?> of <?php echo $totalProjects; ?>
+                    </small>
+                    <?php endif; ?>
                 </div>
                 <div class="card-body">
                     <?php if (empty($projects)): ?>
-                        <p class="text-muted">No projects found.</p>
+                        <p class="text-muted">No digital assets found.</p>
                     <?php else: ?>
                         <div class="table-responsive">
                             <table class="table table-hover">
                                 <thead>
                                     <tr>
-                                        <th>Project</th>
+                                        <th>Digital Asset</th>
                                         <th>Role</th>
                                         <th>Status</th>
                                         <th>Priority</th>
@@ -531,9 +665,47 @@ include __DIR__ . '/../includes/header.php';
                                 </tbody>
                             </table>
                         </div>
+                        
+                        <?php if ($totalProjects > $projectsPerPage): ?>
+                        <!-- Projects Pagination -->
+                        <nav aria-label="Digital Assets pagination" class="mt-3">
+                            <ul class="pagination pagination-sm justify-content-center">
+                                <?php
+                                $totalProjectsPages = ceil($totalProjects / $projectsPerPage);
+                                $currentUrl = $_SERVER['REQUEST_URI'];
+                                $currentUrl = preg_replace('/[&?]projects_page=\d+/', '', $currentUrl);
+                                $separator = strpos($currentUrl, '?') !== false ? '&' : '?';
+                                
+                                // Previous button
+                                if ($projectsPage > 1): ?>
+                                    <li class="page-item">
+                                        <a class="page-link" href="<?php echo $currentUrl . $separator . 'projects_page=' . ($projectsPage - 1); ?>#digital-assets">Previous</a>
+                                    </li>
+                                <?php endif;
+                                
+                                // Page numbers
+                                $startPage = max(1, $projectsPage - 2);
+                                $endPage = min($totalProjectsPages, $projectsPage + 2);
+                                
+                                for ($i = $startPage; $i <= $endPage; $i++): ?>
+                                    <li class="page-item <?php echo $i === $projectsPage ? 'active' : ''; ?>">
+                                        <a class="page-link" href="<?php echo $currentUrl . $separator . 'projects_page=' . $i; ?>#digital-assets"><?php echo $i; ?></a>
+                                    </li>
+                                <?php endfor;
+                                
+                                // Next button
+                                if ($projectsPage < $totalProjectsPages): ?>
+                                    <li class="page-item">
+                                        <a class="page-link" href="<?php echo $currentUrl . $separator . 'projects_page=' . ($projectsPage + 1); ?>#digital-assets">Next</a>
+                                    </li>
+                                <?php endif; ?>
+                            </ul>
+                        </nav>
+                        <?php endif; ?>
                     <?php endif; ?>
                 </div>
             </div>
+            <?php endif; ?>
 
             <?php if ($canViewUsernameHistory): ?>
             <div class="card mt-3">
@@ -571,10 +743,16 @@ include __DIR__ . '/../includes/header.php';
             </div>
             <?php endif; ?>
 
+            <?php if (!$isClientViewer): ?>
             <!-- Assigned Tasks -->
-            <div class="card mt-3">
-                <div class="card-header">
-                    <h5 class="mb-0"><i class="fas fa-tasks"></i> Assigned Tasks (<?php echo count($assignedTasks); ?>)</h5>
+            <div class="card mt-3" id="assigned-tasks">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0"><i class="fas fa-tasks"></i> Assigned Tasks (<?php echo $totalTasks; ?>)</h5>
+                    <?php if ($totalTasks > $tasksPerPage): ?>
+                    <small class="text-muted">
+                        Showing <?php echo min($tasksOffset + 1, $totalTasks); ?>-<?php echo min($tasksOffset + $tasksPerPage, $totalTasks); ?> of <?php echo $totalTasks; ?>
+                    </small>
+                    <?php endif; ?>
                 </div>
                 <div class="card-body">
                     <?php if (empty($assignedTasks)): ?>
@@ -584,7 +762,7 @@ include __DIR__ . '/../includes/header.php';
                             <table class="table table-hover">
                                 <thead>
                                     <tr>
-                                        <th>Project</th>
+                                        <th>Digital Asset</th>
                                         <th>Task/Page</th>
                                         <th>Status</th>
                                         <th>Action</th>
@@ -614,14 +792,58 @@ include __DIR__ . '/../includes/header.php';
                                 </tbody>
                             </table>
                         </div>
+                        
+                        <?php if ($totalTasks > $tasksPerPage): ?>
+                        <!-- Tasks Pagination -->
+                        <nav aria-label="Assigned Tasks pagination" class="mt-3">
+                            <ul class="pagination pagination-sm justify-content-center">
+                                <?php
+                                $totalTasksPages = ceil($totalTasks / $tasksPerPage);
+                                $currentUrl = $_SERVER['REQUEST_URI'];
+                                $currentUrl = preg_replace('/[&?]tasks_page=\d+/', '', $currentUrl);
+                                $separator = strpos($currentUrl, '?') !== false ? '&' : '?';
+                                
+                                // Previous button
+                                if ($tasksPage > 1): ?>
+                                    <li class="page-item">
+                                        <a class="page-link" href="<?php echo $currentUrl . $separator . 'tasks_page=' . ($tasksPage - 1); ?>#assigned-tasks">Previous</a>
+                                    </li>
+                                <?php endif;
+                                
+                                // Page numbers
+                                $startPage = max(1, $tasksPage - 2);
+                                $endPage = min($totalTasksPages, $tasksPage + 2);
+                                
+                                for ($i = $startPage; $i <= $endPage; $i++): ?>
+                                    <li class="page-item <?php echo $i === $tasksPage ? 'active' : ''; ?>">
+                                        <a class="page-link" href="<?php echo $currentUrl . $separator . 'tasks_page=' . $i; ?>#assigned-tasks"><?php echo $i; ?></a>
+                                    </li>
+                                <?php endfor;
+                                
+                                // Next button
+                                if ($tasksPage < $totalTasksPages): ?>
+                                    <li class="page-item">
+                                        <a class="page-link" href="<?php echo $currentUrl . $separator . 'tasks_page=' . ($tasksPage + 1); ?>#assigned-tasks">Next</a>
+                                    </li>
+                                <?php endif; ?>
+                            </ul>
+                        </nav>
+                        <?php endif; ?>
                     <?php endif; ?>
                 </div>
             </div>
+            <?php endif; ?>
 
+            <?php if (!$isClientViewer): ?>
             <!-- Recent Activity -->
-            <div class="card mt-3">
-                <div class="card-header">
-                    <h5 class="mb-0"><i class="fas fa-history"></i> Recent Activity</h5>
+            <div class="card mt-3" id="recent-activity">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0"><i class="fas fa-history"></i> Recent Activity (<?php echo $totalActivities; ?>)</h5>
+                    <?php if ($totalActivities > $activitiesPerPage): ?>
+                    <small class="text-muted">
+                        Showing <?php echo min($activitiesOffset + 1, $totalActivities); ?>-<?php echo min($activitiesOffset + $activitiesPerPage, $totalActivities); ?> of <?php echo $totalActivities; ?>
+                    </small>
+                    <?php endif; ?>
                 </div>
                 <div class="card-body recent-activity-scroll">
                     <?php if (empty($activities)): ?>
@@ -649,10 +871,49 @@ include __DIR__ . '/../includes/header.php';
                             </div>
                             <?php endforeach; ?>
                         </div>
+                        
+                        <?php if ($totalActivities > $activitiesPerPage): ?>
+                        <!-- Activities Pagination -->
+                        <nav aria-label="Recent Activity pagination" class="mt-3">
+                            <ul class="pagination pagination-sm justify-content-center">
+                                <?php
+                                $totalActivitiesPages = ceil($totalActivities / $activitiesPerPage);
+                                $currentUrl = $_SERVER['REQUEST_URI'];
+                                $currentUrl = preg_replace('/[&?]activities_page=\d+/', '', $currentUrl);
+                                $separator = strpos($currentUrl, '?') !== false ? '&' : '?';
+                                
+                                // Previous button
+                                if ($activitiesPage > 1): ?>
+                                    <li class="page-item">
+                                        <a class="page-link" href="<?php echo $currentUrl . $separator . 'activities_page=' . ($activitiesPage - 1); ?>#recent-activity">Previous</a>
+                                    </li>
+                                <?php endif;
+                                
+                                // Page numbers
+                                $startPage = max(1, $activitiesPage - 2);
+                                $endPage = min($totalActivitiesPages, $activitiesPage + 2);
+                                
+                                for ($i = $startPage; $i <= $endPage; $i++): ?>
+                                    <li class="page-item <?php echo $i === $activitiesPage ? 'active' : ''; ?>">
+                                        <a class="page-link" href="<?php echo $currentUrl . $separator . 'activities_page=' . $i; ?>#recent-activity"><?php echo $i; ?></a>
+                                    </li>
+                                <?php endfor;
+                                
+                                // Next button
+                                if ($activitiesPage < $totalActivitiesPages): ?>
+                                    <li class="page-item">
+                                        <a class="page-link" href="<?php echo $currentUrl . $separator . 'activities_page=' . ($activitiesPage + 1); ?>#recent-activity">Next</a>
+                                    </li>
+                                <?php endif; ?>
+                            </ul>
+                        </nav>
+                        <?php endif; ?>
                     <?php endif; ?>
                 </div>
             </div>
+            <?php endif; ?>
         </div>
+        <?php endif; ?>
     </div>
 </div>
 
@@ -703,73 +964,35 @@ include __DIR__ . '/../includes/header.php';
     max-height: 420px;
     overflow-y: auto;
 }
+#profilePage .card {
+    margin-bottom: 0.9rem;
+}
+#profilePage .card-body {
+    padding: 0.95rem 1rem;
+}
+#profilePage .card-header {
+    padding: 0.6rem 1rem;
+}
+#profilePage .card .table th,
+#profilePage .card .table td {
+    padding: 0.55rem 0.75rem;
+}
+#profilePage .badge {
+    font-size: 0.85rem;
+}
+#profilePage .nav-link,
+#profilePage .form-label,
+#profilePage .text-muted {
+    line-height: 1.2;
+}
 </style>
 
-<script>
-document.addEventListener('DOMContentLoaded', function() {
-    var phFetch = document.getElementById('ph_fetch');
-    if (!phFetch) return;
-    var phDate = document.getElementById('ph_date');
-    var phResult = document.getElementById('ph_result');
-
-    phFetch.addEventListener('click', function() {
-        var date = phDate.value;
-        phResult.innerHTML = '<p class="text-muted">Loading...</p>';
-
-        var xhr = new XMLHttpRequest();
-        var params = 'user_id=' + encodeURIComponent(<?php echo intval($userId); ?>) + '&date=' + encodeURIComponent(date);
-        xhr.open('GET', '<?php echo $baseDir; ?>/api/user_hours.php?' + params, true);
-        xhr.onreadystatechange = function() {
-            if (xhr.readyState !== 4) return;
-            if (xhr.status === 200) {
-                try {
-                    var res = JSON.parse(xhr.responseText);
-                } catch (e) {
-                    phResult.innerHTML = '<p class="text-danger">Invalid response from server.</p>';
-                    return;
-                }
-
-                if (!res.success) {
-                    phResult.innerHTML = '<p class="text-danger">' + (res.error || 'Error loading hours') + '</p>';
-                    return;
-                }
-
-                var html = '<h6>Total: <span class="badge bg-info">' + parseFloat(res.total_hours).toFixed(2) + ' hrs</span></h6>';
-                if (res.entries && res.entries.length) {
-                    html += '<div class="list-group mt-2">';
-                    res.entries.forEach(function(en) {
-                        var title = en.project_title ? en.project_title : '—';
-                        var page = en.page_name ? en.page_name : '—';
-                        var time = en.tested_at ? new Date(en.tested_at).toLocaleString() : '';
-                        html += '<div class="list-group-item">';
-                        html += '<div class="d-flex w-100 justify-content-between"><strong>' + escapeHtml(title) + '</strong><small>' + escapeHtml(time) + '</small></div>';
-                        html += '<div class="mb-1">Page: ' + escapeHtml(page) + '</div>';
-                        html += '<div>Hours: <span class="badge bg-secondary">' + parseFloat(en.hours_spent || 0).toFixed(2) + '</span></div>';
-                        if (en.comments) html += '<div class="mt-1 text-muted">' + escapeHtml(en.comments) + '</div>';
-                        html += '</div>';
-                    });
-                    html += '</div>';
-                } else {
-                    html += '<p class="text-muted mt-2">No entries for this date.</p>';
-                }
-
-                phResult.innerHTML = html;
-            } else if (xhr.status === 403) {
-                phResult.innerHTML = '<p class="text-danger">Access denied.</p>';
-            } else {
-                phResult.innerHTML = '<p class="text-danger">Error loading data.</p>';
-            }
-        };
-        xhr.send();
-    });
-
-    function escapeHtml(str) {
-        if (!str) return '';
-        return String(str).replace(/[&"'<>]/g, function (s) {
-            return ({'&':'&amp;','"':'&quot;',"'":'&#39;','<':'&lt;','>':'&gt;'})[s];
-        });
-    }
-});
+<script nonce="<?php echo $cspNonce ?? ''; ?>">
+window.ProfileConfig = {
+    userId: <?php echo intval($userId); ?>,
+    baseDir: <?php echo json_encode($baseDir, JSON_HEX_TAG | JSON_HEX_AMP); ?>
+};
 </script>
+<script src="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/assets/js/profile.js"></script>
 
-<?php include __DIR__ . '/../includes/footer.php'; ?>
+<?php include __DIR__ . '/../includes/footer.php'; 

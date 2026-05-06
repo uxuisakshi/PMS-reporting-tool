@@ -9,12 +9,12 @@
  */
 function hasProjectPermission($db, $userId, $projectId, $permission) {
     try {
-        // Admin and super_admin always have all permissions
+        // Admin and admin always have all permissions
         $userStmt = $db->prepare("SELECT role FROM users WHERE id = ?");
         $userStmt->execute([$userId]);
         $user = $userStmt->fetch();
         
-        if ($user && in_array($user['role'], ['admin', 'super_admin'])) {
+        if ($user && in_array($user['role'], ['admin'])) {
             return true;
         }
         
@@ -66,9 +66,13 @@ function hasProjectPermission($db, $userId, $projectId, $permission) {
 function getBasicPermissionsForRole($role) {
     $rolePermissions = [
         'qa' => [
-            'project_view', 'pages_view', 'status_view', 'qa_status_update', 
-            'team_view', 'assets_view', 'phases_view', 'chat_view', 'chat_send',
-            'feedback_view', 'feedback_submit', 'activity_log_view'
+            'project_view', 'pages_view', 'pages_create', 'pages_edit', 'pages_delete', 'pages_assign', 'status_view', 'qa_status_update', 
+            'team_view', 'team_assign', 'team_remove', 'team_manage_roles',
+            'assets_view', 'assets_upload', 'assets_edit', 'assets_delete',
+            'phases_view', 'phases_edit', 'phases_create', 'phases_delete',
+            'chat_view', 'chat_send',
+            'feedback_view', 'feedback_submit', 'activity_log_view',
+            'delete_grouped_urls'
         ],
         'at_tester' => [
             'project_view', 'pages_view', 'status_update', 'status_view',
@@ -112,12 +116,12 @@ function hasAnyProjectPermission($db, $userId, $projectId, $permissions) {
  */
 function hasResourceWorkloadAccess($db, $userId) {
     try {
-        // Admin and super_admin always have access
+        // Admin and admin always have access
         $userStmt = $db->prepare("SELECT role FROM users WHERE id = ?");
         $userStmt->execute([$userId]);
         $user = $userStmt->fetch();
         
-        if ($user && in_array($user['role'], ['admin', 'super_admin'])) {
+        if ($user && in_array($user['role'], ['admin'])) {
             return true;
         }
         
@@ -170,12 +174,12 @@ function hasAllProjectPermissions($db, $userId, $projectId, $permissions) {
  */
 function getUserProjectPermissions($db, $userId, $projectId) {
     try {
-        // Admin and super_admin have all permissions
+        // Admin and admin have all permissions
         $userStmt = $db->prepare("SELECT role FROM users WHERE id = ?");
         $userStmt->execute([$userId]);
         $user = $userStmt->fetch();
         
-        if ($user && in_array($user['role'], ['admin', 'super_admin'])) {
+        if ($user && in_array($user['role'], ['admin'])) {
             // Return all available permissions
             $allPermsStmt = $db->query("SELECT permission_type FROM project_permissions_types WHERE is_active = 1");
             return $allPermsStmt->fetchAll(PDO::FETCH_COLUMN);
@@ -231,12 +235,12 @@ function getUserProjectPermissions($db, $userId, $projectId) {
  */
 function hasProjectAccess($db, $userId, $projectId) {
     try {
-        // Admin and super_admin always have access
+        // Admin and admin always have access
         $userStmt = $db->prepare("SELECT role FROM users WHERE id = ?");
         $userStmt->execute([$userId]);
         $user = $userStmt->fetch();
         
-        if ($user && in_array($user['role'], ['admin', 'super_admin'])) {
+        if ($user && in_array($user['role'], ['admin'])) {
             return true;
         }
         
@@ -272,15 +276,9 @@ function hasProjectAccess($db, $userId, $projectId) {
         
         // Check client permissions (for client role users)
         if ($user && $user['role'] === 'client') {
-            $clientPermStmt = $db->prepare("
-                SELECT id FROM client_permissions 
-                WHERE project_id = ? AND user_id = ? AND is_active = 1 
-                AND (expires_at IS NULL OR expires_at > NOW())
-                LIMIT 1
-            ");
-            $clientPermStmt->execute([$projectId, $userId]);
-            
-            return $clientPermStmt->fetch() !== false;
+            require_once __DIR__ . '/models/ClientAccessControlManager.php';
+            $accessManager = new ClientAccessControlManager();
+            return $accessManager->hasProjectAccess($userId, $projectId);
         }
         
         return false;
@@ -296,12 +294,12 @@ function hasProjectAccess($db, $userId, $projectId) {
  */
 function getUserAccessibleProjects($db, $userId) {
     try {
-        // Admin and super_admin have access to all projects
+        // Admin and admin have access to all projects
         $userStmt = $db->prepare("SELECT role FROM users WHERE id = ?");
         $userStmt->execute([$userId]);
         $user = $userStmt->fetch();
         
-        if ($user && in_array($user['role'], ['admin', 'super_admin'])) {
+        if ($user && in_array($user['role'], ['admin'])) {
             return $db->query("SELECT id, title, po_number, status FROM projects ORDER BY title")->fetchAll();
         }
         
@@ -751,7 +749,7 @@ function hasIssueQaStatusUpdateAccess($db, $userId, $projectId) {
         $role = strtolower((string)($row['role'] ?? ''));
         $clientId = (int)($row['client_id'] ?? 0);
 
-        if (in_array($role, ['admin', 'super_admin'], true)) return true;
+        if (in_array($role, ['admin'], true)) return true;
 
         // Existing project-level permission path already supported.
         if (hasProjectPermission($db, $userId, $projectId, 'qa_status_update')) return true;
@@ -846,4 +844,3 @@ function revokeQaStatusPermission($db, $permissionId) {
     $stmt = $db->prepare("UPDATE qa_status_permissions SET is_active = 0, updated_at = NOW() WHERE id = ?");
     return $stmt->execute([(int)$permissionId]);
 }
-?>

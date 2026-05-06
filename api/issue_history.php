@@ -1,7 +1,9 @@
 <?php
+ob_start();
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/functions.php';
+ob_end_clean();
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -28,7 +30,7 @@ if (!$auth->isLoggedIn()) {
 
 $userRole = $auth->getUserRole() ?? '';
 $userId   = (int)($auth->getUserId() ?? 0);
-$isAdmin  = in_array($userRole, ['admin', 'super_admin', 'superadmin'], true);
+$isAdmin  = in_array($userRole, ['admin', 'superadmin'], true);
 
 $db = Database::getInstance();
 $method = $_SERVER['REQUEST_METHOD'];
@@ -75,14 +77,16 @@ if ($method === 'GET') {
 
         echo json_encode(['success' => true, 'history' => $history]);
     } catch (Exception $e) {
+        error_log('issue_history GET error: ' . $e->getMessage());
         http_response_code(500);
-        echo json_encode(['error' => $e->getMessage()]);
+        echo json_encode(['error' => 'An internal error occurred']);
     }
     exit;
 }
 
 // ── POST: rollback ───────────────────────────────────────────────────────────
 if ($method === 'POST') {
+    enforceApiCsrf();
     if (!$isAdmin) {
         http_response_code(403);
         echo json_encode(['error' => 'Admin access required']);
@@ -174,8 +178,9 @@ if ($method === 'POST') {
 
     } catch (Exception $e) {
         if ($db->inTransaction()) $db->rollBack();
+        error_log('issue_history POST error: ' . $e->getMessage());
         http_response_code(500);
-        echo json_encode(['error' => $e->getMessage()]);
+        echo json_encode(['error' => 'An internal error occurred']);
     }
     exit;
 }

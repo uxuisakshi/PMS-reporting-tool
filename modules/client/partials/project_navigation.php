@@ -1,24 +1,24 @@
 <?php
 /**
- * Project Navigation Partial
+ * Digital Asset Navigation Partial
  * 
- * Navigation breadcrumbs and project switcher
+ * Navigation breadcrumbs and digital asset switcher
  */
 ?>
 
 <div class="row mb-3">
     <div class="col-12">
-        <nav aria-label="Project navigation" class="project-nav">
+        <nav aria-label="Digital asset navigation" class="project-nav">
             <!-- Breadcrumb Navigation -->
             <ol class="breadcrumb">
                 <li class="breadcrumb-item">
-                    <a href="<?php echo $baseDir; ?>/modules/client/dashboard.php">
+                    <a href="<?php echo $baseDir; ?>/client/dashboard">
                         <i class="fas fa-tachometer-alt"></i> Dashboard
                     </a>
                 </li>
                 <li class="breadcrumb-item">
                     <a href="<?php echo $baseDir; ?>/modules/client/projects.php">
-                        <i class="fas fa-folder-open"></i> Projects
+                        <i class="fas fa-folder-open"></i> Digital Assets
                     </a>
                 </li>
                 <li class="breadcrumb-item active" aria-current="page">
@@ -26,18 +26,26 @@
                 </li>
             </ol>
             
-            <!-- Project Switcher -->
+            <!-- Digital Asset Switcher -->
             <div class="project-switcher">
-                <label for="projectNavSelect" class="form-label small text-muted mb-1">Switch Project</label>
+                <label for="projectNavSelect" class="form-label small text-muted mb-1">Switch Digital Asset</label>
                 <select id="projectNavSelect" class="form-select form-select-sm">
-                    <option value="">Select a project...</option>
+                    <option value="">Select a digital asset...</option>
                     <?php foreach ($assignedProjects as $proj): ?>
-                        <option value="<?php echo $proj['id']; ?>" 
-                                <?php echo ($proj['id'] == $projectId) ? 'selected' : ''; ?>>
+                        <option value="<?php echo htmlspecialchars(buildClientProjectUrl((int) $proj['id'], (string) ($proj['title'] ?? ''), (string) ($proj['project_code'] ?? '')), ENT_QUOTES, 'UTF-8'); ?>" 
+                            <?php echo ((int) $proj['id'] === (int) $projectId) ? 'selected' : ''; ?>>
                             <?php echo htmlspecialchars($proj['title']); ?>
                         </option>
                     <?php endforeach; ?>
                 </select>
+<script nonce="<?php echo htmlspecialchars($cspNonce ?? '', ENT_QUOTES, 'UTF-8'); ?>">
+document.getElementById('projectNavSelect').addEventListener('change', function() {
+    var url = this.value;
+    if (url) {
+        window.location.href = url;
+    }
+});
+</script>
             </div>
         </nav>
     </div>

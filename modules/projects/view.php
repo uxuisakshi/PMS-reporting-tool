@@ -7,7 +7,7 @@ require_once __DIR__ . '/../../includes/chat_helpers.php';
 require_once __DIR__ . '/../../includes/client_permissions.php';
 
 $auth = new Auth();
-$auth->requireRole(['admin', 'project_lead', 'qa', 'at_tester', 'ft_tester', 'super_admin', 'client']);
+$auth->requireRole(['admin', 'project_lead', 'qa', 'at_tester', 'ft_tester', 'admin', 'client']);
 
 $baseDir = getBaseDir();
 $projectId = (int)($_GET['id'] ?? 0);
@@ -24,7 +24,7 @@ if ($userRole === 'client' && $projectId) {
 
 if (!$projectId) {
     // Redirect to role-specific projects page
-    if ($userRole === 'admin' || $userRole === 'super_admin') {
+    if ($userRole === 'admin') {
         header('Location: ' . $baseDir . '/modules/admin/projects.php');
     } elseif ($userRole === 'project_lead') {
         header('Location: ' . $baseDir . '/modules/project_lead/my_projects.php');
@@ -43,7 +43,7 @@ if (!$projectId) {
 if (!hasProjectAccess($db, $userId, $projectId)) {
     $_SESSION['error'] = "You don't have access to this project.";
     // Redirect to role-specific projects page
-    if ($userRole === 'admin' || $userRole === 'super_admin') {
+    if ($userRole === 'admin') {
         header('Location: ' . $baseDir . '/modules/admin/projects.php');
     } elseif ($userRole === 'project_lead') {
         header('Location: ' . $baseDir . '/modules/project_lead/my_projects.php');
@@ -87,7 +87,7 @@ $project = $stmt->fetch();
 if (!$project) {
     $_SESSION['error'] = 'Project not found.';
     // Redirect to role-specific projects page
-    if ($userRole === 'admin' || $userRole === 'super_admin') {
+    if ($userRole === 'admin') {
         header('Location: ' . $baseDir . '/modules/admin/projects.php');
     } elseif ($userRole === 'project_lead') {
         header('Location: ' . $baseDir . '/modules/project_lead/my_projects.php');
@@ -172,7 +172,7 @@ $teamMemberStmt = $db->prepare("
     FROM user_assignments ua 
     JOIN users u ON ua.user_id = u.id 
     WHERE ua.project_id = ? 
-      AND ua.role IN ('qa','at_tester','ft_tester')
+      AND ua.role IN ('qa','at_tester','ft_tester','project_lead')
       AND u.is_active = 1
       AND (ua.is_removed IS NULL OR ua.is_removed = 0)
     ORDER BY u.full_name
@@ -187,6 +187,12 @@ $allEnvironments = $db->query("SELECT id, name FROM testing_environments ORDER B
 $pagesStmt = $db->prepare("SELECT id, page_name, page_number, url FROM project_pages WHERE project_id = ? ORDER BY page_name");
 $pagesStmt->execute([$projectId]);
 $projectPages = $pagesStmt->fetchAll(PDO::FETCH_ASSOC);
+// Natural sort by page_number
+usort($projectPages, function($a, $b) {
+    $an = $a['page_number'] ?? '';
+    $bn = $b['page_number'] ?? '';
+    return strnatcasecmp((string)$an, (string)$bn);
+});
 
 // Issue page summaries for Issues tab
 $issuePageSummaries = [];
@@ -197,7 +203,13 @@ try {
             pp.page_name,
             (SELECT GROUP_CONCAT(DISTINCT te.name SEPARATOR ', ') FROM page_environments pe2 JOIN testing_environments te ON pe2.environment_id = te.id WHERE pe2.page_id = pp.id) AS envs,
             (SELECT GROUP_CONCAT(DISTINCT u.full_name SEPARATOR ', ') FROM users u JOIN page_environments pe3 ON u.id = pe3.at_tester_id OR u.id = pe3.ft_tester_id OR u.id = pe3.qa_id WHERE pe3.page_id = pp.id) AS testers,
-            ((SELECT COALESCE(SUM(tr.issues_found), 0) FROM testing_results tr WHERE tr.page_id = pp.id) + (SELECT COALESCE(SUM(qr.issues_found), 0) FROM qa_results qr WHERE qr.page_id = pp.id)) AS issues_count
+            (SELECT COUNT(DISTINCT i.id) 
+             FROM issues i 
+             WHERE i.project_id = pp.project_id AND (
+                 EXISTS (SELECT 1 FROM issue_pages ip WHERE ip.issue_id = i.id AND ip.page_id = pp.id)
+                 OR (i.page_id = pp.id AND NOT EXISTS (SELECT 1 FROM issue_pages ip2 WHERE ip2.issue_id = i.id))
+             )
+            ) AS issues_count
         FROM project_pages pp
         WHERE pp.project_id = ?
         ORDER BY pp.page_name
@@ -213,7 +225,17 @@ $uniqueStmt = $db->prepare("SELECT up.id, up.project_id, up.page_name AS name, u
 $uniqueStmt->execute([$projectId]);
 $uniquePages = $uniqueStmt->fetchAll(PDO::FETCH_ASSOC);
 
-$groupedStmt = $db->prepare("SELECT gu.id AS grouped_id, gu.url, gu.normalized_url, gu.unique_page_id, up.id AS unique_id, up.page_name AS unique_name, up.url AS canonical_url, pp.id AS mapped_page_id, pp.page_name AS mapped_page_name FROM grouped_urls gu LEFT JOIN project_pages up ON gu.unique_page_id = up.id LEFT JOIN project_pages pp ON pp.project_id = gu.project_id AND (pp.url = gu.url OR pp.url = gu.normalized_url) WHERE gu.project_id = ? ORDER BY gu.url");
+$groupedStmt = $db->prepare("
+    SELECT gu.id AS grouped_id, gu.url, gu.normalized_url, gu.unique_page_id,
+           COALESCE(gu.unique_page_id, pp_match.id) AS mapped_page_id,
+           up.id AS unique_id, up.page_name AS unique_name, up.url AS canonical_url
+    FROM grouped_urls gu
+    LEFT JOIN project_pages up ON gu.unique_page_id = up.id
+    LEFT JOIN project_pages pp_match ON pp_match.project_id = gu.project_id
+        AND (pp_match.url = gu.url OR pp_match.url = gu.normalized_url)
+    WHERE gu.project_id = ?
+    ORDER BY gu.url
+");
 $groupedStmt->execute([$projectId]);
 $groupedUrls = $groupedStmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -259,30 +281,29 @@ foreach ($uniqueIssuePages as $u) {
     }
 }
 
-// Load QA statuses for issue modal
-$qaStatuses = $db->query("SELECT status_key, status_label FROM qa_status_master WHERE is_active = 1 ORDER BY display_order ASC, status_label ASC")->fetchAll(PDO::FETCH_ASSOC);
+// Fetch issue metadata fields
+$metadataFieldsStmt = $db->query("SELECT id, field_key, field_label, options_json FROM issue_metadata_fields WHERE is_active = 1 ORDER BY sort_order ASC");
+$metadataFields = $metadataFieldsStmt->fetchAll(PDO::FETCH_ASSOC);
+
+foreach ($metadataFields as &$field) {
+    if (!empty($field['options_json'])) {
+        $field['options'] = json_decode($field['options_json'], true);
+    } else {
+        $field['options'] = [];
+    }
+}
 
 // Load issue statuses for issue modal
-$issueStatuses = $db->query("SELECT id, name, color FROM issue_statuses ORDER BY name ASC")->fetchAll(PDO::FETCH_ASSOC);
+$issueStatuses = getIssueStatusesForRole($db, $normalizedUserRole);
 
-// Load project users for issue modal
+// Load project users for issue modal (includes assigned users, project lead, admins, and any existing reporters)
+// Load all users for name resolution (ensures historical reporters/QA always resolve correctly)
 $projectUsersStmt = $db->prepare("
-    SELECT DISTINCT u.id, u.full_name, u.username
-    FROM user_assignments ua 
-    JOIN users u ON ua.user_id = u.id 
-    WHERE ua.project_id = ? 
-      AND u.is_active = 1
-      AND (ua.is_removed IS NULL OR ua.is_removed = 0)
-    UNION
-    SELECT DISTINCT pl.id, pl.full_name, pl.username
-    FROM projects p
-    JOIN users pl ON p.project_lead_id = pl.id
-    WHERE p.id = ?
-      AND p.project_lead_id IS NOT NULL
-      AND pl.is_active = 1
+    SELECT id, full_name, username, role
+    FROM users
     ORDER BY full_name
 ");
-$projectUsersStmt->execute([$projectId, $projectId]);
+$projectUsersStmt->execute();
 $projectUsers = $projectUsersStmt->fetchAll(PDO::FETCH_ASSOC);
 
 // Get current running phase
@@ -563,8 +584,8 @@ include __DIR__ . '/../../includes/header.php';
                     <span class="badge bg-light text-dark border">Lead: <?php echo htmlspecialchars($project['project_lead_name'] ?? 'N/A'); ?></span>
                     
                     <?php 
-                    // Check if user can update project status (admin, super_admin, project lead, or has project edit permission)
-                    $canUpdateStatus = in_array($userRole, ['admin', 'super_admin']) || 
+                    // Check if user can update project status (admin, admin, project lead, or has project edit permission)
+                    $canUpdateStatus = in_array($userRole, ['admin']) || 
                                       ($userRole === 'project_lead' && $project['project_lead_id'] == $userId) ||
                                       canEditProjectById($db, $userId, $projectId);
                     ?>
@@ -656,8 +677,8 @@ include __DIR__ . '/../../includes/header.php';
             </div>
             <div class="col-lg-4 col-md-5 mt-3 mt-md-0">
                 <?php 
-                // Check if user can edit project (admin, super_admin, or has client permission)
-                $canEditProject = in_array($userRole, ['admin','super_admin'], true) || 
+                // Check if user can edit project (admin, admin, or has client permission)
+                $canEditProject = in_array($userRole, ['admin'], true) || 
                                  canEditProject($db, $userId, $projectId);
                 ?>
                 <?php if ($canEditProject): ?>
@@ -783,822 +804,41 @@ include __DIR__ . '/../../includes/header.php';
     <?php include 'partials/tab_production_hours.php'; ?>
 </div>
 
-<script>
-    (function () {
-        var projectId = <?php echo (int)$projectId; ?>;
-        var allowedTabs = {
-            '#phases': true,
-            '#pages': true,
-            '#team': true,
-            '#performance': true,
-            '#assets': true,
-            '#activity': true,
-            '#feedback': true,
-            '#production-hours': true
-        };
-        var target = '#phases';
-        try {
-            var params = new URLSearchParams(window.location.search || '');
-            var qTab = (params.get('tab') || '').trim();
-            if (qTab && allowedTabs['#' + qTab]) {
-                target = '#' + qTab;
-            } else {
-                var stored = localStorage.getItem('pms_project_tab_' + projectId);
-                if (stored && allowedTabs[stored]) target = stored;
-            }
-        } catch (e) { }
-
-        if (target === '#phases') return;
-
-        var allBtns = document.querySelectorAll('#projectTabs .nav-link');
-        var allPanes = document.querySelectorAll('#projectTabsContent > .tab-pane');
-        allBtns.forEach(function (b) {
-            b.classList.remove('active');
-            b.setAttribute('aria-selected', 'false');
-        });
-        allPanes.forEach(function (p) { p.classList.remove('show', 'active'); });
-
-        var btn = document.querySelector('#projectTabs .nav-link[data-bs-target="' + target + '"]');
-        var pane = document.querySelector(target);
-        if (btn) {
-            btn.classList.add('active');
-            btn.setAttribute('aria-selected', 'true');
-        }
-        if (pane) pane.classList.add('show', 'active');
-    })();
-</script>
-
-<?php include 'partials/modals.php'; ?>
-
-<script>
+<script nonce="<?php echo $cspNonce ?? ''; ?>">
     window.ProjectConfig = {
         projectId: <?php echo json_encode($projectId); ?>,
         userId: <?php echo json_encode($userId); ?>,
         userRole: <?php echo json_encode($userRole); ?>,
         canUpdateIssueQaStatus: <?php echo $canUpdateIssueQaStatus ? 'true' : 'false'; ?>,
-        baseDir: '<?php echo $baseDir; ?>',
-        projectType: '<?php echo $project['type'] ?? 'web'; ?>',
-        projectPages: <?php echo json_encode($projectPages ?? []); ?>,
-        uniqueIssuePages: <?php echo json_encode($uniqueIssuePages ?? []); ?>,
-        groupedUrls: <?php echo json_encode($groupedUrls ?? []); ?>,
-        projectUsers: <?php echo json_encode($projectUsers ?? []); ?>,
-        qaStatuses: <?php echo json_encode($qaStatuses ?? []); ?>,
-        issueStatuses: <?php echo json_encode($issueStatuses ?? []); ?>
+        baseDir: <?php echo json_encode($baseDir, JSON_HEX_TAG | JSON_HEX_AMP); ?>,
+        projectType: <?php echo json_encode($project['type'] ?? 'web', JSON_HEX_TAG | JSON_HEX_AMP); ?>,
+        projectPages: <?php echo json_encode($projectPages ?? [], JSON_HEX_TAG | JSON_HEX_AMP); ?>,
+        uniqueIssuePages: <?php echo json_encode($uniqueIssuePages ?? [], JSON_HEX_TAG | JSON_HEX_AMP); ?>,
+        groupedUrls: <?php echo json_encode($groupedUrls ?? [], JSON_HEX_TAG); ?>,
+        projectUsers: <?php echo json_encode($projectUsers ?? [], JSON_HEX_TAG | JSON_HEX_AMP); ?>,
+        qaStatuses: <?php echo json_encode($qaStatuses ?? [], JSON_HEX_TAG | JSON_HEX_AMP); ?>,
+        issueStatuses: <?php echo json_encode($issueStatuses ?? [], JSON_HEX_TAG | JSON_HEX_AMP); ?>
     };
-    
-    // Handle focus on assign button after redirect from manage_assignments
-    document.addEventListener('DOMContentLoaded', function() {
-        // Clear all filters on page load
-        clearAllFiltersOnLoad();
-        
-        // Initialize proper tab behavior for pages sub-tabs
-        const pagesSubTabs = document.querySelectorAll('#pagesSubTabs .nav-link');
-        const pagesTabPanes = document.querySelectorAll('#pages_main, #project_pages_sub, #all_urls_sub');
-        
-        // Function to completely hide inactive panes
-        function hideAllPanes() {
-            pagesTabPanes.forEach(pane => {
-                pane.classList.remove('show', 'active');
-                pane.style.display = 'none';
-                pane.style.height = '0';
-                pane.style.overflow = 'hidden';
-                pane.style.opacity = '0';
-                pane.style.visibility = 'hidden';
-            });
-        }
-        
-        // Function to show active pane
-        function showPane(pane) {
-            pane.classList.add('show', 'active');
-            pane.style.display = 'block';
-            pane.style.height = 'auto';
-            pane.style.overflow = 'visible';
-            pane.style.opacity = '1';
-            pane.style.visibility = 'visible';
-        }
-        
-        // Function to activate a specific tab
-        function activateTab(tabId, paneId) {
-            // Remove active from all tabs
-            pagesSubTabs.forEach(t => t.classList.remove('active'));
-            
-            // Hide all panes
-            hideAllPanes();
-            
-            // Activate the specified tab
-            const tab = document.querySelector(tabId);
-            if (tab) {
-                tab.classList.add('active');
-            }
-            
-            // Show the specified pane
-            const pane = document.querySelector(paneId);
-            if (pane) {
-                showPane(pane);
-            }
-        }
-        
-        // Initialize - check URL hash or localStorage for last active tab
-        hideAllPanes();
-        
-        // Check URL hash first (e.g., #all_urls_sub)
-        let activeTabPane = '#project_pages_sub'; // default
-        let activeTabBtn = '#project-sub-tab';
-        
-        if (window.location.hash) {
-            const hash = window.location.hash;
-            if (hash === '#all_urls_sub' || hash === '#allurls-sub-tab') {
-                activeTabPane = '#all_urls_sub';
-                activeTabBtn = '#allurls-sub-tab';
-            } else if (hash === '#project_pages_sub' || hash === '#project-sub-tab') {
-                activeTabPane = '#project_pages_sub';
-                activeTabBtn = '#project-sub-tab';
-            }
-        } else {
-            // Check localStorage for last active tab
-            const lastActiveTab = localStorage.getItem('pagesSubTab_' + <?php echo $projectId; ?>);
-            if (lastActiveTab === 'all_urls') {
-                activeTabPane = '#all_urls_sub';
-                activeTabBtn = '#allurls-sub-tab';
-            } else if (lastActiveTab === 'project_pages') {
-                activeTabPane = '#project_pages_sub';
-                activeTabBtn = '#project-sub-tab';
-            }
-        }
-        
-        // Activate the determined tab
-        activateTab(activeTabBtn, activeTabPane);
-        
-        // Add click handlers for proper tab switching
-        pagesSubTabs.forEach(tab => {
-            tab.addEventListener('click', function(e) {
-                e.preventDefault();
-                
-                // Get target pane ID
-                const targetId = this.getAttribute('data-bs-target');
-                const tabId = '#' + this.id;
-                
-                // Save to localStorage
-                if (targetId === '#all_urls_sub') {
-                    localStorage.setItem('pagesSubTab_' + <?php echo $projectId; ?>, 'all_urls');
-                    window.location.hash = 'all_urls_sub';
-                } else if (targetId === '#project_pages_sub') {
-                    localStorage.setItem('pagesSubTab_' + <?php echo $projectId; ?>, 'project_pages');
-                    window.location.hash = 'project_pages_sub';
-                }
-                
-                // Activate the tab
-                activateTab(tabId, targetId);
-            });
-        });
-        
-        // Initialize column resizing functionality
-        function initColumnResize() {
-            const tables = document.querySelectorAll('#uniquePagesTable, #allUrlsTable, #issuesPageList table.resizable-table');
-            if (!tables.length) return;
-            
-            tables.forEach(table => {
-                const resizers = table.querySelectorAll('.col-resizer');
-                let isResizing = false;
-                let currentResizer = null;
-                let startX = 0;
-                let startWidth = 0;
-                let selectedResizer = null;
-                
-                // Make resizers focusable and add keyboard support
-                resizers.forEach((resizer, index) => {
-                    resizer.setAttribute('tabindex', '0');
-                    resizer.setAttribute('role', 'button');
-                    resizer.setAttribute('aria-label', `Resize column ${index + 1}. Use arrow keys to resize, Enter to select, Escape to deselect`);
-                    
-                    // Mouse events
-                    resizer.addEventListener('mousedown', function(e) {
-                        startResize(this, e.clientX);
-                        e.preventDefault();
-                    });
-                    
-                    // Keyboard events
-                    resizer.addEventListener('keydown', function(e) {
-                        const th = this.parentElement;
-                        const currentWidth = parseInt(window.getComputedStyle(th).width, 10);
-                        let newWidth = currentWidth;
-                        
-                        switch(e.key) {
-                            case 'ArrowLeft':
-                                newWidth = Math.max(50, currentWidth - 10);
-                                break;
-                            case 'ArrowRight':
-                                newWidth = currentWidth + 10;
-                                break;
-                            case 'ArrowUp':
-                                newWidth = Math.max(50, currentWidth - 5);
-                                break;
-                            case 'ArrowDown':
-                                newWidth = currentWidth + 5;
-                                break;
-                            case 'Home':
-                                newWidth = 50; // Minimum width
-                                break;
-                            case 'End':
-                                newWidth = 300; // Maximum reasonable width
-                                break;
-                            case 'Enter':
-                            case ' ':
-                                // Toggle selection for fine-tuning
-                                if (selectedResizer === this) {
-                                    selectedResizer = null;
-                                    this.classList.remove('selected');
-                                    this.setAttribute('aria-label', `Resize column ${index + 1}. Use arrow keys to resize, Enter to select, Escape to deselect`);
-                                } else {
-                                    // Deselect previous
-                                    if (selectedResizer) {
-                                        selectedResizer.classList.remove('selected');
-                                    }
-                                    selectedResizer = this;
-                                    this.classList.add('selected');
-                                    this.setAttribute('aria-label', `Column ${index + 1} selected. Use arrow keys for fine control, Enter to deselect`);
-                                }
-                                e.preventDefault();
-                                return;
-                            case 'Escape':
-                                if (selectedResizer) {
-                                    selectedResizer.classList.remove('selected');
-                                    selectedResizer = null;
-                                    this.setAttribute('aria-label', `Resize column ${index + 1}. Use arrow keys to resize, Enter to select, Escape to deselect`);
-                                }
-                                e.preventDefault();
-                                return;
-                            default:
-                                return; // Don't prevent default for other keys
-                        }
-                        
-                        // Apply the new width
-                        if (newWidth !== currentWidth) {
-                            th.style.width = newWidth + 'px';
-                            
-                            // Visual feedback
-                            this.classList.add('resizing');
-                            setTimeout(() => {
-                                this.classList.remove('resizing');
-                            }, 200);
-                            
-                            // Announce change to screen readers
-                            const announcement = document.createElement('div');
-                            announcement.setAttribute('aria-live', 'polite');
-                            announcement.setAttribute('aria-atomic', 'true');
-                            announcement.style.position = 'absolute';
-                            announcement.style.left = '-10000px';
-                            announcement.textContent = `Column ${index + 1} width changed to ${newWidth} pixels`;
-                            document.body.appendChild(announcement);
-                            setTimeout(() => document.body.removeChild(announcement), 1000);
-                        }
-                        
-                        e.preventDefault();
-                    });
-                    
-                    // Focus styling
-                    resizer.addEventListener('focus', function() {
-                        this.classList.add('focused');
-                    });
-                    
-                    resizer.addEventListener('blur', function() {
-                        this.classList.remove('focused');
-                        if (selectedResizer === this) {
-                            selectedResizer = null;
-                            this.classList.remove('selected');
-                        }
-                    });
-                });
-                
-                function startResize(resizer, clientX) {
-                    isResizing = true;
-                    currentResizer = resizer;
-                    startX = clientX;
-                    
-                    const th = resizer.parentElement;
-                    startWidth = parseInt(window.getComputedStyle(th).width, 10);
-                    
-                    resizer.classList.add('resizing');
-                    document.body.style.cursor = 'col-resize';
-                    document.body.style.userSelect = 'none';
-                }
-                
-                document.addEventListener('mousemove', function(e) {
-                    if (!isResizing || !currentResizer) return;
-                    
-                    const diff = e.clientX - startX;
-                    const newWidth = Math.max(50, startWidth + diff);
-                    
-                    const th = currentResizer.parentElement;
-                    th.style.width = newWidth + 'px';
-                    
-                    e.preventDefault();
-                });
-                
-                document.addEventListener('mouseup', function() {
-                    if (isResizing && currentResizer) {
-                        currentResizer.classList.remove('resizing');
-                        document.body.style.cursor = '';
-                        document.body.style.userSelect = '';
-                        
-                        isResizing = false;
-                        currentResizer = null;
-                    }
-                });
-                
-                // Add keyboard shortcut help BEFORE the table
-                const helpText = document.createElement('div');
-                helpText.className = 'alert alert-info small mb-3';
-                helpText.innerHTML = `
-                    <div class="d-flex align-items-center">
-                        <i class="fas fa-keyboard me-2"></i>
-                        <div>
-                            <strong>Column Resize Instructions:</strong> 
-                            Tab to column borders, use ←→ arrows (±10px), ↑↓ arrows (±5px), 
-                            Home (min width), End (max width), Enter (select for fine control), Esc (deselect)
-                        </div>
-                    </div>
-                `;
-                
-                const tableContainer = table.closest('.table-responsive');
-                if (tableContainer && !tableContainer.previousElementSibling?.classList.contains('alert-info')) {
-                    tableContainer.parentNode.insertBefore(helpText, tableContainer);
-                }
-            });
-        }
-        
-        // Initialize tooltips for truncated table content
-        function initTableTooltips() {
-            const tables = document.querySelectorAll('#uniquePagesTable, #allUrlsTable');
-            if (!tables.length) return;
-            
-            tables.forEach(table => {
-                const cells = table.querySelectorAll('td:not(.dropdown-cell)'); // Exclude dropdown cells
-                cells.forEach(cell => {
-                    // Check if content is truncated
-                    if (cell.scrollWidth > cell.clientWidth) {
-                        const fullText = cell.textContent.trim();
-                        if (fullText.length > 30) { // Only add tooltip for longer content
-                            cell.setAttribute('title', fullText);
-                            cell.style.cursor = 'help';
-                        }
-                    }
-                });
-                
-                // Re-check tooltips when window is resized
-                window.addEventListener('resize', () => {
-                    setTimeout(() => {
-                        cells.forEach(cell => {
-                            if (cell.scrollWidth > cell.clientWidth) {
-                                const fullText = cell.textContent.trim();
-                                if (fullText.length > 30) {
-                                    cell.setAttribute('title', fullText);
-                                    cell.style.cursor = 'help';
-                                }
-                            } else {
-                                cell.removeAttribute('title');
-                                cell.style.cursor = '';
-                            }
-                        });
-                    }, 100);
-                });
-            });
-        }
-        
-        // Clear all filters on page load
-        function clearAllFiltersOnLoad() {
-            // Clear Unique Pages filters
-            const uniqueFilter = document.getElementById('uniqueFilter');
-            const uniqueFilterUser = document.getElementById('uniqueFilterUser');
-            const uniqueFilterEnv = document.getElementById('uniqueFilterEnv');
-            const uniqueFilterQa = document.getElementById('uniqueFilterQa');
-            
-            if (uniqueFilter) uniqueFilter.value = '';
-            if (uniqueFilterUser) uniqueFilterUser.value = '';
-            if (uniqueFilterEnv) uniqueFilterEnv.value = '';
-            if (uniqueFilterQa) uniqueFilterQa.value = '';
-            
-            // Clear All URLs filters
-            const allUrlsFilter = document.getElementById('allUrlsFilter');
-            const allUrlsUniqueFilter = document.getElementById('allUrlsUniqueFilter');
-            const allUrlsMappingFilter = document.getElementById('allUrlsMappingFilter');
-            
-            if (allUrlsFilter) allUrlsFilter.value = '';
-            if (allUrlsUniqueFilter) allUrlsUniqueFilter.value = '';
-            if (allUrlsMappingFilter) allUrlsMappingFilter.value = '';
-        }
-        
-        // Initialize column resizing after DOM is loaded
-        setTimeout(() => {
-            initColumnResize();
-            initTableTooltips();
-        }, 500);
-        
-        const urlParams = new URLSearchParams(window.location.search);
-        const focusAssignBtn = urlParams.get('focus_assign_btn');
-        
-        if (focusAssignBtn) {
-            // First, ensure we're on the correct tab and subtab
-            const pagesTab = document.querySelector('#pages-tab');
-            const uniquePagesSubTab = document.querySelector('#project-sub-tab');
-            
-            if (pagesTab && uniquePagesSubTab) {
-                // Activate pages tab
-                const pagesTabInstance = new bootstrap.Tab(pagesTab);
-                pagesTabInstance.show();
-                
-                // Wait a bit for tab to show, then activate subtab
-                setTimeout(() => {
-                    const uniquePagesTabInstance = new bootstrap.Tab(uniquePagesSubTab);
-                    uniquePagesTabInstance.show();
-                    
-                    // Wait a bit more for subtab to show, then focus on assign button
-                    setTimeout(() => {
-                        const assignBtn = document.querySelector(`button[data-bs-target="#assignPageModal-${focusAssignBtn}"]`);
-                        if (assignBtn) {
-                            assignBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                            assignBtn.focus();
-                            
-                            // Add a temporary highlight effect
-                            assignBtn.classList.add('btn-warning');
-                            setTimeout(() => {
-                                assignBtn.classList.remove('btn-warning');
-                                assignBtn.classList.add('btn-outline-primary');
-                            }, 2000);
-                        }
-                    }, 300);
-                }, 300);
-            }
-            
-            // Clean up URL parameter
-            urlParams.delete('focus_assign_btn');
-            const newUrl = window.location.pathname + (urlParams.toString() ? '?' + urlParams.toString() : '') + window.location.hash;
-            window.history.replaceState({}, '', newUrl);
-        }
-        
-        // Let view_core.js handle all tab functionality
-        // Just ensure proper initial state
-        
-        // Handle phase status updates
-        $('.phase-status-update').on('change', function () {
-            var phaseId = $(this).data('phase-id');
-            var projectId = $(this).data('project-id');
-            var newStatus = $(this).val();
-            var $select = $(this);
 
-            $.ajax({
-                url: '<?php echo $baseDir; ?>/api/update_phase.php',
-                type: 'POST',
-                data: {
-                    phase_id: phaseId,
-                    project_id: projectId,
-                    field: 'status',
-                    value: newStatus
-                },
-                success: function (response) {
-                    if (response.success) {
-                        var $row = $select.closest('tr');
-                        $row.addClass('table-success');
-                        setTimeout(function () {
-                            $row.removeClass('table-success');
-                        }, 2000);
-                        if (typeof showToast === 'function') showToast('Phase status updated', 'success');
-                    } else {
-                        if (typeof showToast === 'function') showToast('Failed to update phase status: ' + (response.message || 'Unknown error'), 'danger');
-                        $select.val($select.data('original-value') || 'not_started');
-                    }
-                },
-                error: function (xhr, status, error) {
-                    if (typeof showToast === 'function') showToast('Error updating phase status: ' + error, 'danger');
-                    $select.val($select.data('original-value') || 'not_started');
-                }
-            });
-        });
-
-        // Store original values for phase status selects
-        $('.phase-status-update').each(function () {
-            $(this).data('original-value', $(this).val());
-        });
-
-        // Handle page status updates
-        $('.page-status-update').on('change', function () {
-            var pageId = $(this).data('page-id');
-            var projectId = $(this).data('project-id');
-            var newStatus = $(this).val();
-            var $select = $(this);
-
-            $.ajax({
-                url: '<?php echo $baseDir; ?>/api/update_page_status.php',
-                type: 'POST',
-                data: {
-                    page_id: pageId,
-                    project_id: projectId,
-                    status: newStatus
-                },
-                success: function (response) {
-                    if (response.success) {
-                        var $row = $select.closest('tr');
-                        $row.addClass('table-success');
-                        setTimeout(function () {
-                            $row.removeClass('table-success');
-                        }, 2000);
-                        if (typeof showToast === 'function') showToast('Page status updated', 'success');
-                    } else {
-                        if (typeof showToast === 'function') showToast('Failed to update page status: ' + (response.message || 'Unknown error'), 'danger');
-                        $select.val($select.data('original-value') || 'not_started');
-                    }
-                },
-                error: function (xhr, status, error) {
-                    if (typeof showToast === 'function') showToast('Error updating page status: ' + error, 'danger');
-                    $select.val($select.data('original-value') || 'not_started');
-                }
-            });
-        });
-
-        // Handle page expand/collapse functionality
-        $('.page-toggle-btn').on('click', function () {
-            var $button = $(this);
-            var $icon = $button.find('.toggle-icon');
-            var $collapse = $($(this).data('bs-target'));
-
-            $collapse.on('show.bs.collapse', function () {
-                $icon.removeClass('fa-chevron-down').addClass('fa-chevron-up');
-                $button.attr('title', 'Collapse Details');
-            });
-
-            $collapse.on('hide.bs.collapse', function () {
-                $icon.removeClass('fa-chevron-up').addClass('fa-chevron-down');
-                $button.attr('title', 'Expand Details');
-            });
-        });
-
-        // Handle Edit Phase modal
-        $('.edit-phase-btn').on('click', function () {
-            var phaseId = $(this).data('phase-id');
-            var phaseName = $(this).data('phase-name');
-            var startDate = $(this).data('start-date');
-            var endDate = $(this).data('end-date');
-            var plannedHours = $(this).data('planned-hours');
-            var status = $(this).data('status');
-            
-            $('#edit_phase_id').val(phaseId);
-            $('#edit_phase_name').val(phaseName.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()));
-            $('#edit_start_date').val(startDate || '');
-            $('#edit_end_date').val(endDate || '');
-            $('#edit_planned_hours').val(plannedHours || '');
-            $('#edit_status').val(status || 'not_started');
-        });
-
-        // Add date validation for Edit Phase modal
-        $('#edit_start_date, #edit_end_date').on('change', function() {
-            var startDate = $('#edit_start_date').val();
-            var endDate = $('#edit_end_date').val();
-            
-            if (startDate && endDate) {
-                var start = new Date(startDate);
-                var end = new Date(endDate);
-                
-                if (end < start) {
-                    if (typeof showToast === 'function') {
-                        showToast('End date cannot be before start date', 'danger');
-                    } else {
-                        alert('End date cannot be before start date');
-                    }
-                    // Reset the field that was just changed
-                    if ($(this).attr('id') === 'edit_end_date') {
-                        $('#edit_end_date').val('');
-                    } else {
-                        $('#edit_start_date').val('');
-                    }
-                }
-            }
-        });
-
-        // Set min attribute on end date when start date changes
-        $('#edit_start_date').on('change', function() {
-            var startDate = $(this).val();
-            if (startDate) {
-                $('#edit_end_date').attr('min', startDate);
-            } else {
-                $('#edit_end_date').removeAttr('min');
-            }
-        });
-
-        // Handle asset type toggle in Add Asset modal
-        $('input[name="asset_type"]').on('change', function () {
-            var assetType = $(this).val();
-            $('#link_fields').hide();
-            $('#file_fields').hide();
-            $('#text_fields').hide();
-            
-            if (assetType === 'link') {
-                $('#link_fields').show();
-                $('#main_url').prop('required', true);
-                $('#asset_file').prop('required', false);
-            } else if (assetType === 'file') {
-                $('#file_fields').show();
-                $('#main_url').prop('required', false);
-                $('#asset_file').prop('required', true);
-            } else if (assetType === 'text') {
-                $('#text_fields').show();
-                $('#main_url').prop('required', false);
-                $('#asset_file').prop('required', false);
-                
-                // Initialize Summernote for text content if not already initialized
-                if (!$('#text_content_editor').data('summernote')) {
-                    $('#text_content_editor').summernote({
-                        height: 200,
-                        toolbar: [
-                            ['style', ['style']],
-                            ['font', ['bold', 'italic', 'underline', 'clear']],
-                            ['para', ['ul', 'ol', 'paragraph']],
-                            ['insert', ['link']],
-                            ['view', ['codeview']]
-                        ]
-                    });
-                }
-            }
-        });
-
-        // Handle View Text Content modal
-        $('#viewTextModal').on('show.bs.modal', function (event) {
-            var button = $(event.relatedTarget);
-            var title = button.data('title');
-            var content = button.data('content');
-            
-            $('#viewTextModalTitle').text(title);
-            $('#viewTextModalContent').html(content);
-        });
-
-        // Handle chat widget
-        var $chatLauncher = $('#chatLauncher');
-        var $chatWidget = $('#projectChatWidget');
-        var $chatClose = $('#chatWidgetClose');
-        var $chatFullscreen = $('#chatWidgetFullscreen');
-        var $chatBadge = $('#chatBadge');
-        var chatPollingInterval = null;
-
-        // Function to update badge count
-        function updateChatBadge() {
-            $.ajax({
-                url: '<?php echo $baseDir; ?>/api/chat_unread_count.php?project_id=<?php echo $projectId; ?>',
-                method: 'GET',
-                dataType: 'json',
-                success: function(response) {
-                    if (response.success && response.unread_count > 0) {
-                        var count = response.unread_count > 99 ? '99+' : response.unread_count;
-                        
-                        if ($chatBadge.length) {
-                            // Update existing badge
-                            $chatBadge.text(count).show();
-                        } else {
-                            // Create new badge
-                            var badgeHtml = '<span class="badge rounded-pill bg-danger" id="chatBadge">' + 
-                                          count + 
-                                          '<span class="visually-hidden">unread messages</span></span>';
-                            $chatLauncher.append(badgeHtml);
-                            $chatBadge = $('#chatBadge');
-                        }
-                    } else if ($chatBadge.length && response.unread_count === 0) {
-                        // Hide badge if count is 0
-                        $chatBadge.fadeOut(300);
-                    }
-                },
-                error: function() {
-                    // Silently fail - don't show errors for polling
-                }
-            });
-        }
-
-        // Start polling for unread count (every 10 seconds)
-        function startChatPolling() {
-            if (chatPollingInterval) return; // Already polling
-            
-            chatPollingInterval = setInterval(function() {
-                // Only poll if chat is closed
-                if (!$chatWidget.hasClass('open')) {
-                    updateChatBadge();
-                }
-            }, 10000); // 10 seconds
-        }
-
-        // Stop polling
-        function stopChatPolling() {
-            if (chatPollingInterval) {
-                clearInterval(chatPollingInterval);
-                chatPollingInterval = null;
-            }
-        }
-
-        function openChatWidget() {
-            $chatWidget.addClass('open');
-            $chatLauncher.hide();
-            
-            // Hide badge when chat opens
-            if ($chatBadge.length) {
-                $chatBadge.fadeOut(300);
-            }
-            
-            // Immediately mark messages as read via AJAX
-            $.ajax({
-                url: '<?php echo $baseDir; ?>/api/mark_chat_read.php?project_id=<?php echo $projectId; ?>',
-                method: 'GET',
-                dataType: 'json',
-                success: function(response) {
-                    if (response.success) {
-                    // Success silently
-                }
-                },
-                error: function() {
-                    console.error('Failed to mark messages as read');
-                }
-            });
-            
-            // Stop polling while chat is open
-            stopChatPolling();
-            
-            setTimeout(function () {
-                var el = $chatClose.get(0);
-                if (el && typeof el.focus === 'function') el.focus();
-            }, 0);
-        }
-
-        function closeChatWidget() {
-            $chatWidget.removeClass('open');
-            $chatLauncher.show();
-            
-            // Resume polling when chat closes
-            startChatPolling();
-            
-            // Check for new messages immediately after closing
-            setTimeout(function() {
-                updateChatBadge();
-            }, 1000);
-            
-            setTimeout(function () {
-                var el = $chatLauncher.get(0);
-                if (el && typeof el.focus === 'function') el.focus();
-            }, 0);
-        }
-
-        $chatLauncher.on('click', function () { openChatWidget(); });
-        $chatClose.on('click', function () { closeChatWidget(); });
-        $chatFullscreen.on('click', function () {
-            window.location.href = '<?php echo $baseDir; ?>/modules/chat/project_chat.php?project_id=<?php echo $projectId; ?>';
-        });
-        window.addEventListener('message', function (event) {
-            if (!event || !event.data || event.data.type !== 'pms-chat-close') return;
-            closeChatWidget();
-        });
-
-        // Start polling on page load
-        startChatPolling();
-
-        // Initialize production hours when tab is shown
-        var productionHoursTab = document.getElementById('production-hours-tab');
-        if (productionHoursTab) {
-            productionHoursTab.addEventListener('shown.bs.tab', function () {
-                // Ensure tab pane is visible
-                var pane = document.getElementById('production-hours');
-                if (pane) {
-                    pane.classList.add('show', 'active');
-                }
-                if (typeof window.initProductionHours === 'function') {
-                    window.initProductionHours();
-                }
-            });
-            
-            // Also add click handler to ensure proper activation
-            productionHoursTab.addEventListener('click', function() {
-                setTimeout(function() {
-                    var pane = document.getElementById('production-hours');
-                    if (pane && pane.classList.contains('active')) {
-                        if (typeof window.initProductionHours === 'function') {
-                            window.initProductionHours();
-                        }
-                    }
-                }, 100);
-            });
-        }
-
-        // Check if production hours tab is already active on page load
-        setTimeout(function() {
-            var productionHoursPane = document.getElementById('production-hours');
-            if (productionHoursPane && productionHoursPane.classList.contains('active')) {
-                if (typeof window.initProductionHours === 'function') {
-                    window.initProductionHours();
-                }
-            }
-        }, 500);
-    });
+    // Define issueMetadataFields globally for view_issues.js
+    window.issueMetadataFields = <?php echo json_encode($metadataFields ?? []); ?>;
 </script>
+
+<?php include 'partials/modals.php'; ?>
+<script src="<?php echo $baseDir; ?>/assets/js/chat-widget.js?v=<?php echo filemtime(__DIR__ . '/../../assets/js/chat-widget.js'); ?>"></script>
 <?php
     $viewJsBase = __DIR__ . '/js/';
     $viewJsVersion = function ($file) use ($viewJsBase) {
         $path = $viewJsBase . $file;
         return file_exists($path) ? filemtime($path) : time();
     };
+    $assetsJsBase = __DIR__ . '/../../assets/js/';
+    $assetsJsVersion = function ($file) use ($assetsJsBase) {
+        $path = $assetsJsBase . $file;
+        return file_exists($path) ? filemtime($path) : time();
+    };
 ?>
+<script src="<?php echo $baseDir; ?>/assets/js/view-init.js?v=<?php echo $assetsJsVersion('view-init.js'); ?>"></script>
 <script src="<?php echo $baseDir; ?>/modules/projects/js/view_core.js?v=<?php echo $viewJsVersion('view_core.js'); ?>"></script>
 <script src="<?php echo $baseDir; ?>/modules/projects/js/view_pages.js?v=<?php echo time(); ?>"></script>
 <script src="<?php echo $baseDir; ?>/modules/projects/js/view_pages_enhanced.js?v=<?php echo time(); ?>"></script>
@@ -1606,79 +846,6 @@ include __DIR__ . '/../../includes/header.php';
 <script src="<?php echo $baseDir; ?>/modules/projects/js/view_feedback.js?v=<?php echo $viewJsVersion('view_feedback.js'); ?>"></script>
 <script src="<?php echo $baseDir; ?>/modules/projects/js/view_production.js?v=<?php echo time(); ?>"></script>
 
-<script>
-// Project Status Update Handler
-$(document).ready(function() {
-    $('#projectStatusDropdown').on('change', function() {
-        const projectId = $(this).data('project-id');
-        const newStatus = $(this).val();
-        const $dropdown = $(this);
-        const originalStatus = $dropdown.find('option:selected').data('original') || $dropdown.data('original-status');
-        
-        // Store original status on first load
-        if (!$dropdown.data('original-status')) {
-            $dropdown.data('original-status', originalStatus || newStatus);
-        }
-        
-        // Confirm status change
-        if (!confirm('Are you sure you want to change the project status?')) {
-            $dropdown.val($dropdown.data('original-status'));
-            return;
-        }
-        
-        // Disable dropdown during update
-        $dropdown.prop('disabled', true);
-        
-        $.ajax({
-            url: '<?php echo $baseDir; ?>/api/update_project_status.php',
-            type: 'POST',
-            data: {
-                project_id: projectId,
-                status: newStatus
-            },
-            dataType: 'json',
-            success: function(response) {
-                if (response.success) {
-                    // Update the stored original status
-                    $dropdown.data('original-status', newStatus);
-                    
-                    // Show success message
-                    if (typeof showToast === 'function') {
-                        showToast('Project status updated successfully!', 'success');
-                    } else {
-                        alert('Project status updated successfully!');
-                    }
-                    
-                    // Optional: Reload page to reflect changes
-                    // setTimeout(() => location.reload(), 1000);
-                } else {
-                    // Revert to original status
-                    $dropdown.val($dropdown.data('original-status'));
-                    
-                    if (typeof showToast === 'function') {
-                        showToast(response.message || 'Failed to update project status', 'danger');
-                    } else {
-                        alert(response.message || 'Failed to update project status');
-                    }
-                }
-            },
-            error: function(xhr, status, error) {
-                // Revert to original status
-                $dropdown.val($dropdown.data('original-status'));
-                
-                if (typeof showToast === 'function') {
-                    showToast('Error updating project status: ' + error, 'danger');
-                } else {
-                    alert('Error updating project status: ' + error);
-                }
-            },
-            complete: function() {
-                // Re-enable dropdown
-                $dropdown.prop('disabled', false);
-            }
-        });
-    });
-});
-</script>
 
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+
+<?php include __DIR__ . '/../../includes/footer.php'; 

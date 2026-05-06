@@ -439,7 +439,7 @@ class AdminAssignmentController {
     private function isAdmin() {
         return isset($_SESSION['user_id']) && 
                isset($_SESSION['role']) && 
-               in_array($_SESSION['role'], ['super_admin', 'admin']);
+               in_array($_SESSION['role'], ['admin']);
     }
     
     /**
@@ -551,4 +551,3 @@ class AdminAssignmentController {
         exit;
     }
 }
-?>

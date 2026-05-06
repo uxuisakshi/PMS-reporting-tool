@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
 require_once __DIR__ . '/../../includes/functions.php';
+require_once __DIR__ . '/../../includes/helpers.php';
 
 $auth = new Auth();
 $auth->requireLogin();
@@ -18,11 +19,21 @@ if (!($_SESSION['force_reset'] ?? false)) {
 
 $error = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    // CSRF protection
+    if (!isset($_POST['csrf_token']) || !verifyCsrfToken($_POST['csrf_token'])) {
+        $error = "Invalid security token. Please try again.";
+    } else {
     $newPassword = $_POST['new_password'];
     $confirmPassword = $_POST['confirm_password'];
     
     if (strlen($newPassword) < 8) {
-        $error = "Password must be at least 6 characters long.";
+        $error = "Password must be at least 8 characters long.";
+    } elseif (!preg_match('/[A-Z]/', $newPassword)) {
+        $error = "Password must contain at least one uppercase letter.";
+    } elseif (!preg_match('/[0-9]/', $newPassword)) {
+        $error = "Password must contain at least one number.";
+    } elseif (!preg_match('/[^A-Za-z0-9]/', $newPassword)) {
+        $error = "Password must contain at least one special character.";
     } elseif ($newPassword !== $confirmPassword) {
         $error = "Passwords do not match!";
     } else {
@@ -42,6 +53,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $error = "Failed to update password. Please try again.";
         }
     }
+    } // end CSRF check
 }
 
 // We don't include header.php because it might cause a redirect loop
@@ -68,17 +80,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </div>
             <div class="card-body">
                 <?php if ($error): ?>
-                    <div class="alert alert-danger"><?php echo $error; ?></div>
+                    <div class="alert alert-danger"><?php echo htmlspecialchars($error, ENT_QUOTES, 'UTF-8'); ?></div>
                 <?php endif; ?>
                 
                 <form method="POST">
+                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars(generateCsrfToken(), ENT_QUOTES, 'UTF-8'); ?>">
                     <div class="mb-3">
                         <label class="form-label">New Password</label>
-                        <input type="password" name="new_password" class="form-control" required placeholder="Min 8 characters">
+                        <div class="input-group">
+                            <input type="password" id="new_password" name="new_password" autocomplete="off" class="form-control" placeholder="Min 8 chars, uppercase, number, special char">
+                            <button type="button" class="btn btn-outline-secondary" data-toggle-password="new_password" aria-label="Toggle password visibility" aria-pressed="false">
+                                <i class="fas fa-eye" aria-hidden="true"></i>
+                            </button>
+                        </div>
                     </div>
                     <div class="mb-3">
                         <label class="form-label">Confirm New Password</label>
-                        <input type="password" name="confirm_password" class="form-control" required>
+                        <div class="input-group">
+                            <input type="password" id="confirm_password" name="confirm_password" autocomplete="off" class="form-control">
+                            <button type="button" class="btn btn-outline-secondary" data-toggle-password="confirm_password" aria-label="Toggle password visibility" aria-pressed="false">
+                                <i class="fas fa-eye" aria-hidden="true"></i>
+                            </button>
+                        </div>
                     </div>
                     <div class="d-grid shadow-sm">
                         <button type="submit" class="btn btn-primary">Update Password & Continue</button>
@@ -90,5 +113,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </div>
         </div>
     </div>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="<?php echo htmlspecialchars(getBaseDir(), ENT_QUOTES, 'UTF-8'); ?>/assets/js/auth-force-reset.js"></script>
 </body>
 </html>

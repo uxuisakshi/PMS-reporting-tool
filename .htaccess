@@ -1,23 +1,33 @@
 # Production .htaccess for Client Reporting and Analytics System
 # Requirements: 17.5 (Security), 18.1 (Performance and Caching)
 
+# Disable directory listing
+Options -Indexes
+
 # Enable rewrite engine
 RewriteEngine On
+RewriteBase /
+
+# Auto-fix legacy XAMPP hardcoded paths - redirects /PMS/uploads to /uploads
+RewriteRule ^PMS/(.*)$ /$1 [R=301,L]
 
 # Security Headers
 <IfModule mod_headers.c>
-    # Content-Security-Policy - Updated to allow source maps, DataTables, jQuery, and Google Fonts (relaxed for local HTTP)
-    Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://code.jquery.com https://cdn.datatables.net https://cdn.sheetjs.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://cdn.datatables.net https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' data: https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://fonts.gstatic.com; connect-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; media-src 'self'; object-src 'none'; frame-src 'self'; base-uri 'self'; form-action 'self'"
+    # Content-Security-Policy - Static fallback for non-PHP-header pages (API endpoints etc.)
+    # NOTE: Pages using includes/header.php override this with a nonce-based CSP dynamically.
+    # 'unsafe-eval' required by CDN libs: SheetJS, Summernote, DataTables, FullCalendar, Chart.js
+    # 'unsafe-inline' kept here only as fallback; nonce-based CSP removes it for all main pages.
+    Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://code.jquery.com https://cdn.datatables.net https://cdn.sheetjs.com https://code.highcharts.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://cdn.datatables.net https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' data: https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://fonts.gstatic.com; connect-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://code.highcharts.com; media-src 'self'; object-src 'none'; frame-src 'self'; base-uri 'self'; form-action 'self'"
     
     # Security headers
     Header always set X-Content-Type-Options nosniff
-    Header always set X-Frame-Options SAMEORIGIN
-    Header always set X-XSS-Protection "1; mode=block"
+    Header always set X-Frame-Options DENY
+    # X-XSS-Protection intentionally omitted — deprecated in modern browsers and can introduce XSS auditor bypass vulnerabilities
     Header always set Referrer-Policy "strict-origin-when-cross-origin"
     Header always set Permissions-Policy "geolocation=(), microphone=(), camera=()"
     
-    # HSTS for HTTPS
-    Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    # HSTS for HTTPS — preload removed until domain is submitted to hstspreload.org
+    Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
     
     # Additional security headers
     Header always set X-Permitted-Cross-Domain-Policies "none"
@@ -67,9 +77,7 @@ RedirectMatch 403 ^/?(config|includes|database|tmp|\.git|\.kiro)/.*$
 <IfModule mod_headers.c>
     Header set Connection keep-alive
 </IfModule>
-<IfModule mod_reqtimeout.c>
-    RequestReadTimeout header=20-40,MinRate=500 body=20,MinRate=500
-</IfModule>
+
 # Cache static assets for performance
 <IfModule mod_expires.c>
     ExpiresActive On
@@ -104,14 +112,14 @@ RedirectMatch 403 ^/?(config|includes|database|tmp|\.git|\.kiro)/.*$
 <IfModule mod_headers.c>
     # Cache static assets
     <FilesMatch "\.(css|js|png|jpg|jpeg|gif|svg|webp|woff|woff2|ttf|eot)$">
-        Header set Cache-Control "public, max-age=2592000"
+        Header always set Cache-Control "public, max-age=2592000"
     </FilesMatch>
     
-    # Don't cache dynamic content
+    # Don't cache dynamic content — use "always set" to overwrite any previously set value (prevents duplicate headers)
     <FilesMatch "\.(php|html)$">
-        Header set Cache-Control "no-cache, no-store, must-revalidate, private"
-        Header set Pragma "no-cache"
-        Header set Expires "0"
+        Header always set Cache-Control "no-cache, no-store, must-revalidate, private"
+        Header always set Pragma "no-cache"
+        Header always set Expires "0"
     </FilesMatch>
 </IfModule>
 
@@ -142,13 +150,21 @@ ServerSignature Off
     php_flag display_errors Off
     php_flag display_startup_errors Off
     php_flag log_errors On
+    php_value upload_max_filesize 25M
+    php_value post_max_size 30M
+    php_value max_file_uploads 20
     php_value error_reporting 0
+    php_value error_log /home/yourusername/logs/php_errors.log
 </IfModule>
 <IfModule mod_php8.c>
     php_flag display_errors Off
     php_flag display_startup_errors Off
     php_flag log_errors On
+    php_value upload_max_filesize 25M
+    php_value post_max_size 30M
+    php_value max_file_uploads 20
     php_value error_reporting 0
+    php_value error_log /home/yourusername/logs/php_errors.log
 </IfModule>
 
 # Block common attack patterns in User-Agent
@@ -157,11 +173,29 @@ RewriteRule .* - [F,L]
 
 # Prevent clickjacking via meta-refresh
 <FilesMatch "\.php$">
+    Header always set X-Frame-Options "DENY"
+</FilesMatch>
+
+# project_chat.php is intentionally embedded in an iframe within the same site
+# Must unset first, then set — otherwise the DENY from the block above wins
+<FilesMatch "^project_chat\.php$">
+    Header always unset X-Frame-Options
     Header always set X-Frame-Options "SAMEORIGIN"
 </FilesMatch>
 
 # Block access to backup and temp files
 <FilesMatch "\.(bak|old|orig|save|swp|tmp|~)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+# Block direct web access to debug/test/deployment scripts
+<FilesMatch "^(test_standalone|_patch|deploy_production|run_final_validation|run_migrations|debug_logo|diag|fix_tokens|remote_push)">
     <IfModule mod_authz_core.c>
         Require all denied
     </IfModule>

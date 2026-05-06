@@ -34,7 +34,7 @@ $accessControl = new ClientAccessControlManager();
 
 // Get client user ID
 $clientUserId = $userId;
-if (in_array($userRole, ['admin', 'super_admin']) && isset($_GET['client_id'])) {
+if (in_array($userRole, ['admin']) && isset($_GET['client_id'])) {
     $clientUserId = intval($_GET['client_id']);
 }
 
@@ -63,10 +63,12 @@ $assignedProjects = $accessControl->getAssignedProjects($clientUserId);
 // Set page title
 $pageTitle = htmlspecialchars($project['title']) . ' - Project Analytics';
 
+if (!isset($cspNonce) && function_exists('generateCspNonce')) {
+    $cspNonce = generateCspNonce();
+}
+
 // Prepare additional CSS
-$additionalCSS = '
-<link href="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.css" rel="stylesheet">
-' . $dashboardController->visualization->getVisualizationCSS();
+$additionalCSS = $dashboardController->visualization->getVisualizationCSS();
 
 // Start output buffering for page content
 ob_start();
@@ -92,40 +94,13 @@ ob_start();
 
 </div>
 
-<!-- Chart.js and Dashboard Scripts -->
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<!-- Dashboard Visualization Scripts -->
+<script src="https://code.highcharts.com/highcharts.js"></script>
+<script src="https://code.highcharts.com/modules/accessibility.js"></script>
 <?php echo $dashboardController->visualization->getVisualizationJS(); ?>
 
-<script>
-// Project-specific JavaScript functionality
-document.addEventListener('DOMContentLoaded', function() {
-    // Initialize project analytics
-    initializeProjectAnalytics();
-    
-    // Setup navigation handlers
-    setupProjectNavigation();
-});
-
-function initializeProjectAnalytics() {
-    // Load project-specific analytics data
-    const projectId = <?php echo $projectId; ?>;
-    const clientUserId = <?php echo $clientUserId; ?>;
-    
-    // Any project-specific initialization can go here
-}
-
-function setupProjectNavigation() {
-    // Handle project switching
-    const projectSelect = document.getElementById('projectNavSelect');
-    if (projectSelect) {
-        projectSelect.addEventListener('change', function() {
-            if (this.value) {
-                window.location.href = `<?php echo $baseDir; ?>/modules/client/project_dashboard.php?id=${this.value}`;
-            }
-        });
-    }
-}
-</script>
+<script nonce="<?php echo htmlspecialchars($cspNonce ?? '', ENT_QUOTES, 'UTF-8'); ?>">window._clientProjectConfig = <?php echo json_encode(['projectId' => (int) $projectId, 'clientUserId' => (int) $clientUserId, 'baseDir' => (string) $baseDir], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;</script>
+<script src="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/assets/js/client-project-dashboard.js?v=<?php echo time(); ?>"></script>
 
 
 
@@ -135,4 +110,3 @@ $pageContent = ob_get_clean();
 
 // Include the complete page template
 include __DIR__ . '/../../includes/client_page_template.php';
-?>

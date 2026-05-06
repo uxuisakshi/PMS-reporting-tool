@@ -1,9 +1,28 @@
 <?php
-// Database configuration - prefer environment variables on production hosts.
-define('DB_HOST', getenv('DB_HOST') ?: 'localhost');
-define('DB_NAME', getenv('DB_NAME') ?: 'project_management');
-define('DB_USER', getenv('DB_USER') ?: 'root');
-define('DB_PASS', getenv('DB_PASS') ?: '');
+// Smart configuration based on environment
+$serverHost = $_SERVER['HTTP_HOST'] ?? '';
+$scriptPath = $_SERVER['SCRIPT_NAME'] ?? '';
+
+// Default values (Live)
+$dbName = 'athenaeu_project_management';
+$dbUser = 'athenaeu_pms';
+$dbPass = '$Sis@2026$';
+$dbHost = 'localhost';
+
+// UAT overrides
+if (strpos($serverHost, 'uat') !== false || strpos($scriptPath, 'PMS-UAT') !== false) {
+    $dbName = 'athenaeu_project_management_uat';
+}
+
+define('DB_HOST', getenv('DB_HOST') ?: $dbHost);
+define('DB_NAME', getenv('DB_NAME') ?: $dbName);
+define('DB_USER', getenv('DB_USER') ?: $dbUser);
+define('DB_PASS', getenv('DB_PASS') ?: $dbPass);
+
+// Warn if running with default insecure credentials (non-CLI only)
+if (php_sapi_name() !== 'cli' && DB_USER === 'root' && DB_PASS === '') {
+    error_log('SECURITY WARNING: Application is running with default root/empty database credentials.');
+}
 
 // Runtime performance tuning (OPcache hints, APCu)
 require_once __DIR__ . '/performance.php';
@@ -45,6 +64,10 @@ class Database {
         }
     }
     
+    /**
+     * Get database connection instance
+     * @return PDO
+     */
     public static function getInstance() {
         if (self::$instance === null) {
             self::$instance = new Database();
@@ -60,4 +83,3 @@ class Database {
         throw new Exception("Cannot unserialize singleton");
     }
 }
-?>

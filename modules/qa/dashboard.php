@@ -1,9 +1,10 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
 require_once __DIR__ . '/../../includes/functions.php';
+require_once __DIR__ . '/../../includes/helpers.php';
 
 $auth = new Auth();
-$auth->requireRole(['qa', 'admin', 'super_admin']);
+$auth->requireRole(['qa', 'admin']);
 
 $userId = $_SESSION['user_id'];
 $userRole = $_SESSION['role'] ?? '';
@@ -41,11 +42,31 @@ function mapComputedToPageStatus(string $status): string {
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_env_status'])) {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error'] = 'Invalid request. Please try again.';
+        header('Location: dashboard.php');
+        exit;
+    }
     $pageId = (int)($_POST['page_id'] ?? 0);
     $environmentId = (int)($_POST['environment_id'] ?? 0);
     $projectId = (int)($_POST['project_id'] ?? 0);
     $status = trim((string)($_POST['status'] ?? ''));
-    $allowedStatuses = ['pending', 'na', 'completed'];
+    
+    // Map old labels/values to new ENUM values supported by DB
+    $qaStatusMap = [
+        'pending' => 'not_started',
+        'na' => 'on_hold',
+        'not_started' => 'not_started',
+        'on_hold' => 'on_hold',
+        'completed' => 'completed',
+        'pass' => 'completed'
+    ];
+    
+    if (isset($qaStatusMap[$status])) {
+        $status = $qaStatusMap[$status];
+    }
+
+    $allowedStatuses = ['not_started', 'in_progress', 'completed', 'on_hold', 'needs_review'];
 
     if ($pageId <= 0 || $environmentId <= 0 || $projectId <= 0 || !in_array($status, $allowedStatuses, true)) {
         $_SESSION['error'] = 'Invalid status update request.';
@@ -71,13 +92,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_env_status']))
         }
 
         $canUpdate = false;
-        if (in_array($userRole, ['admin', 'super_admin'], true)) {
+        if (in_array($userRole, ['admin'], true)) {
             $canUpdate = true;
         } else {
             $teamStmt = $db->prepare("
                 SELECT 1
                 FROM user_assignments
-                WHERE project_id = ? AND user_id = ? AND role = 'qa'
+                WHERE project_id = ? AND user_id = ?
                   AND (is_removed IS NULL OR is_removed = 0)
                 LIMIT 1
             ");
@@ -159,7 +180,19 @@ if (hasAdminPrivileges()) {
         LEFT JOIN users at_user ON pp.at_tester_id = at_user.id
         LEFT JOIN users ft_user ON pp.ft_tester_id = ft_user.id
         LEFT JOIN testing_results tr ON pp.id = tr.page_id AND tr.tester_role IN ('at_tester', 'ft_tester')
-        WHERE pp.qa_id = ? 
+        WHERE (
+            pp.qa_id = ? 
+            OR EXISTS (
+                SELECT 1 FROM page_environments pe 
+                WHERE pe.page_id = pp.id AND pe.qa_id = ?
+            )
+            OR EXISTS (
+                SELECT 1 FROM user_assignments ua 
+                WHERE ua.project_id = pp.project_id 
+                  AND ua.user_id = ? 
+                  AND (ua.is_removed IS NULL OR ua.is_removed = 0)
+            )
+        )
         AND p.status NOT IN ('completed', 'cancelled')
         AND (pp.status IS NULL OR LOWER(pp.status) NOT IN ('on_hold', 'hold', 'completed'))
         ORDER BY 
@@ -171,7 +204,7 @@ if (hasAdminPrivileges()) {
             END,
             pp.created_at
     ");
-    $pages->execute([$userId]);
+    $pages->execute([$userId, $userId, $userId]);
     $pagesList = $pages->fetchAll();
 }
 
@@ -208,9 +241,20 @@ if (hasAdminPrivileges()) {
             COUNT(DISTINCT pp.project_id) as total_assigned_projects
         FROM project_pages pp
         JOIN projects p ON pp.project_id = p.id
-        WHERE pp.qa_id = ? AND p.status NOT IN ('cancelled')
+        LEFT JOIN page_environments pe ON pp.id = pe.page_id
+        WHERE (
+            pp.qa_id = ? 
+            OR pe.qa_id = ?
+            OR EXISTS (
+                SELECT 1 FROM user_assignments ua 
+                WHERE ua.project_id = pp.project_id 
+                  AND ua.user_id = ? 
+                  AND (ua.is_removed IS NULL OR ua.is_removed = 0)
+            )
+        )
+        AND p.status NOT IN ('cancelled')
     ");
-    $stmt->execute([$userId]);
+    $stmt->execute([$userId, $userId, $userId]);
     $stats = $stmt->fetch(PDO::FETCH_ASSOC);
 
     // Get Active Projects Count (from user_assignments) - refined to not include completed/cancelled
@@ -218,8 +262,9 @@ if (hasAdminPrivileges()) {
         SELECT COUNT(*) 
         FROM user_assignments ua 
         JOIN projects p ON ua.project_id = p.id 
-        WHERE ua.user_id = ? AND ua.role = 'qa' 
+        WHERE ua.user_id = ? 
         AND p.status NOT IN ('completed', 'cancelled')
+        AND (ua.is_removed IS NULL OR ua.is_removed = 0)
     ");
     $projStats->execute([$userId]);
     $stats['active_projects'] = $projStats->fetchColumn();
@@ -230,8 +275,9 @@ $compProjStats = $db->prepare("
     SELECT COUNT(*) 
     FROM user_assignments ua 
     JOIN projects p ON ua.project_id = p.id 
-    WHERE ua.user_id = ? AND ua.role = 'qa' 
+    WHERE ua.user_id = ? 
     AND p.status = 'completed'
+    AND (ua.is_removed IS NULL OR ua.is_removed = 0)
 ");
 $compProjStats->execute([$userId]);
 $stats['completed_projects'] = $compProjStats->fetchColumn();
@@ -246,8 +292,9 @@ $assignedProjectsQuery = "
     FROM projects p
     JOIN user_assignments ua ON p.id = ua.project_id
     LEFT JOIN project_pages pp ON p.id = pp.project_id
-    WHERE ua.user_id = ? AND ua.role = 'qa'
+    WHERE ua.user_id = ?
     AND p.status IN ('in_progress', 'planning')
+    AND (ua.is_removed IS NULL OR ua.is_removed = 0)
     GROUP BY p.id, p.title, p.po_number, p.status, p.project_type
     ORDER BY p.created_at DESC
     LIMIT 5
@@ -272,7 +319,6 @@ if (!hasAdminPrivileges()) {
             SELECT 1 FROM user_assignments ua
             WHERE ua.project_id = pp.project_id
               AND ua.user_id = ?
-              AND ua.role = 'qa'
               AND (ua.is_removed IS NULL OR ua.is_removed = 0)
         )
     )";
@@ -280,6 +326,22 @@ if (!hasAdminPrivileges()) {
     $qaPendingParams[] = $userId;
     $qaPendingParams[] = $userId;
 }
+
+// Pagination for Pending QA Review
+$p_perPage = 10;
+$p_page = max(1, (int)($_GET['p_page'] ?? 1));
+$p_offset = ($p_page - 1) * $p_perPage;
+
+$qaPendingCountSql = "
+    SELECT COUNT(*)
+    FROM project_pages pp
+    JOIN projects p ON pp.project_id = p.id
+    JOIN page_environments pe ON pp.id = pe.page_id
+    WHERE " . implode(' AND ', $qaPendingWhere);
+$qaPendingCountStmt = $db->prepare($qaPendingCountSql);
+$qaPendingCountStmt->execute($qaPendingParams);
+$qaPendingTotalCount = (int)$qaPendingCountStmt->fetchColumn();
+$qaPendingTotalPages = ceil($qaPendingTotalCount / $p_perPage);
 
 $qaPendingSql = "
     SELECT
@@ -301,6 +363,7 @@ $qaPendingSql = "
     JOIN testing_environments te ON pe.environment_id = te.id
     WHERE " . implode(' AND ', $qaPendingWhere) . "
     ORDER BY p.priority, pp.page_name, te.name
+    LIMIT $p_perPage OFFSET $p_offset
 ";
 $qaPendingStmt = $db->prepare($qaPendingSql);
 $qaPendingStmt->execute($qaPendingParams);
@@ -734,13 +797,14 @@ if (!empty($qaPendingRows)) {
                             </td>
                             <td>
                                 <form method="POST" action="dashboard.php" class="d-inline-flex align-items-center gap-2">
+                                    <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                                     <input type="hidden" name="page_id" value="<?php echo (int)$page['id']; ?>">
                                     <input type="hidden" name="environment_id" value="<?php echo (int)$page['environment_id']; ?>">
                                     <input type="hidden" name="project_id" value="<?php echo (int)$page['project_id']; ?>">
                                     <select name="status" class="form-select form-select-sm" style="min-width: 150px;" aria-label="Update QA environment status">
-                                        <option value="pending" <?php echo $qaStatus === 'pending' ? 'selected' : ''; ?>>Pending</option>
-                                        <option value="na" <?php echo $qaStatus === 'na' ? 'selected' : ''; ?>>N/A</option>
-                                        <option value="completed" <?php echo $qaStatus === 'completed' ? 'selected' : ''; ?>>Completed</option>
+                                        <option value="not_started" <?php echo ($qaStatus === 'not_started' || $qaStatus === 'pending') ? 'selected' : ''; ?>>Pending</option>
+                                        <option value="on_hold" <?php echo ($qaStatus === 'on_hold' || $qaStatus === 'na') ? 'selected' : ''; ?>>N/A</option>
+                                        <option value="completed" <?php echo ($qaStatus === 'completed' || $qaStatus === 'pass') ? 'selected' : ''; ?>>Completed</option>
                                     </select>
                                     <button type="submit" name="update_env_status" class="btn btn-sm btn-primary">Update</button>
                                 </form>
@@ -755,6 +819,34 @@ if (!empty($qaPendingRows)) {
                     </tbody>
                 </table>
             </div>
+
+            <?php if ($qaPendingTotalPages > 1): ?>
+            <div class="mt-3">
+                <nav aria-label="Pending QA review pagination">
+                    <ul class="pagination pagination-sm justify-content-center mb-0">
+                        <li class="page-item <?php echo $p_page <= 1 ? 'disabled' : ''; ?>">
+                            <a class="page-link" href="?p_page=<?php echo $p_page - 1; ?>">Previous</a>
+                        </li>
+                        <?php 
+                        $startPage = max(1, $p_page - 2);
+                        $endPage = min($qaPendingTotalPages, $p_page + 2);
+                        for ($i = $startPage; $i <= $endPage; $i++): 
+                        ?>
+                        <li class="page-item <?php echo $p_page == $i ? 'active' : ''; ?>">
+                            <a class="page-link" href="?p_page=<?php echo $i; ?>"><?php echo $i; ?></a>
+                        </li>
+                        <?php endfor; ?>
+                        <li class="page-item <?php echo $p_page >= $qaPendingTotalPages ? 'disabled' : ''; ?>">
+                            <a class="page-link" href="?p_page=<?php echo $p_page + 1; ?>">Next</a>
+                        </li>
+                    </ul>
+                </nav>
+                <div class="text-center text-muted small mt-1">
+                    Showing <?php echo $p_offset + 1; ?>-<?php echo min($p_offset + $p_perPage, $qaPendingTotalCount); ?> of <?php echo $qaPendingTotalCount; ?> tasks
+                </div>
+            </div>
+            <?php endif; ?>
+
             <?php else: ?>
             <div class="text-center text-muted py-4">
                 <i class="fas fa-inbox fa-3x mb-3"></i>
@@ -822,4 +914,4 @@ if (!empty($qaPendingRows)) {
 
 
 
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<?php include __DIR__ . '/../../includes/footer.php'; 

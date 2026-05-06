@@ -4,13 +4,19 @@ require_once __DIR__ . '/../../includes/functions.php';
 require_once __DIR__ . '/../../includes/helpers.php';
 
 $auth = new Auth();
-$auth->requireRole(['admin', 'super_admin']);
+$auth->requireRole(['admin']);
 
 $baseDir = getBaseDir();
 $userRole = $_SESSION['role'] ?? '';
 $projectId = (int)($_POST['project_id'] ?? 0);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $projectId > 0) {
+    // CSRF protection
+    if (!isset($_POST['csrf_token']) || !verifyCsrfToken($_POST['csrf_token'])) {
+        $_SESSION['error'] = "Invalid security token.";
+        redirect($baseDir . "/modules/admin/projects.php");
+        exit;
+    }
     $projectId = isset($_POST['project_id']) ? intval($_POST['project_id']) : 0;
     
     if ($projectId > 0) {
@@ -49,7 +55,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $projectId > 0) {
 }
 
 // Redirect to role-specific projects page
-if ($userRole === 'admin' || $userRole === 'super_admin') {
+if ($userRole === 'admin') {
     redirect($baseDir . "/modules/admin/projects.php");
 } elseif ($userRole === 'project_lead') {
     redirect($baseDir . "/modules/project_lead/my_projects.php");
@@ -62,4 +68,3 @@ if ($userRole === 'admin' || $userRole === 'super_admin') {
 } else {
     redirect($baseDir . "/index.php");
 }
-?>

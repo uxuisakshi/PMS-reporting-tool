@@ -1,9 +1,11 @@
 <?php
+ob_start();
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/functions.php';
 require_once __DIR__ . '/../includes/helpers.php';
 require_once __DIR__ . '/../includes/project_permissions.php';
+ob_end_clean();
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -39,9 +41,10 @@ function isProjectPagesView($db) {
 }
 
 function ensureProjectPagesTable($db) {
+    // [DISABLED] This migration was found to be destructive if the view was scoped.
+    return;
+    /*
     if (!isProjectPagesView($db)) {
-        return;
-    }
 
     $db->exec("
         CREATE TABLE IF NOT EXISTS project_pages_tmp_no_view (
@@ -93,14 +96,14 @@ function ensureProjectPagesTable($db) {
 
     $db->exec("DROP VIEW project_pages");
     $db->exec("RENAME TABLE project_pages_tmp_no_view TO project_pages");
+    }
+    */
 }
 
 // Helper: delete grouped urls by ids (ensures permission and logs activity)
 function delete_grouped_ids($db, $userId, $projectId, array $idsArr) {
     if (empty($idsArr)) return 0;
-    error_log('delete_grouped_ids called by user=' . intval($userId) . ' project=' . intval($projectId) . ' ids=' . implode(',', $idsArr));
     if (!hasProjectPermission($db, $userId, $projectId, 'delete_grouped_urls')) {
-        error_log('delete_grouped_ids: permission denied for user=' . intval($userId) . ' project=' . intval($projectId));
         jsonRes(['error' => 'Permission denied'], 403);
     }
     $in  = str_repeat('?,', count($idsArr) - 1) . '?';
@@ -109,12 +112,11 @@ function delete_grouped_ids($db, $userId, $projectId, array $idsArr) {
     $params = array_merge([$projectId], $idsArr);
     $stmt->execute($params);
     try { logActivity($db, $userId, 'delete_grouped_urls_bulk', 'project', $projectId, ['deleted_ids'=>$idsArr]); } catch (Exception $e) { error_log('logActivity failed: ' . $e->getMessage()); }
-    error_log('delete_grouped_ids: deleted ' . $stmt->rowCount());
     return $stmt->rowCount();
 }
 
 try {
-    ensureProjectPagesTable($db);
+    // ensureProjectPagesTable($db);
     // Read raw input early so JSON POST bodies can provide an action
     $rawBody = @file_get_contents('php://input');
     $jsonBody = null;
@@ -125,19 +127,7 @@ try {
     $action = $_GET['action'] ?? ($jsonBody['action'] ?? ($_POST['action'] ?? ''));
     // If action is still empty, return helpful debug info to client and log server-side
     if (empty($action)) {
-        error_log('project_pages: missing action. Raw input length=' . strlen($rawBody));
-        error_log('project_pages: _GET=' . json_encode($_GET));
-        error_log('project_pages: _POST=' . json_encode($_POST));
-        error_log('project_pages: jsonBody=' . json_encode($jsonBody));
-        $debug = [
-            'raw_body_preview' => is_string($rawBody) ? substr($rawBody, 0, 2000) : null,
-            '_GET' => $_GET,
-            '_POST' => $_POST,
-            'jsonBody' => $jsonBody,
-            'method' => $method,
-            'request_uri' => $_SERVER['REQUEST_URI'] ?? ''
-        ];
-        jsonRes(['error' => 'action not found', 'debug' => $debug], 400);
+        jsonRes(['error' => 'action required'], 400);
     }
 
     if ($method === 'GET') {
@@ -199,10 +189,10 @@ try {
             $up = $u->fetch(PDO::FETCH_ASSOC);
             if (!$up) jsonRes(['error'=>'unique not found'],404);
             $projectId = (int)$up['project_id'];
-            // permission: admin/super_admin/project_lead
+            // permission: admin/admin/project_lead
             $role = $_SESSION['role'] ?? '';
             $userId = $_SESSION['user_id'] ?? 0;
-            if (!in_array($role, ['admin','super_admin','project_lead'])) jsonRes(['error' => 'Permission denied'], 403);
+            if (!in_array($role, ['admin','admin','project_lead'])) jsonRes(['error' => 'Permission denied'], 403);
             if ($role === 'project_lead') {
                 $p = $db->prepare('SELECT project_lead_id FROM projects WHERE id = ? LIMIT 1');
                 $p->execute([$projectId]);
@@ -251,8 +241,18 @@ try {
             $pageId = isset($input['page_id']) && $input['page_id'] !== '' ? (int)$input['page_id'] : 0;
             $newName = trim($input['page_name'] ?? '');
             $field = trim($input['field'] ?? 'page_name');
+            
+            // Debug logging for troubleshooting
+            error_log("update_page_name: uniqueId=$uniqueId, pageId=$pageId, field=$field, newName='$newName'");
+            
             if (!$uniqueId && !$pageId) jsonRes(['error' => 'unique_page_id or page_id required'], 400);
-            if ($field !== 'notes' && $newName === '') jsonRes(['error' => 'page_name required'], 400);
+            if (!in_array($field, ['page_name', 'canonical_url', 'notes', 'page_number'], true)) jsonRes(['error' => 'invalid field'], 400);
+            
+            // For page_number field, allow empty values (it can be cleared)
+            // For other fields except notes, require non-empty values
+            if (!in_array($field, ['notes', 'page_number']) && $newName === '') {
+                jsonRes(['error' => 'value required'], 400);
+            }
 
             // determine project id
             if ($pageId) {
@@ -279,6 +279,10 @@ try {
             if ($pageId) {
                 if ($field === 'notes') {
                     $upd = $db->prepare('UPDATE project_pages SET notes = ?, updated_at = NOW() WHERE id = ?');
+                } elseif ($field === 'canonical_url') {
+                    $upd = $db->prepare('UPDATE project_pages SET url = ?, updated_at = NOW() WHERE id = ?');
+                } elseif ($field === 'page_number') {
+                    $upd = $db->prepare('UPDATE project_pages SET page_number = ?, updated_at = NOW() WHERE id = ?');
                 } else {
                     $upd = $db->prepare('UPDATE project_pages SET page_name = ?, updated_at = NOW() WHERE id = ?');
                 }
@@ -331,6 +335,8 @@ try {
             // For non-page_name fields on unique (notes/page_name) in project_pages
             if ($field === 'notes') {
                 $upd = $db->prepare('UPDATE project_pages SET notes = ?, updated_at = NOW() WHERE id = ?');
+            } elseif ($field === 'canonical_url') {
+                $upd = $db->prepare('UPDATE project_pages SET url = ?, updated_at = NOW() WHERE id = ?');
             } else {
                 $upd = $db->prepare('UPDATE project_pages SET page_name = ?, updated_at = NOW() WHERE id = ?');
             }
@@ -370,9 +376,18 @@ try {
                 $name = $pageLabel;
             }
 
+            $saveProjectId = $projectId;
+
+            // Check for existing page with same name or URL in the same project
+            $checkStmt = $db->prepare("SELECT id FROM project_pages WHERE project_id = ? AND (page_name = ? OR (url IS NOT NULL AND url = ?)) LIMIT 1");
+            $checkStmt->execute([$projectId, $name, $canonical ?: null]);
+            if ($checkStmt->fetch()) {
+                jsonRes(['error' => 'A page with this name or URL already exists in this project.'], 409);
+            }
+
             try {
                 $ins = $db->prepare('INSERT INTO project_pages (project_id, page_name, page_number, url, created_by, created_at) VALUES (?, ?, ?, ?, ?, NOW())');
-                $ins->execute([$projectId, $name, $pageLabel, $canonical ?: null, $_SESSION['user_id'] ?? null]);
+                $ins->execute([$saveProjectId, $name, $pageLabel, $canonical ?: null, $_SESSION['user_id'] ?? null]);
                 $id = (int)$db->lastInsertId();
             } catch (PDOException $e) {
                 if ($e->getCode() === '23000') {
@@ -427,8 +442,6 @@ try {
 
         // Accept bulk grouped delete via POST as well (some environments strip DELETE bodies)
         if ($action === 'remove_grouped_bulk') {
-            // Log incoming raw body for diagnostics
-            try { error_log('remove_grouped_bulk raw input: ' . file_get_contents('php://input')); } catch (Exception $e) {}
             $projectId = (int)($input['project_id'] ?? 0);
             $ids = $input['ids'] ?? null;
             if (!$projectId || !$ids) jsonRes(['error' => 'project_id and ids required'], 400);
@@ -553,7 +566,7 @@ try {
                 jsonRes(['success'=>true,'created_pages'=>$createdPages,'updated_envs'=>$updatedEnvs,'inserted_results'=>$insertedResults]);
             } catch (Exception $ex) {
                 if ($db->inTransaction()) $db->rollBack();
-                jsonRes(['error'=>'Failed to run tests','message'=>$ex->getMessage()],500);
+                jsonRes(['error'=>'Failed to run tests'],500);
             }
         }
 
@@ -561,7 +574,8 @@ try {
     }
 
     if ($method === 'DELETE') {
-        parse_str(file_get_contents('php://input'), $delVars);
+        // php://input can only be read once; reuse $rawBody already read above
+        parse_str($rawBody ?? '', $delVars);
         if ($action === 'remove_grouped') {
             $id = (int)($delVars['id'] ?? 0);
             if (!$id) jsonRes(['error' => 'id required'], 400);
@@ -578,10 +592,6 @@ try {
         if ($action === 'remove_grouped_bulk') {
             $projectId = (int)($delVars['project_id'] ?? 0);
             $ids = $delVars['ids'] ?? null;
-            // Debug helper: if debug=1 passed via query or body, return parsed params
-            if (!empty($_GET['debug']) || !empty($delVars['debug'])) {
-                jsonRes(['debug' => true, 'received' => ['project_id' => $projectId, 'ids' => $ids]]);
-            }
             if (!$projectId || !$ids) jsonRes(['error' => 'project_id and ids required'], 400);
             // ids could be comma separated or array-like
             if (is_string($ids)) {
@@ -613,17 +623,8 @@ try {
             $up = $u->fetch(PDO::FETCH_ASSOC);
             if (!$up) jsonRes(['error' => 'unique page not found'], 404);
             $projectId = (int)$up['project_id'];
-            $role = $_SESSION['role'] ?? '';
             $userId = $_SESSION['user_id'] ?? 0;
-            // allow only admins, super_admin, or project lead
-            if (!in_array($role, ['admin','super_admin','project_lead'])) jsonRes(['error' => 'Permission denied'], 403);
-            // If project_lead, ensure they are the lead of the project
-            if ($role === 'project_lead') {
-                $p = $db->prepare('SELECT project_lead_id FROM projects WHERE id = ? LIMIT 1');
-                $p->execute([$projectId]);
-                $prow = $p->fetch(PDO::FETCH_ASSOC);
-                if (!$prow || (int)$prow['project_lead_id'] !== (int)$userId) jsonRes(['error' => 'Permission denied'], 403);
-            }
+            if (!hasProjectPermission($db, $userId, $projectId, 'pages_assign')) jsonRes(['error' => 'Permission denied'], 403);
 
             $db->beginTransaction();
             try {
@@ -693,10 +694,20 @@ try {
                 $del->execute([$id]);
 
                 $db->commit();
+                
+                // log activity
+                try {
+                    logActivity($db, $userId, 'deleted_page', 'page', $id, [
+                        'page_name' => $up['page_name'] ?? ($up['name'] ?? ''),
+                        'page_number' => $up['page_number'] ?? '',
+                        'project_id' => $projectId
+                    ]);
+                } catch (Exception $e) {}
+
                 jsonRes(['success' => true]);
             } catch (Exception $e) {
                 $db->rollBack();
-                jsonRes(['error' => 'Failed to delete unique page', 'message' => $e->getMessage()], 500);
+                jsonRes(['error' => 'Failed to delete unique page'], 500);
             }
         }
         // bulk delete unique pages
@@ -720,16 +731,8 @@ try {
             if (count($projectIds) !== 1) jsonRes(['error'=>'items belong to multiple projects'], 400);
             $projectId = (int)$projectIds[0];
 
-            // permission: admin/super_admin/project_lead (and if project_lead must be lead)
-            $role = $_SESSION['role'] ?? '';
             $userId = $_SESSION['user_id'] ?? 0;
-            if (!in_array($role, ['admin','super_admin','project_lead'])) jsonRes(['error' => 'Permission denied'], 403);
-            if ($role === 'project_lead') {
-                $p = $db->prepare('SELECT project_lead_id FROM projects WHERE id = ? LIMIT 1');
-                $p->execute([$projectId]);
-                $prow = $p->fetch(PDO::FETCH_ASSOC);
-                if (!$prow || (int)$prow['project_lead_id'] !== (int)$userId) jsonRes(['error' => 'Permission denied'], 403);
-            }
+            if (!hasProjectPermission($db, $userId, $projectId, 'pages_assign')) jsonRes(['error' => 'Permission denied'], 403);
 
             $db->beginTransaction();
             try {
@@ -796,7 +799,7 @@ try {
                 jsonRes(['success'=>true,'deleted'=>count($idsArr)]);
             } catch (Exception $e) {
                 $db->rollBack();
-                jsonRes(['error' => 'Failed to delete unique pages', 'message' => $e->getMessage()], 500);
+                jsonRes(['error' => 'Failed to delete unique pages'], 500);
             }
         }
         jsonRes(['error' => 'action not found'], 404);
@@ -806,7 +809,7 @@ try {
 
 } catch (PDOException $e) {
     error_log('project_pages API error: ' . $e->getMessage());
-    jsonRes(['error' => 'database error', 'message' => $e->getMessage()], 500);
+    jsonRes(['error' => 'A database error occurred'], 500);
 }
 
 function normalizeUrlForGrouping($u) {
@@ -816,4 +819,3 @@ function normalizeUrlForGrouping($u) {
     return mb_strtolower($u);
 }
 
-?>

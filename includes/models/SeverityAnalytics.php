@@ -44,15 +44,15 @@ class SeverityAnalytics extends AnalyticsEngine {
             'visualization_config' => [
                 'primary_chart' => [
                     'type' => 'bar',
-                    'data_key' => 'severity_distribution',
+                    'data_key' => 'issue_severity_distribution',
                     'title' => 'Issues by Severity Level',
                     'x_axis' => 'Severity Level',
                     'y_axis' => 'Issue Count',
-                    'colors' => ['#dc3545', '#fd7e14', '#ffc107', '#28a745'] // Critical, High, Medium, Low
+                    'colors' => ['#7f1d1d', '#dc2626', '#ea580c', '#2563eb'] // Blocker, Critical, Major, Minor
                 ],
                 'secondary_chart' => [
                     'type' => 'pie',
-                    'data_key' => 'severity_breakdown',
+                    'data_key' => 'issue_severity_breakdown',
                     'title' => 'Severity Distribution'
                 ]
             ]
@@ -78,12 +78,18 @@ class SeverityAnalytics extends AnalyticsEngine {
             'Medium' => 0,
             'Low' => 0
         ];
+
+        $issueSeverityCounts = [
+            'Blocker' => 0,
+            'Critical' => 0,
+            'Major' => 0,
+            'Minor' => 0
+        ];
         
         $severityByStatus = [
             'Critical' => ['Open' => 0, 'In Progress' => 0, 'Resolved' => 0, 'Closed' => 0],
             'High' => ['Open' => 0, 'In Progress' => 0, 'Resolved' => 0, 'Closed' => 0],
-            'Medium' => ['Open' => 0, 'In Progress' => 0, 'Resolved' => 0, 'Closed' => 0],
-            'Low' => ['Open' => 0, 'In Progress' => 0, 'Resolved' => 0, 'Closed' => 0]
+            'Medium' => ['Open' => 0, 'In Progress' => 0, 'Resolved' => 0, 'Closed' => 0]
         ];
         
         $severityByPage = [];
@@ -97,11 +103,13 @@ class SeverityAnalytics extends AnalyticsEngine {
         
         foreach ($issues as $issue) {
             $severity = $this->normalizeSeverity($issue['severity'] ?? 'Medium');
+            $issueSeverity = $this->normalizeIssueSeverityTerm($issue['severity'] ?? 'major');
             $status = $issue['status'] ?? 'Open';
             $page = $issue['page_url'] ?? 'Unknown';
             $createdDate = $issue['created_at'] ?? date('Y-m-d');
             
             $severityCounts[$severity]++;
+            $issueSeverityCounts[$issueSeverity]++;
             $severityByStatus[$severity][$status]++;
             
             // Track severity by page
@@ -158,11 +166,23 @@ class SeverityAnalytics extends AnalyticsEngine {
                 ['severity' => 'Medium', 'count' => $severityCounts['Medium'], 'percentage' => $this->calculatePercentage($severityCounts['Medium'], $totalIssues)],
                 ['severity' => 'Low', 'count' => $severityCounts['Low'], 'percentage' => $this->calculatePercentage($severityCounts['Low'], $totalIssues)]
             ],
+            'issue_severity_distribution' => [
+                ['severity' => 'Blocker', 'count' => $issueSeverityCounts['Blocker'], 'percentage' => $this->calculatePercentage($issueSeverityCounts['Blocker'], $totalIssues)],
+                ['severity' => 'Critical', 'count' => $issueSeverityCounts['Critical'], 'percentage' => $this->calculatePercentage($issueSeverityCounts['Critical'], $totalIssues)],
+                ['severity' => 'Major', 'count' => $issueSeverityCounts['Major'], 'percentage' => $this->calculatePercentage($issueSeverityCounts['Major'], $totalIssues)],
+                ['severity' => 'Minor', 'count' => $issueSeverityCounts['Minor'], 'percentage' => $this->calculatePercentage($issueSeverityCounts['Minor'], $totalIssues)]
+            ],
             'severity_breakdown' => [
                 ['label' => 'Critical', 'value' => $severityCounts['Critical'], 'color' => '#dc3545'],
                 ['label' => 'High', 'value' => $severityCounts['High'], 'color' => '#fd7e14'],
                 ['label' => 'Medium', 'value' => $severityCounts['Medium'], 'color' => '#ffc107'],
                 ['label' => 'Low', 'value' => $severityCounts['Low'], 'color' => '#28a745']
+            ],
+            'issue_severity_breakdown' => [
+                ['label' => 'Blocker', 'value' => $issueSeverityCounts['Blocker'], 'color' => '#7f1d1d'],
+                ['label' => 'Critical', 'value' => $issueSeverityCounts['Critical'], 'color' => '#dc2626'],
+                ['label' => 'Major', 'value' => $issueSeverityCounts['Major'], 'color' => '#ea580c'],
+                ['label' => 'Minor', 'value' => $issueSeverityCounts['Minor'], 'color' => '#2563eb']
             ],
             'severity_by_status' => $severityByStatus,
             'top_severity_pages' => $topSeverityPages,
@@ -179,7 +199,7 @@ class SeverityAnalytics extends AnalyticsEngine {
      * @return string
      */
     private function normalizeSeverity($severity) {
-        $severity = strtolower(trim($severity));
+        $severity = $this->normalizeLowerText($severity);
         
         $mapping = [
             'critical' => 'Critical',
@@ -196,6 +216,31 @@ class SeverityAnalytics extends AnalyticsEngine {
         ];
         
         return $mapping[$severity] ?? 'Medium';
+    }
+
+    /**
+     * Normalize raw issue severity labels to the terms used in issue records.
+     *
+     * @param string $severity
+     * @return string
+     */
+    private function normalizeIssueSeverityTerm($severity) {
+        $severity = $this->normalizeLowerText($severity);
+
+        $mapping = [
+            'blocker' => 'Blocker',
+            'critical' => 'Critical',
+            'high' => 'Critical',
+            'major' => 'Major',
+            'medium' => 'Major',
+            'moderate' => 'Major',
+            'normal' => 'Major',
+            'minor' => 'Minor',
+            'low' => 'Minor',
+            'trivial' => 'Minor'
+        ];
+
+        return $mapping[$severity] ?? 'Major';
     }
     
     /**

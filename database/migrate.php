@@ -53,7 +53,7 @@ if (!isset($_SESSION['migrate_auth'])) {
                 <div class="error"><?php echo $error; ?></div>
             <?php endif; ?>
             <form method="POST">
-                <input type="password" name="password" placeholder="Enter password" required autofocus>
+                <input type="password" name="password" autocomplete="off" placeholder="Enter password" required autofocus>
                 <button type="submit" name="login">Login</button>
             </form>
         </div>

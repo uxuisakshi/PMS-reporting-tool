@@ -3,7 +3,7 @@ require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../includes/auth.php';
 
 $auth = new Auth();
-$auth->requireRole(['admin', 'super_admin']);
+$auth->requireRole(['admin']);
 
 class BackupManager {
     private $db;
@@ -254,4 +254,3 @@ class BackupManager {
         return round($bytes, 2) . ' ' . $units[$pow];
     }
 }
-?>

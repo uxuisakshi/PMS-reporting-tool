@@ -88,6 +88,13 @@ function validateHoursAllocation($db, $projectId, $hoursToAllocate, $excludeAssi
 function getProjectHoursSummary($db, $projectId) {
     try {
         // Use subqueries to avoid Cartesian product when joining user_assignments and project_time_logs
+        $hasIsUtilized = false;
+        try {
+            $colCheck = $db->query("SHOW COLUMNS FROM project_time_logs LIKE 'is_utilized'");
+            $hasIsUtilized = $colCheck && $colCheck->rowCount() > 0;
+        } catch (Exception $e) { $hasIsUtilized = false; }
+        $utilizedWhere = $hasIsUtilized ? "AND is_utilized = 1" : "";
+
         $query = "
             SELECT 
                 p.total_hours,
@@ -104,7 +111,7 @@ function getProjectHoursSummary($db, $projectId) {
             LEFT JOIN (
                 SELECT project_id, SUM(hours_spent) as utilized_hours
                 FROM project_time_logs
-                WHERE project_id = ? AND is_utilized = 1
+                WHERE project_id = ? $utilizedWhere
                 GROUP BY project_id
             ) ptl_sum ON p.id = ptl_sum.project_id
             WHERE p.id = ?

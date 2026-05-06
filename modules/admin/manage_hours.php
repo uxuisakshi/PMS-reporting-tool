@@ -1,7 +1,10 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
 require_once __DIR__ . '/../../includes/functions.php';
+require_once __DIR__ . '/../../includes/helpers.php';
 require_once __DIR__ . '/../../includes/hours_validation.php';
+
+$baseDir = getBaseDir();
 
 $auth = new Auth();
 $auth->requireRole(['admin', 'project_lead']); // Admin and Project Lead can manage hours
@@ -29,6 +32,11 @@ if (!$user) {
 
 // Handle form submissions
 if ($_POST) {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error'] = 'Invalid request. Please try again.';
+        header('Location: ' . $_SERVER['PHP_SELF'] . '?user_id=' . $userId);
+        exit;
+    }
     if (isset($_POST['update_hours'])) {
         $assignmentId = $_POST['assignment_id'];
         $newHours = $_POST['new_hours'];
@@ -36,13 +44,18 @@ if ($_POST) {
         
         try {
             // Get current assignment details
-            $assignmentQuery = "SELECT ua.*, p.title as project_title FROM user_assignments ua JOIN projects p ON ua.project_id = p.id WHERE ua.id = ?";
+            $assignmentQuery = "SELECT ua.*, p.title as project_title, p.project_lead_id FROM user_assignments ua JOIN projects p ON ua.project_id = p.id WHERE ua.id = ?";
             $stmt = $db->prepare($assignmentQuery);
             $stmt->execute([$assignmentId]);
             $assignment = $stmt->fetch();
             
             if (!$assignment) {
                 throw new Exception("Assignment not found.");
+            }
+
+            // IDOR check: project lead can only update their own projects
+            if ($_SESSION['role'] === 'project_lead' && (int)$assignment['project_lead_id'] !== (int)$_SESSION['user_id']) {
+                throw new Exception("Unauthorized access to this project.");
             }
             
             // Validate hours allocation
@@ -82,6 +95,16 @@ if ($_POST) {
         $reason = $_POST['reason'] ?? '';
         
         try {
+            // IDOR check: project lead can only add to their own projects
+            if ($_SESSION['role'] === 'project_lead') {
+                $checkStmt = $db->prepare("SELECT project_lead_id FROM projects WHERE id = ?");
+                $checkStmt->execute([$projectId]);
+                $projectLeadId = $checkStmt->fetchColumn();
+                if ((int)$projectLeadId !== (int)$_SESSION['user_id']) {
+                    throw new Exception("Unauthorized access to this project.");
+                }
+            }
+
             // Validate hours allocation
             $validation = validateHoursAllocation($db, $projectId, $hours);
             
@@ -125,10 +148,19 @@ if ($_POST) {
         
         try {
             // Get assignment details before deletion
-            $getQuery = "SELECT ua.*, p.title as project_title FROM user_assignments ua JOIN projects p ON ua.project_id = p.id WHERE ua.id = ?";
+            $getQuery = "SELECT ua.*, p.title as project_title, p.project_lead_id FROM user_assignments ua JOIN projects p ON ua.project_id = p.id WHERE ua.id = ?";
             $stmt = $db->prepare($getQuery);
             $stmt->execute([$assignmentId]);
             $assignment = $stmt->fetch();
+
+            if (!$assignment) {
+                throw new Exception("Assignment not found.");
+            }
+
+            // IDOR check: project lead can only remove from their own projects
+            if ($_SESSION['role'] === 'project_lead' && (int)$assignment['project_lead_id'] !== (int)$_SESSION['user_id']) {
+                throw new Exception("Unauthorized access to this project.");
+            }
             
             // Remove assignment
             $deleteQuery = "DELETE FROM user_assignments WHERE id = ?";
@@ -140,6 +172,7 @@ if ($_POST) {
             $logDetails = json_encode([
                 'target_user_id' => $userId,
                 'target_user_name' => $user['full_name'],
+                'project_id' => $assignment['project_id'],
                 'project_title' => $assignment['project_title'],
                 'role' => $assignment['role'],
                 'hours' => $assignment['hours_allocated'],
@@ -160,7 +193,17 @@ if ($_POST) {
     exit;
 }
 
+// Check if is_utilized column exists in project_time_logs
+$hasIsUtilized = false;
+try {
+    $colCheck = $db->query("SHOW COLUMNS FROM project_time_logs LIKE 'is_utilized'");
+    $hasIsUtilized = $colCheck && $colCheck->rowCount() > 0;
+} catch (Exception $e) { $hasIsUtilized = false; }
+
+$utilizedFilter = $hasIsUtilized ? "WHERE is_utilized = 1" : "";
+
 // Get current assignments
+$pLeadAnd = ($_SESSION['role'] === 'project_lead') ? " AND p.project_lead_id = " . (int)$_SESSION['user_id'] : "";
 $assignmentsQuery = "
     SELECT ua.*, p.title as project_title, p.po_number, p.status as project_status,
            COALESCE(ptl.utilized_hours, 0) as utilized_hours
@@ -169,10 +212,10 @@ $assignmentsQuery = "
     LEFT JOIN (
         SELECT user_id, project_id, SUM(hours_spent) as utilized_hours
         FROM project_time_logs
-        WHERE is_utilized = 1
+        $utilizedFilter
         GROUP BY user_id, project_id
     ) ptl ON ua.user_id = ptl.user_id AND ua.project_id = ptl.project_id
-    WHERE ua.user_id = ?
+    WHERE ua.user_id = ? $pLeadAnd
     ORDER BY p.status, p.title
 ";
 $stmt = $db->prepare($assignmentsQuery);
@@ -186,7 +229,7 @@ $projectsQuery = "
            (p.total_hours - COALESCE(SUM(ua.hours_allocated), 0)) as available_hours
     FROM projects p
     LEFT JOIN user_assignments ua ON p.id = ua.project_id
-    WHERE p.status NOT IN ('completed', 'cancelled')
+    WHERE p.status NOT IN ('completed', 'cancelled') $pLeadAnd
     GROUP BY p.id, p.title, p.po_number, p.status, p.total_hours
     HAVING p.total_hours > 0
     ORDER BY p.title
@@ -210,6 +253,9 @@ $activityLogs = $stmt->fetchAll();
 include __DIR__ . '/../../includes/header.php';
 ?>
 <script src="<?php echo $baseDir; ?>/assets/js/hours-validation.js"></script>
+<script>
+window._manageHoursConfig = { baseDir: "<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>" };
+</script>
 
 <div class="container-fluid">
     <div class="d-flex justify-content-between align-items-center mb-4">
@@ -447,6 +493,7 @@ include __DIR__ . '/../../includes/header.php';
     <div class="modal-dialog">
         <div class="modal-content">
             <form method="POST">
+                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                 <div class="modal-header">
                     <h5 class="modal-title">Add New Assignment</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
@@ -508,6 +555,7 @@ include __DIR__ . '/../../includes/header.php';
     <div class="modal-dialog">
         <div class="modal-content">
             <form method="POST">
+                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                 <div class="modal-header">
                     <h5 class="modal-title">Edit Hours Allocation</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
@@ -545,6 +593,7 @@ include __DIR__ . '/../../includes/header.php';
     <div class="modal-dialog">
         <div class="modal-content">
             <form method="POST">
+                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                 <div class="modal-header">
                     <h5 class="modal-title">Remove Assignment</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
@@ -570,98 +619,7 @@ include __DIR__ . '/../../includes/header.php';
     </div>
 </div>
 
-<script>
-function editHours(assignmentId, currentHours, projectTitle) {
-    document.getElementById('edit_assignment_id').value = assignmentId;
-    document.getElementById('edit_project_title').value = projectTitle;
-    document.getElementById('edit_current_hours').value = currentHours + ' hours';
-    document.getElementById('edit_new_hours').value = currentHours;
-    
-    var modal = new bootstrap.Modal(document.getElementById('editHoursModal'));
-    modal.show();
-}
-
-function removeAssignment(assignmentId, projectTitle) {
-    document.getElementById('remove_assignment_id').value = assignmentId;
-    document.getElementById('remove_project_title').textContent = projectTitle;
-    
-    var modal = new bootstrap.Modal(document.getElementById('removeAssignmentModal'));
-    modal.show();
-}
-
-function updateAvailableHours(selectElement) {
-    const selectedOption = selectElement.options[selectElement.selectedIndex];
-    const hoursInput = document.getElementById('hours-input');
-    const hoursValidation = document.getElementById('hours-validation');
-    const projectInfo = document.getElementById('project-hours-info');
-    
-    if (selectedOption.value) {
-        const projectId = selectedOption.value;
-        
-        // Use the new validation system
-        window.hoursValidator.getProjectSummary(projectId)
-            .then(summary => {
-                const totalHours = summary.total_hours || 0;
-                const allocatedHours = summary.allocated_hours || 0;
-                const availableHours = summary.available_hours || 0;
-                
-                // Update project info display
-                document.getElementById('total-hours').textContent = totalHours.toFixed(1);
-                document.getElementById('allocated-hours').textContent = allocatedHours.toFixed(1);
-                document.getElementById('available-hours').textContent = availableHours.toFixed(1);
-                projectInfo.style.display = 'block';
-                
-                // Update hours input constraints
-                hoursInput.max = availableHours;
-                hoursInput.disabled = availableHours <= 0;
-                
-                if (availableHours <= 0) {
-                    hoursValidation.textContent = 'No hours available in this project';
-                    hoursValidation.className = 'text-danger';
-                } else {
-                    hoursValidation.textContent = `Maximum ${availableHours.toFixed(2)} hours available`;
-                    hoursValidation.className = 'text-success';
-                }
-            })
-            .catch(error => {
-                console.error('Error getting project summary:', error);
-                hoursValidation.textContent = 'Error loading project information';
-                hoursValidation.className = 'text-danger';
-            });
-    } else {
-        projectInfo.style.display = 'none';
-        hoursInput.max = 0;
-        hoursInput.disabled = true;
-        hoursValidation.textContent = 'Select a project first';
-        hoursValidation.className = 'text-muted';
-    }
-}
-
-// Validate hours input in real-time
-document.addEventListener('DOMContentLoaded', function() {
-    // Setup real-time validation for the add assignment form
-    window.hoursValidator.setupHoursInput('hours-input', 'project_id', 'hours-validation');
-    
-    const hoursInput = document.getElementById('hours-input');
-    if (hoursInput) {
-        hoursInput.addEventListener('input', function() {
-            const maxHours = parseFloat(this.max);
-            const currentValue = parseFloat(this.value);
-            const validation = document.getElementById('hours-validation');
-            
-            if (currentValue > maxHours && maxHours > 0) {
-                this.setCustomValidity(`Cannot exceed ${maxHours} hours`);
-                validation.textContent = `Cannot exceed ${maxHours.toFixed(2)} hours`;
-                validation.className = 'text-danger';
-            } else if (maxHours > 0) {
-                this.setCustomValidity('');
-                validation.textContent = `${(maxHours - currentValue).toFixed(2)} hours will remain available`;
-                validation.className = 'text-info';
-            }
-        });
-    }
-});
-</script>
+<script src="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/assets/js/manage-hours.js"></script>
 
 <style>
 .timeline-item {

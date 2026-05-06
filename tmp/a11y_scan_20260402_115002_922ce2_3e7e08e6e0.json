@@ -1,0 +1,4 @@
+{
+  "success": false,
+  "error": "Error: Ollama API error: 404 {\"error\":\"model 'phi3' not found\"}\n    at runAIDiscoveryAudit (C:\\xampp\\htdocs\\PMS\\scripts\\deep_a11y_scan.js:237:13)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async run (C:\\xampp\\htdocs\\PMS\\scripts\\deep_a11y_scan.js:1320:16)"
+}

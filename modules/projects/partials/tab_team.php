@@ -4,7 +4,7 @@
                 <h5 class="mb-0">Project Team</h5>
                 <?php 
                 // Check if user can manage team
-                $canManageTeam = in_array($userRole, ['admin', 'project_lead', 'super_admin']);
+                $canManageTeam = in_array($userRole, ['admin', 'project_lead', 'qa']);
                 
                 // Also check client permissions for edit access
                 if (!$canManageTeam) {
@@ -59,7 +59,7 @@
                         while ($member = $team->fetch()): ?>
                         <tr>
                             <td>
-                                <?php if (in_array($userRole, ['admin', 'super_admin'])): ?>
+                                <?php if (in_array($userRole, ['admin'])): ?>
                                 <a href="<?php echo $baseDir; ?>/modules/admin/users.php?view=<?php echo $member['user_id']; ?>" class="text-decoration-none">
                                     <strong><?php echo htmlspecialchars($member['full_name']); ?></strong>
                                 </a>

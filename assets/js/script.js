@@ -40,17 +40,15 @@ function confirmForm(formId, message = "Are you sure?") {
 
 // Initialize tooltips
 document.addEventListener('DOMContentLoaded', function () {
-    // Check if jQuery is available
-    if (typeof $ !== 'undefined') {
-        $('[data-bs-toggle="tooltip"]').tooltip();
-    } else {
-        // Fallback to vanilla JS tooltip initialization
-        const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
-        if (typeof bootstrap !== 'undefined') {
-            tooltipTriggerList.map(function (tooltipTriggerEl) {
-                return new bootstrap.Tooltip(tooltipTriggerEl);
-            });
-        }
+    // Initialize Bootstrap tooltips (avoid jQuery UI conflict)
+    const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+    if (typeof bootstrap !== 'undefined' && bootstrap.Tooltip) {
+        tooltipTriggerList.forEach(function (el) {
+            // Skip hidden or detached elements to prevent TooltipUI "n is undefined" error
+            if (el && el.offsetParent !== null || el.closest('body')) {
+                try { new bootstrap.Tooltip(el); } catch (e) {}
+            }
+        });
     }
 });
 

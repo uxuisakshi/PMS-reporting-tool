@@ -8,7 +8,7 @@
 
             <?php
             $adminResources = [];
-            if (in_array($userRole, ['admin', 'super_admin'])) {
+            if (in_array($userRole, ['admin'])) {
                 $adminResources = $db->query("SELECT id, full_name, role FROM users WHERE is_active = 1 ORDER BY full_name")->fetchAll(PDO::FETCH_ASSOC);
             }
             ?>
@@ -108,7 +108,7 @@
                     <h6>Feedback received</h6>
                     <?php
                     // Fetch feedbacks visible to this user
-                    if (in_array($userRole, ['admin', 'super_admin'])) {
+                    if (in_array($userRole, ['admin'])) {
                         $fbStmt = $db->prepare("SELECT f.*, u.full_name as sender_name FROM feedbacks f LEFT JOIN users u ON f.sender_id = u.id WHERE f.project_id = ? ORDER BY f.created_at DESC");
                         $fbStmt->execute([$projectId]);
                     } else {

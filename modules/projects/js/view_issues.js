@@ -30,18 +30,47 @@
     var projectId = ProjectConfig.projectId;
     var projectType = ProjectConfig.projectType || 'web';
     var issuesApiBase = ProjectConfig.baseDir + '/api/issues.php';
+    var regressionApiBase = ProjectConfig.baseDir + '/api/regression_actions.php';
     var issueImageUploadUrl = ProjectConfig.baseDir + '/api/issue_upload_image.php';
     var issueTemplatesApi = ProjectConfig.baseDir + '/api/issue_templates.php';
+
+    // Load full grouped URLs from API (inline ProjectConfig may be truncated for large datasets)
+    (function loadGroupedUrlsFromApi() {
+        fetch(ProjectConfig.baseDir + '/api/project_pages.php?action=list_grouped&project_id=' + projectId)
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data && Array.isArray(data.grouped_urls) && data.grouped_urls.length > 0) {
+                    // Normalize to match expected format
+                    groupedUrls = data.grouped_urls.map(function(row) {
+                        return {
+                            id: row.id,
+                            url: row.url,
+                            normalized_url: row.normalized_url,
+                            unique_page_id: row.unique_page_id,
+                            mapped_page_id: row.unique_page_id  // same field
+                        };
+                    });
+                }
+            })
+            .catch(function() {}); // silent fail, fallback to ProjectConfig data
+    })();
     var issueCommentsApi = ProjectConfig.baseDir + '/api/issue_comments.php';
     var issueDraftsApi = ProjectConfig.baseDir + '/api/issue_drafts.php';
     var uniqueIssuePages = ProjectConfig.uniqueIssuePages || [];
-    var userRole = String(ProjectConfig.userRole || '').toLowerCase();
-    var isAdminUser = userRole === 'admin' || userRole === 'super_admin' || userRole === 'superadmin';
+    var userRole = ProjectConfig.userRole || '';
+    var isAdminUser = userRole === 'admin' || userRole === 'superadmin';
     var isTesterRole = userRole === 'at_tester' || userRole === 'ft_tester';
+    
+
     var canUpdateIssueQaStatus = !!ProjectConfig.canUpdateIssueQaStatus;
-    if (isTesterRole) {
-        canUpdateIssueQaStatus = false;
-    }
+    var clientEditableIssueStatuses = (ProjectConfig.issueStatuses || []).map(function (status) {
+        return normalizeIssueStatusSlug(status.status_label || status.name || status.label || '');
+    }).filter(function (status, index, list) {
+        return !!status && list.indexOf(status) === index;
+    });
+    var resolutionAuthorityRoles = ['admin', 'project_lead', 'qa', 'at_tester', 'ft_tester'];
+    // Note: canUpdateIssueQaStatus is already calculated server-side based on permissions
+    // Don't override it here for tester roles as they may have explicit QA permissions
 
     var issueData = {
         selectedPageId: null,
@@ -56,6 +85,7 @@
             pendingFile: null,
             pendingEditor: null,
             lastPasteTime: 0,
+            suppressUntil: 0,
             isEditing: false,
             editingImg: null,
             savedRange: null
@@ -96,9 +126,456 @@
     var reviewIssueInitialFormState = null;
     var reviewIssueBypassCloseConfirm = false;
     var finalIssueBypassCloseConfirm = false;
+    var testerRegressionLock = {
+        active: false,
+        roundNumber: 0,
+        loaded: false
+    };
 
     // Utility functions hoisted to top so they're available everywhere in this scope
     function escapeHtml(str) { if (str === null || str === undefined) return ''; return String(str).replace(/[&<>"']/g, function (m) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\'': '&#39;' }[m]); }); }
+
+    function normalizeIssueStatusSlug(value) {
+        var raw = String(value || '').trim().toLowerCase();
+        if (!raw) return '';
+        return raw.replace(/-/g, '_').replace(/\s+/g, '_');
+    }
+
+    function isClientIssueStatusAllowed(value) {
+        var normalizedValue = normalizeIssueStatusSlug(value);
+        if (!normalizedValue) return false;
+        if (clientEditableIssueStatuses.length) {
+            return clientEditableIssueStatuses.indexOf(normalizedValue) !== -1;
+        }
+        return ['open', 'in_progress', 'reopened'].indexOf(normalizedValue) !== -1;
+    }
+
+    function isResolutionStatus(value) {
+        return ['resolved', 'fixed', 'closed'].indexOf(normalizeIssueStatusSlug(value)) !== -1;
+    }
+
+    function canCurrentUserMarkResolved() {
+        return resolutionAuthorityRoles.indexOf(userRole) !== -1;
+    }
+
+    function getValidProjectPageIds() {
+        return pages.map(function (page) {
+            return String(page.id);
+        });
+    }
+
+    function isValidProjectPageId(pageId) {
+        var candidate = String(pageId || '').trim();
+        if (!candidate) return false;
+        return getValidProjectPageIds().indexOf(candidate) !== -1;
+    }
+
+    function normalizeProjectPageIds(pageIds) {
+        return (Array.isArray(pageIds) ? pageIds : []).map(function (pageId) {
+            return String(pageId || '').trim();
+        }).filter(function (pageId, index, list) {
+            return pageId && isValidProjectPageId(pageId) && list.indexOf(pageId) === index;
+        });
+    }
+
+    function resolveValidSelectedPageId(preferredPageId, fallbackPageIds) {
+        var preferred = String(preferredPageId || '').trim();
+        if (preferred && isValidProjectPageId(preferred)) {
+            return preferred;
+        }
+        var normalizedFallbacks = normalizeProjectPageIds(fallbackPageIds || []);
+        if (normalizedFallbacks.length) {
+            return normalizedFallbacks[0];
+        }
+        var allProjectPageIds = getValidProjectPageIds();
+        return allProjectPageIds.length ? allProjectPageIds[0] : '';
+    }
+
+    function getClientQuickStatusOptions() {
+        return (ProjectConfig.issueStatuses || []).filter(function (status) {
+            var label = status.status_label || status.name || status.label || '';
+            return isClientIssueStatusAllowed(label);
+        });
+    }
+
+    function buildClientQuickStatusActions(issue) {
+        if (userRole !== 'client') return '';
+
+        var options = getClientQuickStatusOptions();
+        if (!options.length) return '';
+
+        var currentStatusId = String(issue.status_id || '');
+        return '<div class="mt-3 pt-3 border-top">' +
+            '<div class="small text-muted fw-semibold mb-2">Quick Status</div>' +
+            '<div class="d-flex flex-wrap gap-2">' +
+            options.map(function (status) {
+                var statusId = String(status.id || '');
+                var label = status.status_label || status.name || 'Status';
+                var isActive = statusId === currentStatusId;
+                return '<button type="button" class="btn btn-sm ' + (isActive ? 'btn-primary' : 'btn-outline-primary') + ' client-quick-status" data-issue-id="' + issue.id + '" data-status-id="' + escapeAttr(statusId) + '"' + (isActive ? ' disabled' : '') + '>' +
+                    escapeHtml(label) +
+                    '</button>';
+            }).join('') +
+            '</div>' +
+            '</div>';
+    }
+
+    function applyClientFinalIssueFilters(issues) {
+        if (userRole !== 'client') return issues;
+
+        var searchEl = document.getElementById('clientIssueSearch');
+        var statusEl = document.getElementById('clientIssueStatusFilter');
+        var searchTerm = String(searchEl ? searchEl.value : '').trim().toLowerCase();
+        var statusValue = normalizeIssueStatusSlug(statusEl ? statusEl.value : '');
+
+        return issues.filter(function (issue) {
+            var searchable = [
+                issue.issue_key || '',
+                issue.title || '',
+                stripHtml(issue.details || ''),
+                issue.common_title || ''
+            ].join(' ').toLowerCase();
+            var issueStatus = normalizeIssueStatusSlug(issue.status || issue.status_name || '');
+
+            if (searchTerm && searchable.indexOf(searchTerm) === -1) {
+                return false;
+            }
+            if (statusValue && issueStatus !== statusValue) {
+                return false;
+            }
+            return true;
+        });
+    }
+
+    function getSelectedPageFinalIssues() {
+        if (!issueData.selectedPageId || !issueData.pages[issueData.selectedPageId]) return [];
+        return issueData.pages[issueData.selectedPageId].final || [];
+    }
+
+    async function quickUpdateClientIssueStatus(issueId, statusId, triggerBtn) {
+        if (userRole !== 'client') return;
+
+        var issues = getSelectedPageFinalIssues();
+        var issue = issues.find(function (item) { return String(item.id) === String(issueId); });
+        if (!issue) return;
+
+        var fd = new FormData();
+        fd.append('action', 'update');
+        fd.append('project_id', projectId);
+        fd.append('id', String(issue.id));
+        fd.append('title', String(issue.title || 'Issue'));
+        fd.append('issue_status', String(statusId));
+        if (issue.updated_at) fd.append('expected_updated_at', String(issue.updated_at));
+        if (issue.latest_history_id != null) fd.append('expected_history_id', String(issue.latest_history_id));
+
+        if (triggerBtn) {
+            triggerBtn.disabled = true;
+            triggerBtn.dataset.originalText = triggerBtn.textContent;
+            triggerBtn.textContent = 'Saving...';
+        }
+
+        try {
+            var response = await fetch(issuesApiBase, {
+                method: 'POST',
+                body: fd,
+                credentials: 'same-origin',
+                headers: { 'X-Session-Refresh': '1' }
+            });
+            var result = await response.json();
+            if (!response.ok || !result || result.error) {
+                throw new Error((result && result.error) ? result.error : 'Failed to update issue status');
+            }
+
+            var updatedIssue = result.issue || result.data || result;
+            var issueIndex = issues.findIndex(function (item) { return String(item.id) === String(issueId); });
+            if (issueIndex >= 0) {
+                issues[issueIndex] = Object.assign({}, issues[issueIndex], updatedIssue);
+            }
+
+            renderFinalIssues();
+            if (typeof showToast === 'function') {
+                var statusLabel = (ProjectConfig.issueStatuses || []).find(function (status) { return String(status.id) === String(statusId); });
+                var label = statusLabel ? (statusLabel.status_label || statusLabel.name || 'Status updated') : 'Status updated';
+                showToast('Issue moved to ' + label, 'success');
+            }
+
+            // Refresh regression stats if the panel exists
+            if (typeof window.loadRegressionStats === 'function') {
+                window.loadRegressionStats();
+            }
+        } catch (error) {
+            if (typeof showToast === 'function') {
+                showToast(error && error.message ? error.message : 'Failed to update issue status', 'danger');
+            }
+        } finally {
+            if (triggerBtn) {
+                triggerBtn.disabled = false;
+                triggerBtn.textContent = triggerBtn.dataset.originalText || triggerBtn.textContent;
+                delete triggerBtn.dataset.originalText;
+            }
+        }
+    }
+
+    function syncClientIssueStatusOptions() {
+        if (userRole !== 'client') return;
+
+        var statusEl = document.getElementById('finalIssueStatus');
+        if (!statusEl) return;
+
+        var selectedValue = String(statusEl.value || '');
+        Array.prototype.forEach.call(statusEl.options || [], function (option) {
+            var normalized = normalizeIssueStatusSlug(option.text || option.label || option.value);
+            var isCurrent = String(option.value) === selectedValue;
+            var isAllowed = isClientIssueStatusAllowed(normalized);
+            option.hidden = !(isAllowed || isCurrent);
+            option.disabled = !(isAllowed || isCurrent);
+            option.dataset.clientAllowed = isAllowed ? '1' : '0';
+        });
+    }
+
+    function syncResolutionStatusOptions() {
+        var statusEl = document.getElementById('finalIssueStatus');
+        if (!statusEl || canCurrentUserMarkResolved()) return;
+
+        var selectedValue = String(statusEl.value || '');
+        Array.prototype.forEach.call(statusEl.options || [], function (option) {
+            var normalized = normalizeIssueStatusSlug(option.text || option.label || option.value);
+            var isCurrent = String(option.value) === selectedValue;
+            var restricted = isResolutionStatus(normalized);
+            if (!restricted) {
+                return;
+            }
+            option.hidden = !isCurrent;
+            option.disabled = !isCurrent;
+        });
+    }
+
+    function updateClientIssueSidebarHeader(issue) {
+        if (userRole !== 'client') return;
+
+        var keyEl = document.getElementById('clientIssueSidebarKey');
+        var titleEl = document.getElementById('finalEditorTitle');
+        if (!keyEl || !titleEl) return;
+
+        var issueKey = issue && issue.issue_key ? String(issue.issue_key) : 'New Issue';
+        var issueTitle = issue && issue.title ? String(issue.title) : 'Issue conversation';
+
+        keyEl.textContent = issueKey;
+        titleEl.textContent = issueTitle;
+    }
+
+    function applyClientIssueEditingState(enable) {
+        if (userRole !== 'client') return;
+
+        var modal = document.getElementById('finalIssueModal');
+        if (!modal) return;
+
+        var allowedIds = {
+            finalIssueStatus: true,
+            finalIssueCommentType: true,
+            finalIssueCommentEditor: true
+        };
+
+        modal.querySelectorAll('input, select, textarea').forEach(function (el) {
+            if (el.type === 'hidden') return;
+            if (allowedIds[el.id]) {
+                el.disabled = !enable;
+                return;
+            }
+            el.disabled = true;
+        });
+
+        ['btnResetToTemplate', 'btnOpenUrlSelectionModal', 'btnApplyUrlSelection', 'btnCopyGroupedUrls'].forEach(function (id) {
+            var el = document.getElementById(id);
+            if (el) el.disabled = true;
+        });
+
+        var commentTypeEl = document.getElementById('finalIssueCommentType');
+        if (commentTypeEl) {
+            commentTypeEl.value = 'regression';
+            commentTypeEl.disabled = true;
+        }
+
+        var addCommentBtn = document.getElementById('finalIssueAddCommentBtn');
+        if (addCommentBtn) addCommentBtn.disabled = !enable;
+
+        var saveBtn = document.getElementById('finalIssueSaveBtn');
+        if (saveBtn) saveBtn.disabled = !enable;
+
+        if (window.jQuery && jQuery.fn.summernote) {
+            jQuery('#finalIssueDetails').summernote('disable');
+            if (document.getElementById('finalIssueCommentEditor')) {
+                jQuery('#finalIssueCommentEditor').summernote(enable ? 'enable' : 'disable');
+            }
+        }
+
+        if (window.jQuery && jQuery.fn.select2) {
+            jQuery('#finalIssuePages, #finalIssueGroupedUrls, #finalIssueReporters, #finalIssueAssignee').prop('disabled', true).trigger('change.select2');
+        }
+
+        syncClientIssueStatusOptions();
+        syncResolutionStatusOptions();
+    }
+
+    function normalizeClientFinalIssueOverlayState() {
+        if (userRole !== 'client') return;
+
+        var modalEl = document.getElementById('finalIssueModal');
+        if (modalEl) {
+            modalEl.classList.add('show', 'is-open');
+            modalEl.setAttribute('aria-hidden', 'false');
+            modalEl.removeAttribute('aria-modal');
+        }
+
+        document.body.classList.add('client-issue-sidebar-open');
+        document.body.classList.remove('modal-open');
+        document.body.style.removeProperty('overflow');
+        document.body.style.removeProperty('padding-right');
+        document.body.removeAttribute('aria-hidden');
+
+        document.querySelectorAll('.modal-backdrop').forEach(function (el) {
+            el.remove();
+        });
+
+    }
+
+    function syncClientSidebarExpandButton() {
+        if (userRole !== 'client') return;
+        var modalEl = document.getElementById('finalIssueModal');
+        var btn = modalEl ? modalEl.querySelector('.client-sidebar-expand') : null;
+        if (!btn) return;
+        var active = modalEl.classList.contains('is-dialog-expanded');
+        btn.setAttribute('aria-label', active ? 'Collapse dialog' : 'Expand dialog');
+        btn.setAttribute('title', active ? 'Collapse dialog' : 'Expand dialog');
+        var icon = btn.querySelector('i');
+        if (icon) {
+            icon.classList.toggle('fa-expand', !active);
+            icon.classList.toggle('fa-compress', active);
+        }
+    }
+
+    function setClientSidebarDialogExpanded(enabled) {
+        if (userRole !== 'client') return;
+        var modalEl = document.getElementById('finalIssueModal');
+        if (!modalEl) return;
+        modalEl.classList.toggle('is-dialog-expanded', !!enabled);
+        document.body.classList.toggle('client-issue-sidebar-dialog-expanded', !!enabled);
+        syncClientSidebarExpandButton();
+    }
+
+    function toggleClientSidebarDialogExpanded() {
+        if (userRole !== 'client') return;
+        var modalEl = document.getElementById('finalIssueModal');
+        if (!modalEl) return;
+        setClientSidebarDialogExpanded(!modalEl.classList.contains('is-dialog-expanded'));
+    }
+
+    function getFinalIssueModalInstance(modalEl) {
+        if (userRole === 'client') {
+            return null;
+        }
+
+        if (!modalEl || !(window.bootstrap && bootstrap.Modal)) {
+            return null;
+        }
+
+        var instance = bootstrap.Modal.getInstance(modalEl);
+        if (instance) {
+            return instance;
+        }
+
+        return new bootstrap.Modal(modalEl, userRole === 'client'
+            ? { backdrop: false, focus: false, keyboard: true }
+            : {});
+    }
+
+    function showFinalIssueOverlay(modalEl) {
+        if (userRole === 'client') {
+            if (!modalEl) return;
+            normalizeClientFinalIssueOverlayState();
+            setTimeout(function () {
+                modalEl.dispatchEvent(new CustomEvent('shown.bs.modal'));
+            }, 0);
+            return;
+        }
+
+        var instance = getFinalIssueModalInstance(modalEl);
+        if (!instance) return;
+
+        instance.show();
+        if (userRole === 'client') {
+            setTimeout(normalizeClientFinalIssueOverlayState, 0);
+        }
+    }
+
+    function closeClientFinalIssueOverlay() {
+        if (userRole !== 'client') return;
+
+        var modalEl = document.getElementById('finalIssueModal');
+        if (!modalEl) return;
+
+        modalEl.classList.remove('show', 'is-open');
+        modalEl.classList.remove('is-dialog-expanded');
+        modalEl.setAttribute('aria-hidden', 'true');
+        stopIssuePresenceTracking();
+        clearIssueConflictNotice();
+        document.body.classList.remove('client-issue-sidebar-open');
+        document.body.classList.remove('client-issue-sidebar-dialog-expanded');
+        cleanupModalOverlayState();
+        modalEl.dispatchEvent(new CustomEvent('hidden.bs.modal'));
+    }
+
+    function requestClientFinalIssueOverlayClose() {
+        if (userRole !== 'client') return;
+
+        var finalIssueModalEl = document.getElementById('finalIssueModal');
+        if (!finalIssueModalEl) return;
+
+        if (finalIssueBypassCloseConfirm) {
+            finalIssueBypassCloseConfirm = false;
+            stopDraftAutosave();
+            issueData.initialFormState = null;
+            closeClientFinalIssueOverlay();
+            return;
+        }
+
+        var editId = document.getElementById('finalIssueEditId').value;
+        if (hasFormChanges()) {
+            showDraftConfirmation(function (action) {
+                if (action === 'save') {
+                    if (!editId) {
+                        saveDraft().then(function () {
+                            stopDraftAutosave();
+                            issueData.initialFormState = null;
+                            finalIssueBypassCloseConfirm = true;
+                            closeClientFinalIssueOverlay();
+                        });
+                    } else {
+                        document.getElementById('finalIssueSaveBtn').click();
+                    }
+                } else if (action === 'discard') {
+                    if (!editId) {
+                        deleteDraft().then(function () {
+                            stopDraftAutosave();
+                            issueData.initialFormState = null;
+                            finalIssueBypassCloseConfirm = true;
+                            closeClientFinalIssueOverlay();
+                        });
+                    } else {
+                        stopDraftAutosave();
+                        issueData.initialFormState = null;
+                        finalIssueBypassCloseConfirm = true;
+                        closeClientFinalIssueOverlay();
+                    }
+                }
+            }, editId);
+            return;
+        }
+
+        stopDraftAutosave();
+        issueData.initialFormState = null;
+        closeClientFinalIssueOverlay();
+    }
 
     function cleanupModalOverlayState() {
         if (document.querySelectorAll('.modal.show').length > 0) return;
@@ -249,6 +726,53 @@
         return true;
     }
 
+    function getTesterRegressionLockMessage() {
+        var roundNumber = parseInt(testerRegressionLock.roundNumber || 0, 10);
+        if (roundNumber > 0) {
+            return 'RR ' + roundNumber + ' in progress. Tester issue details are read-only until this round is completed.';
+        }
+        return 'Regression round is in progress. Tester issue details are read-only until round completion.';
+    }
+
+    function isTesterEditLockedByRegression() {
+        return false;
+    }
+
+    async function refreshTesterRegressionLock() {
+        // Feature disabled - always returns false immediately
+        return false;
+    }
+
+    function applyTesterRegressionReadonlyState() {
+        // Regression lock concept removed. 
+        // Ensure Comment Type and Metadata fields are always enabled for everyone.
+        var commentTypeEl = document.getElementById('finalIssueCommentType');
+        if (commentTypeEl) commentTypeEl.disabled = false;
+        
+        if (window.jQuery && jQuery.fn.select2) {
+            jQuery('.issue-dynamic-field').prop('disabled', false).trigger('change.select2');
+        }
+
+        var detailsEl = document.getElementById('finalIssueDetails');
+        if (window.jQuery && jQuery.fn.summernote) {
+            var $details = jQuery('#finalIssueDetails');
+            if ($details.length) {
+                $details.summernote('enable');
+            }
+        } else if (detailsEl) {
+            detailsEl.disabled = false;
+        }
+
+        if (detailsEl) {
+            detailsEl.removeAttribute('data-regression-readonly');
+            detailsEl.removeAttribute('title');
+        }
+
+        if (window.jQuery && jQuery.fn.select2) {
+            jQuery('#finalIssuePages, #finalIssueGroupedUrls, #finalIssueReporters, #finalIssueAssignee').prop('disabled', false).trigger('change.select2');
+        }
+    }
+
     function updateEditingState() {
         var editable = canEdit() && !!issueData.selectedPageId;
         var addBtn = document.getElementById('issueAddFinalBtn');
@@ -266,6 +790,114 @@
             .replace(/'/g, '&#39;')
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;');
+    }
+
+    var finalIssueComposeExpanded = false;
+
+    function getFinalIssueCommentEditorTextLength() {
+        var html = '';
+        if (window.jQuery && jQuery.fn.summernote && jQuery('#finalIssueCommentEditor').length && jQuery('#finalIssueCommentEditor').data('summernote')) {
+            html = jQuery('#finalIssueCommentEditor').summernote('code') || '';
+            return jQuery('<div>').html(html).text().length;
+        }
+        var editorEl = document.getElementById('finalIssueCommentEditor');
+        if (!editorEl) return 0;
+        html = editorEl.value || '';
+        var container = document.createElement('div');
+        container.innerHTML = html;
+        return (container.textContent || container.innerText || '').length;
+    }
+
+    function updateFinalIssueCommentCharCount() {
+        var countEl = document.getElementById('finalIssueCommentCharCount');
+        var count = getFinalIssueCommentEditorTextLength();
+        if (countEl) countEl.textContent = count + '/1000';
+        var editorEl = document.getElementById('finalIssueCommentEditor');
+        if (editorEl) editorEl.classList.toggle('is-invalid', count > 1000);
+    }
+
+    function focusFinalIssueCommentEditor() {
+        if (window.jQuery && jQuery.fn.summernote && jQuery('#finalIssueCommentEditor').length && jQuery('#finalIssueCommentEditor').data('summernote')) {
+            try {
+                jQuery('#finalIssueCommentEditor').summernote('focus');
+                return;
+            } catch (e) { }
+        }
+        var editorEl = document.getElementById('finalIssueCommentEditor');
+        if (editorEl && typeof editorEl.focus === 'function') {
+            try { editorEl.focus(); } catch (e) { }
+        }
+    }
+
+    function syncFinalIssueComposeUi() {
+        var composerEl = document.getElementById('finalIssueCommentComposer');
+        var composeBodyEl = document.getElementById('finalIssueComposeBody');
+        var composeToggleEl = document.getElementById('finalIssueComposeToggle');
+        if (composerEl) composerEl.classList.toggle('collapsed', !finalIssueComposeExpanded);
+        if (composeBodyEl) composeBodyEl.classList.toggle('open', !!finalIssueComposeExpanded);
+        if (composeToggleEl) {
+            composeToggleEl.classList.toggle('expanded', !!finalIssueComposeExpanded);
+            composeToggleEl.innerHTML = finalIssueComposeExpanded
+                ? '<i class="fas fa-chevron-down"></i> Hide Compose'
+                : '<i class="fas fa-comment-dots"></i> Compose';
+            composeToggleEl.setAttribute('aria-expanded', finalIssueComposeExpanded ? 'true' : 'false');
+        }
+        updateFinalIssueCommentCharCount();
+    }
+
+    function setFinalIssueComposeExpanded(expanded, options) {
+        finalIssueComposeExpanded = !!expanded;
+        syncFinalIssueComposeUi();
+        if (finalIssueComposeExpanded && (!options || options.focus !== false)) {
+            setTimeout(focusFinalIssueCommentEditor, 0);
+        }
+    }
+
+    function normalizeIssueImageSrc(src) {
+        var rawSrc = String(src || '').trim();
+        if (!rawSrc) return rawSrc;
+
+        try {
+            var parsed = new URL(rawSrc, window.location.origin);
+            var pathname = parsed.pathname || '';
+            var prefixMatch = pathname.match(/^\/(?:(PMS(?:-UAT)?)\/)?((?:uploads\/|assets\/uploads\/|api\/public_image\.php|api\/secure_file\.php).*)$/i);
+            if (!prefixMatch) {
+                return rawSrc;
+            }
+
+            var normalizedBaseDir = String(baseDir || '').replace(/\/+$/, '');
+            var normalizedTarget = '/' + String(prefixMatch[2] || '').replace(/^\/+/, '');
+            if (/^\/(?:assets\/uploads|uploads)\/(issues|chat)\//i.test(normalizedTarget)) {
+                var relativePath = normalizedTarget.replace(/^\//, '');
+                return (normalizedBaseDir ? normalizedBaseDir : '')
+                    + '/api/secure_file.php?path='
+                    + encodeURIComponent(relativePath)
+                    + (parsed.hash || '');
+            }
+
+            var normalizedPath = (normalizedBaseDir ? normalizedBaseDir : '') + normalizedTarget;
+            if (!normalizedPath) normalizedPath = normalizedTarget;
+            if (normalizedPath.charAt(0) !== '/') normalizedPath = '/' + normalizedPath;
+
+            if (/^(?:https?:)?\/\//i.test(rawSrc)) {
+                parsed.pathname = normalizedPath;
+                return parsed.toString();
+            }
+
+            return normalizedPath + (parsed.search || '') + (parsed.hash || '');
+        } catch (e) {
+            return rawSrc;
+        }
+    }
+
+    function tryRecoverIssueImageElement(img) {
+        if (!img || img.dataset.issueImageRecoveryAttempted === '1') return false;
+        var currentSrc = img.getAttribute('src') || img.src || '';
+        var normalizedSrc = normalizeIssueImageSrc(currentSrc);
+        if (!normalizedSrc || normalizedSrc === currentSrc) return false;
+        img.dataset.issueImageRecoveryAttempted = '1';
+        img.setAttribute('src', normalizedSrc);
+        return true;
     }
 
     function cleanInstanceValue(raw) {
@@ -362,7 +994,7 @@
         s = s.replace(/^\s*(&lt;\/strong&gt;&lt;\/p&gt;\s*)+/ig, '');
         s = s.replace(/<p>\s*<strong>\s*$/ig, '');
         s = s.replace(/&lt;p&gt;\s*&lt;strong&gt;\s*$/ig, '');
-        s = s.replace(/&lt;pre&gt;\s*&lt;code&gt;/ig, '');
+        s = s.replace(/&lt;\/pre&gt;/ig, '');
         s = s.replace(/&lt;\/code&gt;\s*&lt;\/pre&gt;/ig, '');
         s = decodeHtmlEntities(s);
         s = s.replace(/<pre>\s*<code>/ig, '');
@@ -618,13 +1250,14 @@
         var opts = options || {};
         if (!pageId) return;
         var tbody = document.getElementById('finalIssuesBody');
-        if (tbody && !opts.silent) tbody.innerHTML = '<tr><td colspan="11" class="text-muted text-center">Loading final issues...</td></tr>';
+        if (tbody && !opts.silent) tbody.innerHTML = '<tr><td colspan="9" class="text-muted text-center">Loading final issues...</td></tr>';
         var store = issueData.pages;
         ensurePageStore(store, pageId);
         try {
             var url = issuesApiBase + '?action=list&project_id=' + encodeURIComponent(projectId) + '&page_id=' + encodeURIComponent(pageId);
             var res = await fetch(url, { credentials: 'same-origin' });
-            var json = await res.json();
+            var text = await res.text();
+            var json = JSON.parse(text.replace(/^\uFEFF/, ''));
             var items = (json && json.issues) ? json.issues : [];
             var nextFinal = items.map(function (it) {
                 return {
@@ -670,7 +1303,7 @@
             store[pageId].final = nextFinal;
             renderFinalIssues();
         } catch (e) {
-            if (tbody && !opts.silent) tbody.innerHTML = '<tr><td colspan="11" class="text-muted text-center">Unable to load final issues.</td></tr>';
+            if (tbody && !opts.silent) tbody.innerHTML = '<tr><td colspan="9" class="text-muted text-center">Unable to load final issues.</td></tr>';
         }
     }
 
@@ -760,7 +1393,7 @@
     function uploadIssueImage(file, $el) {
         if (!file || !file.type || !file.type.startsWith('image/')) return;
         var now = Date.now();
-        if (now - issueData.imageUpload.lastPasteTime < 500) return;
+        if (now - issueData.imageUpload.lastPasteTime < 1500) return;
         issueData.imageUpload.lastPasteTime = now;
         issueData.imageUpload.savedRange = $el.summernote('createRange');
         issueData.imageUpload.pendingFile = file;
@@ -821,19 +1454,25 @@
                 : (function () {
                     var fd = new FormData();
                     fd.append('image', file);
-                    return fetch(issueImageUploadUrl, { method: 'POST', body: fd, credentials: 'same-origin' }).then(function (r) { return r.json(); });
+                    return fetch(issueImageUploadUrl, { 
+                        method: 'POST', 
+                        body: fd, 
+                        headers: { 'X-CSRF-Token': window._csrfToken || '' },
+                        credentials: 'same-origin' 
+                    }).then(function (r) { return r.json(); });
                 })();
             uploadPromise
                 .then(function (res) {
                     if (res && res.success && res.url) {
-                        var safeAlt = (altText || 'Issue Screenshot').replace(/"/g, '&quot;');
-                        var imgHtml = '<img src="' + res.url + '" alt="' + safeAlt + '" style="max-width:100%; height:auto; cursor:pointer;" class="editable-issue-image" />';
+                        var normalizedImageUrl = normalizeIssueImageSrc(res.url);
+                        var safeAlt = escapeAttr(altText || 'Issue Screenshot');
+                        var imgHtml = '<img src="' + escapeAttr(normalizedImageUrl) + '" alt="' + safeAlt + '" style="max-width:100%; height:auto; cursor:pointer;" class="editable-issue-image" />';
                         if (issueData.imageUpload.savedRange) {
                             $el.summernote('restoreRange');
                             issueData.imageUpload.savedRange.pasteHTML(imgHtml);
                             issueData.imageUpload.savedRange = null;
                         } else {
-                            $el.summernote('insertNode', $('<img>').attr({ src: res.url, alt: safeAlt, style: 'max-width:100%; height:auto; cursor:pointer;', class: 'editable-issue-image' })[0]);
+                            $el.summernote('insertNode', $('<img>').attr({ src: normalizedImageUrl, alt: altText || 'Issue Screenshot', style: 'max-width:100%; height:auto; cursor:pointer;', class: 'editable-issue-image' })[0]);
                         }
                         bootstrap.Modal.getInstance(jQuery('#imageAltTextModal')[0]).hide();
                     } else if (res && res.error) { issueNotify(res.error, 'danger'); }
@@ -1245,13 +1884,25 @@
             setTimeout(setCodeBlockButtonState, 0);
         }
 
+        var isClientCommentEditor = !!($el && $el.attr && $el.attr('id') === 'finalIssueCommentEditor' && userRole === 'client');
         var editorHeight = 180;
         if ($el && $el.attr && $el.attr('id') === 'reviewIssueDetails') {
             editorHeight = 320;
+        } else if (isClientCommentEditor) {
+            editorHeight = 80;
         }
-        $el.summernote({
-            height: editorHeight,
-            toolbar: [
+        var toolbarConfig = isClientCommentEditor
+            ? [
+                ['style', ['style']],
+                ['font', ['bold', 'italic', 'underline', 'clear']],
+                ['fontname', ['fontname']],
+                ['color', ['color']],
+                ['para', ['ul', 'ol', 'paragraph']],
+                ['table', ['table']],
+                ['insert', ['link', 'picture', 'video']],
+                ['view', ['codeview', 'help']]
+            ]
+            : [
                 ['style', ['style']],
                 ['font', ['bold', 'italic', 'underline', 'strikethrough', 'superscript', 'subscript', 'clear']],
                 ['fontname', ['fontname']],
@@ -1261,7 +1912,11 @@
                 ['table', ['table']],
                 ['insert', ['link', 'picture', 'video', 'hr', 'codeBlockToggle']],
                 ['view', ['modalFullscreen', 'help']]
-            ],
+            ];
+        $el.summernote({
+            height: editorHeight,
+            placeholder: isClientCommentEditor ? 'Type your comment...' : undefined,
+            toolbar: toolbarConfig,
             styleTags: ['p', { title: 'Blockquote', tag: 'blockquote', className: 'blockquote', value: 'blockquote' }, 'pre', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'],
             popover: { image: [['image', ['resizeFull', 'resizeHalf', 'resizeQuarter', 'resizeNone']], ['float', ['floatLeft', 'floatRight', 'floatNone']], ['remove', ['removeMedia']], ['custom', ['imageAltText']]] },
             buttons: {
@@ -1284,9 +1939,13 @@
                         contents: '<i class="fas fa-expand"></i>',
                         className: 'note-btn-modalfullscreen',
                         tooltip: 'Fullscreen',
-                        click: function () { toggleEditorModalFullscreen(); }
+                        click: function () {
+                            toggleEditorModalFullscreen();
+                        }
                     }).render();
-                    syncModalFullscreenButtonState();
+                    if (!isClientCommentEditor) {
+                        syncModalFullscreenButtonState();
+                    }
                     return $btn;
                 },
                 imageAltText: function (context) {
@@ -1308,37 +1967,51 @@
             callbacks: {
                 onInit: function () {
                     setTimeout(setCodeBlockButtonState, 0);
-                    setTimeout(syncModalFullscreenButtonState, 0);
+                    if (!isClientCommentEditor) {
+                        setTimeout(syncModalFullscreenButtonState, 0);
+                    }
                     setTimeout(enableToolbarKeyboardA11y, 0);
                     setTimeout(enableToolbarKeyboardA11y, 200);
+                    if (isClientCommentEditor) updateFinalIssueCommentCharCount();
                 },
                 onFocus: function () { setCodeBlockButtonState(); },
                 onKeyup: function () { setCodeBlockButtonState(); },
                 onMouseup: function () { setCodeBlockButtonState(); },
-                onChange: function () { setCodeBlockButtonState(); },
+                onChange: function () {
+                    setCodeBlockButtonState();
+                    if (isClientCommentEditor) updateFinalIssueCommentCharCount();
+                },
                 onImageUpload: function (files) {
+                    // Skip if onPaste already handled this (suppress window active)
+                    if (issueData.imageUpload.suppressUntil && Date.now() < issueData.imageUpload.suppressUntil) return;
                     var list = files || [];
                     for (var i = 0; i < list.length; i++) {
                         uploadIssueImage(list[i], $el);
                     }
                 },
                 onPaste: function (e) {
+                    var files = [];
                     if (window.PMSSummernoteImage && typeof window.PMSSummernoteImage.extractClipboardImageFiles === 'function') {
-                        var cfiles = window.PMSSummernoteImage.extractClipboardImageFiles(e);
-                        if (cfiles.length) {
-                            e.preventDefault();
-                            uploadIssueImage(cfiles[0], $el);
-                        }
+                        files = window.PMSSummernoteImage.extractClipboardImageFiles(e) || [];
                     } else {
                         var clipboard = e.originalEvent && e.originalEvent.clipboardData;
                         if (clipboard && clipboard.items) {
                             for (var i = 0; i < clipboard.items.length; i++) {
                                 var item = clipboard.items[i];
                                 if (item.type && item.type.indexOf('image') === 0) {
-                                    e.preventDefault(); uploadIssueImage(item.getAsFile(), $el); break;
+                                    files.push(item.getAsFile()); break;
                                 }
                             }
                         }
+                    }
+                    if (files.length) {
+                        e.preventDefault();
+                        if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+                        var oe = e.originalEvent;
+                        if (oe && typeof oe.stopImmediatePropagation === 'function') oe.stopImmediatePropagation();
+                        // Suppress onImageUpload for next 2s so it doesn't double-upload
+                        issueData.imageUpload.suppressUntil = Date.now() + 2000;
+                        uploadIssueImage(files[0], $el);
                     }
                 }
             }
@@ -1373,43 +2046,197 @@
             }
         });
 
-        // Exit bullet list on Enter in empty <li>
-        $el.on('summernote.keydown', function(we, e) {
-            if (e.keyCode !== 13) return;
+        // Auto-formatting for backticks: Convert `text` to <code>text</code>
+        $el.on('summernote.keyup', function(we, e) {
+            // More robust key detection
+            var key = e.key || (e.originalEvent && e.originalEvent.key);
+            if (key !== '`') return;
 
             try {
                 var range = $el.summernote('createRange');
-                if (!range || !range.sc) return;
+                if (!range || !range.sc || range.sc.nodeType !== 3) return;
 
-                var node = range.sc.nodeType === 3 ? range.sc.parentNode : range.sc;
-                var currentLi = node.closest ? node.closest('li') : null;
-                if (!currentLi || currentLi.textContent.trim() !== '') return;
+                var text = range.sc.textContent;
+                var pos = range.so;
+                
+                // Check if we are already inside a code tag
+                if (jQuery(range.sc.parentNode).closest('code').length) return;
 
-                var list = currentLi.closest('ul, ol');
-                if (!list) return;
+                // Look for an opening backtick before the one just typed (at pos-1)
+                var lastBacktick = text.lastIndexOf('`', pos - 2);
+                if (lastBacktick === -1) return;
 
-                e.preventDefault();
-                $el.summernote('saveRange');
-                document.execCommand('insertParagraph');
-                // Remove the now-empty li that was left behind
-                if (currentLi.parentNode) currentLi.parentNode.removeChild(currentLi);
-                if (list.children.length === 0 && list.parentNode) list.parentNode.removeChild(list);
-                $el.summernote('restoreRange');
-            } catch (err) {
-                // Silently ignore
+                // Extract content between backticks
+                var codeText = text.substring(lastBacktick + 1, pos - 1);
+                if (codeText.length === 0) return;
+
+                // Create elements
+                var parent = range.sc.parentNode;
+                var beforeText = text.substring(0, lastBacktick);
+                var afterText = text.substring(pos);
+                
+                var codeEl = document.createElement('code');
+                codeEl.textContent = codeText;
+                
+                // We need to use Summernote's insertNode or direct DOM manipulation that stays in context
+                // Directly replacing text content is safest for simple text nodes
+                var prefixNode = document.createTextNode(beforeText);
+                var suffixNode = document.createTextNode('\u200B' + afterText); // Zero-width space helps positioning
+
+                parent.insertBefore(prefixNode, range.sc);
+                parent.insertBefore(codeEl, range.sc);
+                parent.insertBefore(suffixNode, range.sc);
+                parent.removeChild(range.sc);
+
+                // Position cursor at start of suffixNode (after the zero-width space)
+                var newRange = document.createRange();
+                newRange.setStart(suffixNode, 1);
+                newRange.collapse(true);
+                var sel = window.getSelection();
+                if (sel) {
+                    sel.removeAllRanges();
+                    sel.addRange(newRange);
+                }
+
+                // Notify Summernote of change
+                $el.summernote('triggerEvent', 'change');
+            } catch (err) { }
+        });
+
+        // Exit bullet list on Enter in empty <li>, and handle Backspace for code blocks
+        $el.on('summernote.keydown', function(we, e) {
+            // Handle Enter (13)
+            if (e.keyCode === 13) {
+                try {
+                    var range = $el.summernote('createRange');
+                    if (!range || !range.sc) return;
+
+                    var node = range.sc.nodeType === 3 ? range.sc.parentNode : range.sc;
+                    var currentLi = node.closest ? node.closest('li') : null;
+                    if (!currentLi || currentLi.textContent.trim() !== '') return;
+
+                    var list = currentLi.closest('ul, ol');
+                    if (!list) return;
+
+                    e.preventDefault();
+                    e.stopPropagation();
+
+                    // Remove the empty li
+                    var listParent = list.parentNode;
+                    currentLi.parentNode.removeChild(currentLi);
+                    if (list.children.length === 0 && list.parentNode) {
+                        list.parentNode.removeChild(list);
+                    }
+
+                    // Insert a new <p> after the list and place cursor there
+                    var newP = document.createElement('p');
+                    newP.appendChild(document.createElement('br'));
+                    if (listParent) {
+                        var listRef = list.parentNode ? list : null;
+                        // Insert after the list's current position
+                        var nextSibling = list.nextSibling;
+                        if (nextSibling) {
+                            listParent.insertBefore(newP, nextSibling);
+                        } else {
+                            listParent.appendChild(newP);
+                        }
+                    }
+
+                    // Place cursor inside the new paragraph
+                    var sel = window.getSelection();
+                    if (sel) {
+                        var r = document.createRange();
+                        r.setStart(newP, 0);
+                        r.collapse(true);
+                        sel.removeAllRanges();
+                        sel.addRange(r);
+                    }
+                    $el.summernote('triggerEvent', 'change');
+                } catch (err) { }
+                return;
+            }
+
+            // Handle Backspace (8)
+            if (e.keyCode === 8) {
+                try {
+                    var range = $el.summernote('createRange');
+                    if (!range || !range.sc) return;
+
+                    var codeNode = null;
+                    var textNodeToCleanup = null;
+
+                    // Support identifying code node from different cursor positions
+                    if (range.sc.nodeType === 3) {
+                        // Case A: Inside the <code> tag at the end
+                        if (range.sc.parentNode && range.sc.parentNode.nodeName === 'CODE') {
+                            if (range.so === range.sc.textContent.length) {
+                                codeNode = range.sc.parentNode;
+                                // No text node cleanup needed if we are inside
+                            }
+                        } 
+                        // Case B: Immediately after the <code> tag in a text node
+                        else {
+                            if (range.so === 1 && range.sc.textContent.charAt(0) === '\u200B') {
+                                codeNode = range.sc.previousSibling;
+                                textNodeToCleanup = range.sc;
+                            } else if (range.so === 0) {
+                                codeNode = range.sc.previousSibling;
+                            }
+                        }
+                    }
+
+                    if (codeNode && codeNode.nodeName === 'CODE') {
+                        e.preventDefault();
+                        var codeText = codeNode.textContent;
+                        var parent = codeNode.parentNode;
+                        
+                        // Replace <code>text</code> with `text (plain text)
+                        var newNode = document.createTextNode('`' + codeText);
+                        parent.insertBefore(newNode, codeNode);
+                        parent.removeChild(codeNode);
+                        
+                        // Cleanup trailing markers if we were in the suffix node
+                        if (textNodeToCleanup) {
+                            if (textNodeToCleanup.textContent === '\u200B' || textNodeToCleanup.textContent === '') {
+                                if (textNodeToCleanup.parentNode === parent) parent.removeChild(textNodeToCleanup);
+                            } else if (textNodeToCleanup.textContent.startsWith('\u200B')) {
+                                textNodeToCleanup.textContent = textNodeToCleanup.textContent.substring(1);
+                            }
+                        }
+
+                        // Position cursor at end of the restored plain text
+                        var newRange = document.createRange();
+                        newRange.setStart(newNode, newNode.length);
+                        newRange.collapse(true);
+                        var sel = window.getSelection();
+                        if (sel) {
+                            sel.removeAllRanges();
+                            sel.addRange(newRange);
+                        }
+                        $el.summernote('triggerEvent', 'change');
+                        return;
+                    }
+                } catch (err) { }
             }
         });
     }
 
     function initEditors() {
         document.querySelectorAll('.issue-summernote').forEach(function (el) { initSummernote(el); });
-        jQuery(document).on('click', '.note-editable img', function (e) {
-            e.preventDefault();
-            var $img = jQuery(this);
-            issueData.imageUpload.isEditing = true;
-            issueData.imageUpload.editingImg = $img;
-            showImageAltModal($img.attr('alt') || '');
-        });
+        if (!initEditors._imgClickBound) {
+            initEditors._imgClickBound = true;
+            jQuery(document).on('click', '.note-editable img', function (e) {
+                var $img = jQuery(this);
+                var $editor = $img.closest('.note-editor');
+                var $source = $editor.prev('textarea');
+                var isFinalIssueDetailsEditor = $source.length && $source.attr('id') === 'finalIssueDetails';
+
+                e.preventDefault();
+                issueData.imageUpload.isEditing = true;
+                issueData.imageUpload.editingImg = $img;
+                showImageAltModal($img.attr('alt') || '');
+            });
+        }
 
         // Initialize @ mention for comment editor
         initMentionSupport();
@@ -1539,8 +2366,8 @@
             }).sort(function (a, b) {
                 var aUser = String(a.username || '').toLowerCase();
                 var bUser = String(b.username || '').toLowerCase();
-                var aIsAdmin = aUser === 'admin' || aUser === 'super_admin' || aUser === 'superadmin' || String(a.role || '').toLowerCase().indexOf('admin') >= 0;
-                var bIsAdmin = bUser === 'admin' || bUser === 'super_admin' || bUser === 'superadmin' || String(b.role || '').toLowerCase().indexOf('admin') >= 0;
+                var aIsAdmin = aUser === 'admin' || aUser === 'admin' || aUser === 'superadmin' || String(a.role || '').toLowerCase().indexOf('admin') >= 0;
+                var bIsAdmin = bUser === 'admin' || bUser === 'admin' || bUser === 'superadmin' || String(b.role || '').toLowerCase().indexOf('admin') >= 0;
                 if (aIsAdmin !== bIsAdmin) return aIsAdmin ? -1 : 1;
                 return String(a.full_name || '').localeCompare(String(b.full_name || ''));
             });
@@ -2287,6 +3114,11 @@
         ['finalIssueModal', 'commonIssueModal', 'urlSelectionModal', 'draftConfirmModal'].forEach(function (id) {
             var el = document.getElementById(id);
             if (!el) return;
+
+            if (id === 'finalIssueModal' && userRole === 'client') {
+                requestClientFinalIssueOverlayClose();
+                return;
+            }
             
             // Ensure focus is moved out of the modal before hiding to avoid ARIA warnings
             if (el.contains(document.activeElement)) {
@@ -2308,25 +3140,77 @@
     }
 
     function toggleFinalIssueFields(enable) {
-        var form = document.getElementById('finalIssueModal');
-        if (!form) return;
-        form.querySelectorAll('input, select, textarea').forEach(function (el) {
-            if (el.type === 'hidden') return;
-            if (el.closest('#finalIssueComments')) return;
-            el.disabled = !enable;
-        });
-        if (window.jQuery && jQuery.fn.summernote) {
-            jQuery('#finalIssueDetails').summernote(enable ? 'enable' : 'disable');
-            jQuery('#finalIssueCommentEditor').summernote('enable');
+        var modal = document.getElementById('finalIssueModal');
+        if (!modal) return;
+
+        var runFieldCheck = function(source) {
+            
+            // If we are supposed to be enabled AND user is NOT a client, FORCE IT
+            var forceOn = (enable && userRole !== 'client');
+            
+            modal.querySelectorAll('input, select, textarea').forEach(function (el) {
+                if (el.type === 'hidden') return;
+                if (el.closest('#finalIssueComments')) return;
+                
+                // Fields that must ALWAYS be enabled for every Edit mode
+                if (el.id === 'finalIssueCommentType' || el.classList.contains('issue-dynamic-field')) {
+                    el.disabled = false;
+                    return;
+                }
+                
+                // If forceOn is true, we must be enabled
+                if (forceOn) {
+                    el.disabled = false;
+                } else {
+                    el.disabled = !enable;
+                }
+            });
+
+            if (window.jQuery && jQuery.fn.summernote) {
+                if (forceOn) {
+                    jQuery('#finalIssueDetails').summernote('enable');
+                } else {
+                    jQuery('#finalIssueDetails').summernote(enable ? 'enable' : 'disable');
+                }
+                jQuery('#finalIssueCommentEditor').summernote('enable');
+            }
+
+            if (window.jQuery && jQuery.fn.select2) {
+                if (forceOn) {
+                    jQuery('.issue-select2, .issue-select2-tags').prop('disabled', false);
+                } else {
+                    jQuery('.issue-select2, .issue-select2-tags').not('.issue-dynamic-field').prop('disabled', !enable);
+                    jQuery('.issue-dynamic-field').prop('disabled', false);
+                }
+                
+                jQuery('#finalIssueMetadataContainer select, #finalIssueMetadataContainer input').prop('disabled', !forceOn && !enable);
+                if (enable) {
+                    jQuery('.issue-dynamic-field').filter(':visible').trigger('change.select2');
+                }
+            }
+
+            applyIssueQaPermissionState();
+            applyClientIssueEditingState(enable);
+            applyTesterRegressionReadonlyState();
+        };
+
+        // Pass 1: Immediate
+        runFieldCheck('initial');
+        
+        // Only run safety loop if we are trying to ENABLE or if it's already "enabled"
+        if (enable) {
+            // Pass 2: 500ms
+            setTimeout(function() { runFieldCheck('500ms-safety'); }, 500);
+            // Pass 3: 2000ms
+            setTimeout(function() { runFieldCheck('2s-safety'); }, 2000);
+            // Pass 4: 5000ms (Total brute force for slow servers)
+            setTimeout(function() { runFieldCheck('5s-brute-force'); }, 5000);
         }
-        if (window.jQuery && jQuery.fn.select2) {
-            jQuery('.issue-select2, .issue-select2-tags').prop('disabled', !enable);
-        }
-        applyIssueQaPermissionState();
     }
 
     function openFinalViewer(issue) {
         if (!issue) return;
+        updateClientIssueSidebarHeader(issue);
         document.getElementById('finalIssueEditId').value = issue.id;
         var expectedUpdatedAtEl = document.getElementById('finalIssueExpectedUpdatedAt');
         if (expectedUpdatedAtEl) expectedUpdatedAtEl.value = issue.updated_at || '';
@@ -2338,8 +3222,12 @@
         }
 
         document.getElementById('finalIssueStatus').value = issue.status || 'Open';
+        syncResolutionStatusOptions();
         setFinalQaStatusValue(issue.qa_status || []);
-        jQuery('#finalIssuePages').val(issue.pages || [issueData.selectedPageId]).trigger('change');
+        // Set pages - use val() method
+        var pagesToSet = issue.pages || [issueData.selectedPageId];
+        var $pagesEl = jQuery('#finalIssuePages');
+        $pagesEl.val(pagesToSet).trigger('change');
         jQuery('#finalIssueGroupedUrls').val(issue.grouped_urls || []).trigger('change');
         if (window.jQuery && jQuery.fn.summernote) jQuery('#finalIssueDetails').summernote('code', issue.description || '');
         else document.getElementById('finalIssueDetails').value = issue.description || '';
@@ -2388,8 +3276,7 @@
             chatDiv.querySelectorAll('input, select, textarea, button').forEach(function (el) { el.disabled = false; el.classList.remove('disabled'); });
             if (window.jQuery && jQuery.fn.summernote) jQuery('#finalIssueCommentEditor').summernote('enable');
         }
-        var modal = new bootstrap.Modal(document.getElementById('finalIssueModal'));
-        modal.show();
+        showFinalIssueOverlay(document.getElementById('finalIssueModal'));
         document.getElementById('finalIssueModal').addEventListener('shown.bs.modal', function onViewerShown() {
             document.getElementById('finalIssueModal').removeEventListener('shown.bs.modal', onViewerShown);
             var activeTab = document.querySelector('#finalIssueModal .nav-link.active');
@@ -2401,10 +3288,24 @@
         var opts = options || {};
         var modalEl = document.getElementById('finalIssueModal');
         if (!modalEl) return;
-        clearIssueConflictNotice();
 
+        if (userRole === 'client' && issue && issue.id != null) {
+            var currentIssueIdEl = document.getElementById('finalIssueEditId');
+            var currentIssueId = currentIssueIdEl ? String(currentIssueIdEl.value || '') : '';
+            var requestedIssueId = String(issue.id);
+            var isClientSidebarOpen = modalEl.classList.contains('show') || modalEl.classList.contains('is-open');
+
+            if (isClientSidebarOpen && currentIssueId === requestedIssueId) {
+                requestClientFinalIssueOverlayClose();
+                return;
+            }
+        }
+
+        clearIssueConflictNotice();
+        
         toggleFinalIssueFields(true);
         document.getElementById('finalEditorTitle').textContent = issue ? 'Edit Final Issue' : 'New Final Issue';
+        updateClientIssueSidebarHeader(issue);
         document.getElementById('finalIssueEditId').value = issue ? issue.id : '';
         var expectedUpdatedAtEl = document.getElementById('finalIssueExpectedUpdatedAt');
         if (expectedUpdatedAtEl) expectedUpdatedAtEl.value = issue && issue.updated_at ? issue.updated_at : '';
@@ -2418,17 +3319,24 @@
         if (editBtn) editBtn.classList.add('d-none');
 
         var draftData = null;
+        // Don't await draft load — show modal immediately, apply draft after modal opens
         if (!issue) {
-            var draft = await loadDraft();
-            if (draft && draft.data) {
-                draftData = draft.data;
-                issueData.isDraftRestored = true;
-                if (window.showToast) showToast('Draft restored from ' + new Date(draft.updated_at).toLocaleString(), 'info');
-            }
+            loadDraft().then(function(draft) {
+                var existingTitleInput = document.getElementById('customIssueTitle');
+                if (draft && draft.data && (!existingTitleInput || !existingTitleInput.value)) {
+                    draftData = draft.data;
+                    issueData.isDraftRestored = true;
+                    if (window.showToast) showToast('Draft restored from ' + new Date(draft.updated_at).toLocaleString(), 'info');
+                    // Apply draft values to already-open modal
+                    if (window.injectIssueTitleField) window.injectIssueTitleField(draft.data.title || '');
+                    jQuery('#finalIssueDetails').summernote('code', draft.data.details || '');
+                    updateFinalIssueCommentCharCount();
+                }
+            }).catch(function() {});
         }
 
         // Inject title field with value (won't re-inject if exists, just updates value)
-        var titleVal = issue ? (issue.title || '') : (draftData ? draftData.title : '');
+        var titleVal = issue ? (issue.title || '') : '';
         if (window.injectIssueTitleField) {
             window.injectIssueTitleField(titleVal);
         }
@@ -2439,7 +3347,7 @@
             var applyBtn = document.getElementById('applyPresetBtn');
         }, 100);
 
-        var detailsVal = issue ? (issue.details || '') : (draftData ? draftData.details : '');
+        var detailsVal = issue ? (issue.details || '') : '';
         jQuery('#finalIssueDetails').summernote('code', detailsVal);
 
         // Note: Issue status options are already populated by PHP in the modal HTML
@@ -2465,6 +3373,8 @@
             if (statusOption) statusValue = String(statusOption.id);
         }
         document.getElementById('finalIssueStatus').value = statusValue;
+        syncClientIssueStatusOptions();
+        syncResolutionStatusOptions();
 
         // Store values to set after modal is shown
         var reportersValue = issue ? (issue.reporters || []) : (draftData ? draftData.reporters : []);
@@ -2486,7 +3396,25 @@
                 return (raw && typeof raw === 'object') ? raw : {};
             })()
             : (draftData ? (draftData.reporter_qa_status_map || {}) : {});
-        var pageIds = (issue && issue.pages) ? issue.pages : ((draftData && draftData.pages) ? draftData.pages : [issueData.selectedPageId]);
+        var pageIds = normalizeProjectPageIds((issue && issue.pages) ? issue.pages : ((draftData && draftData.pages) ? draftData.pages : [issueData.selectedPageId]));
+        if (!pageIds.length) {
+            var fallbackSelectedPageId = resolveValidSelectedPageId(issueData.selectedPageId, []);
+            pageIds = fallbackSelectedPageId ? [fallbackSelectedPageId] : [];
+            if (fallbackSelectedPageId) {
+                issueData.selectedPageId = fallbackSelectedPageId;
+            }
+        }
+
+        // Set common title earlier so toggleCommonTitle (triggered by pages change) can see it
+        var commonTitleVal = issue ? (issue.common_title || '') : (draftData ? draftData.common_title : '');
+        // For common issues being edited from the common issues page, if common_title is missing, use title
+        if (issue && !commonTitleVal && issue.issue_key && (issueData.common || []).some(function(ci) { return ci.id === issue.id; })) {
+            commonTitleVal = issue.title || '';
+        }
+        var commonTitleInput = document.getElementById('finalIssueCommonTitle');
+        if (commonTitleInput) {
+            commonTitleInput.value = commonTitleVal;
+        }
 
         // Set pages immediately (this usually works)
         jQuery('#finalIssuePages').val(pageIds).trigger('change');
@@ -2494,16 +3422,14 @@
         // Wait for modal to be fully shown before setting Select2 values.
         var modalAlreadyOpen = modalEl.classList.contains('show');
         var skipShow = !!opts.skipShow || modalAlreadyOpen;
-        var modal = bootstrap.Modal.getInstance(modalEl);
-        if (!modal && !skipShow) {
-            modal = new bootstrap.Modal(modalEl);
-        }
+        var modal = getFinalIssueModalInstance(modalEl);
 
         function applySelectValuesNow() {
             // Use microtask + rAF to ensure DOM is ready before applying Select2 values,
             // avoiding the previous nested setTimeout(50) / setTimeout(60) / setTimeout(150) race conditions.
             Promise.resolve().then(function () {
                 applyIssueQaPermissionState();
+                applyClientIssueEditingState(true);
                 setFinalQaStatusValue(qaStatusValue);
                 // Temporarily suppress the reporter change handler to avoid
                 // refreshReporterQaStatusEditor() firing without seedMap (which blanks the field)
@@ -2584,9 +3510,6 @@
         }
         onMetadataReady(applyMetadataFieldValues);
 
-        var commonTitleVal = issue ? (issue.common_title || '') : (draftData ? draftData.common_title : '');
-        document.getElementById('finalIssueCommonTitle').value = commonTitleVal;
-        
         // Set client_ready checkbox
         var clientReadyCheckbox = document.getElementById('finalIssueClientReady');
         if (clientReadyCheckbox) {
@@ -2601,6 +3524,8 @@
         if (!issue) ensureDefaultSections();
         renderIssueComments(issue ? String(issue.id) : 'new');
         if (issue && issue.id) loadIssueComments(String(issue.id));
+        setFinalIssueComposeExpanded(false, { focus: false });
+        updateFinalIssueCommentCharCount();
 
         setTimeout(function () {
             // For new issues only — edit issues capture state inside applySelectValuesNow after Select2 is set
@@ -2610,8 +3535,8 @@
             }
         }, 600);
 
-        if (!skipShow && modal) {
-            modal.show();
+        if (!skipShow) {
+            showFinalIssueOverlay(modalEl);
         }
         // Removed the condition - always ensure metadata fields are properly initialized
         Promise.resolve().then(function () { var at = modalEl.querySelector('.nav-link.active'); if (at) at.dispatchEvent(new Event('shown.bs.tab', { bubbles: true })); });
@@ -2689,8 +3614,35 @@
     function toggleCommonTitle() {
         var sel = jQuery('#finalIssuePages').val() || [];
         var wrap = document.getElementById('finalIssueCommonTitleWrap');
-        if (!wrap) return;
-        if (sel.length > 1) wrap.classList.remove('d-none'); else wrap.classList.add('d-none');
+        var input = document.getElementById('finalIssueCommonTitle');
+        if (!wrap || !input) return;
+
+        // Show if multiple pages selected OR if it already has a value (editing an existing common issue)
+        if (sel.length > 1 || (input.value && input.value.trim() !== '')) {
+            wrap.classList.remove('d-none');
+            input.required = true;
+            input.setAttribute('aria-required', 'true');
+        } else {
+            wrap.classList.add('d-none');
+            input.required = false;
+            input.removeAttribute('aria-required');
+        }
+    }
+
+    function validateCommonTitleRequirement() {
+        var wrap = document.getElementById('finalIssueCommonTitleWrap');
+        var input = document.getElementById('finalIssueCommonTitle');
+        if (!wrap || !input || wrap.classList.contains('d-none')) {
+            return true;
+        }
+
+        if (input.value.trim()) {
+            return true;
+        }
+
+        input.focus();
+        issueNotify('Common Issue Title is required when multiple pages are selected.', 'warning');
+        return false;
     }
 
     function groupedUrlsByPages(pageIds) {
@@ -2701,64 +3653,37 @@
             if (!s) return;
             if (urls.indexOf(s) === -1) urls.push(s);
         }
-        function getUniqueUrlForPage(pageId) {
-            var page = pages.find(function (p) { return String(p.id) === String(pageId); }) || null;
-            var pageName = page && page.page_name ? String(page.page_name).trim().toLowerCase() : '';
-            var pageNumber = page && page.page_number ? String(page.page_number).trim().toLowerCase() : '';
-            var pageUrl = page && page.url ? String(page.url).trim().toLowerCase() : '';
-
-            var row = (uniqueIssuePages || []).find(function (u) {
-                var mapped = String(u.mapped_page_id || '') === String(pageId);
-                var uidMatch = String(u.unique_id || '') === String(pageId);
-                var nameMatch = pageName && String(u.unique_name || '').trim().toLowerCase() === pageName;
-                var numberMatch = pageNumber && String(u.unique_name || '').trim().toLowerCase() === pageNumber;
-                var urlMatch = pageUrl && String(u.canonical_url || '').trim().toLowerCase() === pageUrl;
-                return mapped || uidMatch || nameMatch || numberMatch || urlMatch;
-            });
-            if (row) {
-                return row.canonical_url || row.unique_url || row.url || '';
-            }
-            return '';
-        }
 
         // For each selected page
         pageIds.forEach(function (pageId) {
-            // First, add all grouped URLs for this page
+            var page = pages.find(function (p) { return String(p.id) === String(pageId); });
+            var pageUrl = page && page.url ? String(page.url).trim().toLowerCase() : '';
+
             var hasGroupedUrls = false;
             groupedUrls.forEach(function (row) {
-                var rowMappedPageId = row.mapped_page_id;
-                var rowUniquePageId = row.unique_page_id;
-                if (String(rowMappedPageId) === String(pageId) || String(rowUniquePageId) === String(pageId)) {
+                var rowPageId = row.unique_page_id != null ? row.unique_page_id : (row.mapped_page_id != null ? row.mapped_page_id : null);
+                var matchById = rowPageId !== null && String(rowPageId) === String(pageId);
+                var rowUrl = String(row.url || row.normalized_url || '').trim().toLowerCase();
+                var matchByUrl = pageUrl && rowUrl && rowUrl === pageUrl;
+
+                if (matchById || matchByUrl) {
                     hasGroupedUrls = true;
                     addUrl(row.url || row.normalized_url);
                 }
             });
 
-            // If no grouped URLs found, add the page's primary URL
+            // fallback: page's own URL
             if (!hasGroupedUrls) {
-                // Prefer URL from Unique URLs mapping when available.
-                addUrl(getUniqueUrlForPage(pageId));
-
-                var page = pages.find(function (p) {
-                    return String(p.id) === String(pageId);
-                });
-
                 if (page) {
                     addUrl(page.url || page.canonical_url || page.unique_url || page.normalized_url || page.page_url);
-                }
-
-                // Extra fallback from grouped URLs dataset if canonical is available
-                if (!page || !(page.url || page.canonical_url || page.unique_url || page.normalized_url || page.page_url)) {
-                    var rowWithCanonical = groupedUrls.find(function (row) {
-                        return String(row.mapped_page_id) === String(pageId) && (row.canonical_url || row.unique_name);
-                    });
-                    if (rowWithCanonical) {
-                        addUrl(rowWithCanonical.canonical_url || rowWithCanonical.unique_name);
-                    }
                 }
             }
         });
 
+        console.log('[groupedUrlsByPages] pageIds:', pageIds, '| groupedUrls.length:', groupedUrls.length, '| result count:', urls.length);
+        if (groupedUrls.length > 0) {
+            console.log('[groupedUrlsByPages] sample groupedUrls[0]:', JSON.stringify(groupedUrls[0]));
+        }
         return urls;
     }
 
@@ -2791,13 +3716,6 @@
 
     function setGroupedUrls(values) {
         var $sel = jQuery('#finalIssueGroupedUrls');
-        var current = $sel.val() || [];
-        function appendOption(val, label) {
-            var safeVal = String(val || '').trim();
-            if (!safeVal) return;
-            if ($sel.find('option').filter(function () { return this.value === safeVal; }).length) return;
-            $sel.append('<option value="' + safeVal.replace(/"/g, '&quot;') + '">' + (label || safeVal) + '</option>');
-        }
         var uniqueValues = [];
         (values || []).forEach(function (u) {
             var s = String(u || '').trim();
@@ -2805,17 +3723,32 @@
             if (uniqueValues.indexOf(s) === -1) uniqueValues.push(s);
         });
 
-        var allOptions = getAllGroupedUrlOptions();
+        // Destroy select2, rebuild options, reinit, then set value
+        try { $sel.select2('destroy'); } catch (e) {}
 
         $sel.empty();
-        allOptions.forEach(function (u) { appendOption(u, u); });
-        // Ensure selected values (including custom typed URLs) remain present.
-        uniqueValues.forEach(function (u) { appendOption(u, u); });
-        current.forEach(function (u) {
-            var s = String(u || '').trim();
-            if (!s) return;
-            appendOption(s, s);
+        // Add all available options
+        getAllGroupedUrlOptions().forEach(function (u) {
+            $sel.append(new Option(u, u, false, false));
         });
+        // Ensure selected values exist as options
+        uniqueValues.forEach(function (u) {
+            if (!$sel.find('option[value="' + u.replace(/"/g, '\\"') + '"]').length) {
+                $sel.append(new Option(u, u, false, false));
+            }
+        });
+
+        // Reinit select2
+        var $gpParent = $sel.closest('.modal');
+        $sel.select2({
+            width: '100%',
+            tags: true,
+            tokenSeparators: [','],
+            closeOnSelect: false,
+            placeholder: 'Search or add URLs...',
+            dropdownParent: $gpParent.length ? $gpParent : null
+        });
+
         $sel.val(uniqueValues).trigger('change');
         updateUrlSelectionSummary();
         updateGroupedUrlsPreview();
@@ -2913,6 +3846,38 @@
             try { if ($modalUrls.data('select2')) $modalUrls.select2('destroy'); } catch (e) { }
             $modalPages.select2({ width: '100%', closeOnSelect: false, dropdownParent: $modal });
             $modalUrls.select2({ width: '100%', tags: true, tokenSeparators: [','], closeOnSelect: false, dropdownParent: $modal });
+
+            // Multi-paste handler helper
+            var setupMultiPaste = function($s2, isTags) {
+                $s2.on('select2:open', function() {
+                    var $search = jQuery('.select2-container--open .select2-search__field');
+                    $search.off('paste.multis2').on('paste.multis2', function(e) {
+                        var cb = e.originalEvent.clipboardData || window.clipboardData;
+                        var text = cb.getData('text');
+                        var items = text.split(/[,\r\n]+/).map(function(s){ return s.trim(); }).filter(Boolean);
+                        if (items.length > 1) {
+                            e.preventDefault();
+                            var current = $s2.val() || [];
+                            items.forEach(function(item) {
+                                if (current.indexOf(item) === -1) {
+                                    var exists = $s2.find("option").filter(function() { return this.value === item; }).length > 0;
+                                    if (!exists && isTags) {
+                                        $s2.append(new Option(item, item, true, true));
+                                        current.push(item);
+                                    } else if (exists) {
+                                        current.push(item);
+                                    }
+                                }
+                            });
+                            $s2.val(current).trigger('change');
+                            $s2.select2('close');
+                        }
+                    });
+                });
+            };
+
+            setupMultiPaste($modalPages, false);
+            setupMultiPaste($modalUrls, true);
         }
 
         $openBtn.off('click.urlModal').on('click.urlModal', function () {
@@ -2952,6 +3917,29 @@
                 ta.select();
                 try { document.execCommand('copy'); if (window.showToast) showToast('Grouped URLs copied', 'success'); } catch (e) { if (window.showToast) showToast('Copy failed', 'danger'); }
                 document.body.removeChild(ta);
+            }
+        });
+
+        jQuery('#btnClearGroupedUrls').off('click.urlModalClear').on('click.urlModalClear', function () {
+            if (confirm('Are you sure you want to remove all grouped URLs?')) {
+                $modalUrls.val(null).trigger('change');
+            }
+        });
+        
+        // Add native Ctrl+A + Delete support inside the Select2 search field
+        jQuery(document).off('keydown.urlSelect2Clear').on('keydown.urlSelect2Clear', '.select2-container--open .select2-search__field', function(e) {
+            if (e.ctrlKey && e.key === 'a') {
+                jQuery(this).data('ctrlA_pressed', true);
+            } else if ((e.key === 'Backspace' || e.key === 'Delete') && jQuery(this).data('ctrlA_pressed')) {
+                var $select2Input = jQuery(this).closest('.select2-container').prev('select');
+                if ($select2Input.attr('id') === 'urlModalGroupedUrls' || $select2Input.attr('id') === 'finalIssueGroupedUrls') {
+                    $select2Input.val(null).trigger('change');
+                    jQuery(this).val(''); // Clear the search box too
+                    jQuery(this).data('ctrlA_pressed', false);
+                    e.preventDefault();
+                }
+            } else {
+                jQuery(this).data('ctrlA_pressed', false);
             }
         });
     }
@@ -3015,22 +4003,26 @@
             var found = ProjectConfig.issueStatuses.find(function (s) {
                 // Try matching by ID first (numeric comparison)
                 if (s.id == statusId) return true;
-                // Fallback to matching by name (case-insensitive)
-                if (s.name && String(s.name).toLowerCase() === String(statusId).toLowerCase()) return true;
+                // Fallback to matching by slug/key/label (case-insensitive)
+                var candidate = String(statusId).toLowerCase();
+                if (s.name && String(s.name).toLowerCase() === candidate) return true;
+                if (s.status_key && String(s.status_key).toLowerCase() === candidate) return true;
+                if (s.status_label && String(s.status_label).toLowerCase() === candidate) return true;
+                if (s.label && String(s.label).toLowerCase() === candidate) return true;
                 return false;
             });
             if (found) {
-                var color = found.color || '#6c757d';
-                var name = statusLabel || found.name || 'Unknown';
+                var color = found.badge_color || found.color || '#6c757d';
+                var name = statusLabel || found.status_label || found.name || found.label || found.status_key || 'Unknown';
                 // If color is a hex code, use inline style; otherwise use Bootstrap class
-                if (color.startsWith('#')) {
+                if (String(color).startsWith('#')) {
                     return '<span class="badge" style="background-color: ' + color + '; color: white;">' + escapeHtml(name) + '</span>';
                 } else {
                     return '<span class="badge bg-' + color + '">' + escapeHtml(name) + '</span>';
                 }
             }
         }
-        return '<span class="badge bg-secondary">' + escapeHtml(String(statusId)) + '</span>';
+        return '<span class="badge bg-secondary">' + escapeHtml(String(statusLabel || statusId)) + '</span>';
     }
 
     function getQaBadge(q) {
@@ -3079,7 +4071,7 @@
             if (issueId) expandedIssueIds.push(issueId);
         });
         if (!issueData.selectedPageId) {
-            tbody.innerHTML = '<tr><td colspan="11" class="text-center py-5"><div class="text-muted mb-2"><i class="fas fa-arrow-left fa-2x opacity-25"></i></div><div class="text-muted fw-medium">Select a page from the list to view issues.</div></td></tr>';
+            tbody.innerHTML = '<tr><td colspan="9" class="text-center py-5"><div class="text-muted mb-2"><i class="fas fa-arrow-left fa-2x opacity-25"></i></div><div class="text-muted fw-medium">Select a page from the list to view issues.</div></td></tr>';
             updateIssueTabCounts();
             return;
         }
@@ -3105,8 +4097,10 @@
             return numA - numB;
         });
         
+        issues = applyClientFinalIssueFilters(issues);
+
         if (!issues.length) {
-            tbody.innerHTML = '<tr><td colspan="11" class="text-center py-5"><div class="text-muted mb-2"><i class="fas fa-check-circle fa-2x opacity-25"></i></div><div class="text-muted fw-medium">No final issues recorded yet.</div></td></tr>';
+            tbody.innerHTML = '<tr><td colspan="9" class="text-center py-5"><div class="text-muted mb-2"><i class="fas fa-check-circle fa-2x opacity-25"></i></div><div class="text-muted fw-medium">No final issues recorded yet.</div></td></tr>';
             updateIssueTabCounts();
             return;
         }
@@ -3147,7 +4141,7 @@
                 priority = priority[0] || 'N/A';
             }
 
-            var status = issue.status || 'open';
+            var status = issue.status_name || issue.status || 'open';
             var statusId = issue.status_id || null;
             var qaStatusHtml = getReporterQaStatusHtml(issue);
 
@@ -3159,16 +4153,7 @@
             var reporterHtml = '';
             if (reportersArray.length > 0) {
                 reporterHtml = reportersArray.map(function (reporterId) {
-                    // Get reporter name from project users
-                    var reporterName = 'Unknown';
-                    if (ProjectConfig.projectUsers) {
-                        var found = ProjectConfig.projectUsers.find(function (u) {
-                            return u.id == reporterId;
-                        });
-                        if (found) {
-                            reporterName = found.full_name;
-                        }
-                    }
+                    var reporterName = getProjectUserNameById(reporterId);
                     return '<span class="badge bg-info me-1">' + escapeHtml(reporterName) + '</span>';
                 }).join('');
             } else {
@@ -3208,15 +4193,13 @@
                     '<div class="fw-bold">' + escapeHtml(issue.common_title) + '</div>' +
                     '<div class="small text-muted">' + escapeHtml(issue.title) + '</div>'
                     :
-                    '<div class="fw-bold">' + escapeHtml(issue.title) + '</div>' +
+                    '<div>' + escapeHtml(issue.title) + '</div>' +
                     (titlePreview ? '<div class="small text-muted">' + escapeHtml(titlePreview) + '</div>' : '')
                 ) +
                 '</div>' +
                 '</div>' +
                 '</td>' +
-                '<td>' + getSeverityBadge(severity) + '</td>' +
-                '<td>' + getPriorityBadge(priority) + '</td>' +
-                '<td>' + getStatusBadge(statusId) + '</td>';
+                '<td>' + getStatusBadge(statusId, status) + '</td>';
             
             // QA Status, Reporter, QA Name, Client Ready columns - hide for client
             if (userRole !== 'client') {
@@ -3238,7 +4221,7 @@
                 '<span class="badge bg-secondary">' + pageCount + ' page(s)</span>' +
                 '</td>';
             
-            // Actions column - hide for client
+            // Actions column
             if (userRole !== 'client') {
                 mainRow += '<td class="action-buttons-cell">' +
                     '<button class="btn btn-sm btn-outline-primary me-1 final-edit" data-id="' + issue.id + '" type="button" title="Edit Issue">' +
@@ -3248,13 +4231,19 @@
                     '<i class="fas fa-trash"></i>' +
                     '</button>' +
                     '</td>';
+            } else {
+                mainRow += '<td class="action-buttons-cell">' +
+                    '<button class="btn btn-sm btn-outline-primary issue-open" data-id="' + issue.id + '" type="button" title="Update status or add comment">' +
+                    '<i class="fas fa-pen-to-square me-1"></i>Update' +
+                    '</button>' +
+                    '</td>';
             }
             
             mainRow += '</tr>';
 
             // Expandable details row
             var detailsRow = '<tr class="collapse" id="' + uniqueId + '">' +
-                '<td colspan="11" class="p-0 border-0">' +
+                '<td colspan="9" class="p-0 border-0">' +
                 '<div class="bg-light p-4 border-top">' +
                 '<div class="row g-3">' +
                 '<div class="col-md-8">' +
@@ -3272,7 +4261,7 @@
                 '<div class="mb-2"><strong>Issue Key:</strong><br>' +
                 '<span class="badge bg-primary">' + escapeHtml(issueKey) + '</span>' +
                 '</div>' +
-                '<div class="mb-2"><strong>Status:</strong><br>' + getStatusBadge(statusId) + '</div>' +
+                '<div class="mb-2"><strong>Status:</strong><br>' + getStatusBadge(statusId, status) + '</div>' +
                 (userRole !== 'client' ? '<div class="mb-2"><strong>QA Status:</strong><br>' + qaStatusHtml + '</div>' : '') +
                 '<div class="mb-2"><strong>Severity:</strong><br>' +
                 '<span class="badge bg-warning text-dark">' + escapeHtml((severity || 'N/A').toUpperCase()) + '</span>' +
@@ -3292,65 +4281,56 @@
                 '</div>' : '') +
                 (userRole !== 'client' ? '<div class="mb-2"><strong>QA Name:</strong><br>' + escapeHtml(qaName) + '</div>' : '') +
                 (function () {
-                    // Pages section with names
+                    // Pages section - bullet list with scrollable container
                     var pagesHtml = '<div class="mb-2"><strong>Pages:</strong> ';
                     if (issue.pages && issue.pages.length > 0) {
                         var pageNames = issue.pages.map(function (pageId) {
                             return getPageName(pageId);
                         });
-                        pagesHtml += '<span class="badge bg-secondary">' + pageNames.length + '</span><br>';
-                        pagesHtml += '<small class="text-muted">' + pageNames.join(', ') + '</small>';
+                        pagesHtml += '<span class="badge bg-secondary ms-1">' + pageNames.length + '</span>';
+                        pagesHtml += '<div class="mt-1 border rounded bg-white p-2" style="max-height:120px;overflow-y:auto;">';
+                        pagesHtml += '<ul class="list-unstyled mb-0 small">';
+                        pageNames.forEach(function(name) {
+                            pagesHtml += '<li><i class="fas fa-file-alt text-muted me-1"></i>' + escapeHtml(name) + '</li>';
+                        });
+                        pagesHtml += '</ul></div>';
                     } else {
                         pagesHtml += '<span class="text-muted">N/A</span>';
                     }
                     pagesHtml += '</div>';
 
-                    // Grouped URLs section with expand/collapse
+                    // Grouped URLs section - same as issues-all.js
                     var urlsHtml = '';
                     if (issue.grouped_urls && issue.grouped_urls.length > 0) {
-                        var urlsId = 'urls-' + issue.id;
-                        urlsHtml += '<div class="mb-2">';
-                        urlsHtml += '<strong>Grouped URLs:</strong> ';
-                        urlsHtml += '<span class="badge bg-info">' + issue.grouped_urls.length + '</span> ';
-                        urlsHtml += '<button class="btn btn-xs btn-link p-0 grouped-urls-toggle" data-bs-toggle="collapse" data-bs-target="#' + urlsId + '" aria-expanded="false">';
-                        urlsHtml += '<i class="fas fa-chevron-down transition-transform"></i>';
-                        urlsHtml += '</button>';
-                        urlsHtml += '<div class="mt-2" id="' + urlsId + '" style="display: none;">';
-                        urlsHtml += '<div class="small p-2 border rounded bg-light" style="max-height: 150px; overflow-y: auto;">';
-
-                        var urlsFound = 0;
+                        urlsHtml += '<div class="mb-2"><strong>Grouped URLs:</strong> <span class="badge bg-info ms-1">' + issue.grouped_urls.length + '</span>' +
+                            '<button class="btn btn-link p-0 ms-1 text-primary" style="font-size:12px;text-decoration:none;" onclick="toggleGroupedUrls(\'' + issue.id + '\',event)"><small>Show/Hide</small></button>' +
+                            '<div id="grouped-urls-content-' + issue.id + '" style="display:none;margin-top:4px;">' +
+                            '<div class="border rounded bg-white p-2" style="max-height:120px;overflow-y:auto;">' +
+                            '<ul class="list-unstyled mb-0 small">';
                         issue.grouped_urls.forEach(function (urlString) {
-                            // The issue stores actual URL strings, not IDs
-                            // Find matching URL data from ProjectConfig.groupedUrls
                             var urlData = (ProjectConfig.groupedUrls || []).find(function (u) {
                                 return u.url === urlString || u.normalized_url === urlString;
                             });
-
-                            // If not found in groupedUrls, just display the URL string directly
                             var displayUrl = urlData ? urlData.url : urlString;
-
                             if (displayUrl) {
-                                urlsFound++;
-                                urlsHtml += '<div class="mb-1">';
-                                urlsHtml += '<a href="' + escapeHtml(displayUrl) + '" target="_blank" class="text-decoration-none">';
-                                urlsHtml += '<i class="fas fa-external-link-alt me-1 text-primary"></i>';
-                                urlsHtml += '<span class="text-primary">' + escapeHtml(displayUrl) + '</span>';
-                                urlsHtml += '</a>';
-                                urlsHtml += '</div>';
+                                urlsHtml += '<li class="mb-1 text-break"><a href="' + escapeHtml(displayUrl) + '" target="_blank" class="text-decoration-none"><i class="fas fa-link me-1 text-primary"></i>' + escapeHtml(displayUrl) + '</a></li>';
                             }
                         });
+                        urlsHtml += '</ul></div></div></div>';
+                    }
 
-                        // If no URLs found, show message
-                        if (urlsFound === 0) {
-                            urlsHtml += '<div class="text-muted">No URL data available</div>';
-                        }
-
-                        urlsHtml += '</div></div></div>';
+                    if (userRole === 'client') {
+                        return '<div class="mb-2"><strong>Page:</strong><br><small class="text-muted">' + escapeHtml(getPageName(issueData.selectedPageId || (issue.pages && issue.pages[0]) || '')) + '</small></div>';
                     }
 
                     return pagesHtml + urlsHtml;
                 })() +
                 (function () {
+                    if (userRole === 'client') {
+                        return buildClientQuickStatusActions(issue) +
+                            '<div class="small text-muted mt-3">Open the panel above to post regression comments with screenshots.</div>';
+                    }
+
                     var metaHtml = '';
                     if (typeof issueMetadataFields !== 'undefined') {
                         issueMetadataFields.forEach(function (f) {
@@ -3410,14 +4390,14 @@
             titleEl.addEventListener('click', function (e) {
                 e.stopPropagation();
                 
-                // For client users, just expand/collapse the row
+                // For client users, open the restricted modal
                 if (userRole === 'client') {
-                    var row = this.closest('tr');
-                    if (row) {
-                        var chevronBtn = row.querySelector('.chevron-toggle-btn');
-                        if (chevronBtn) {
-                            toggleIssueRow(chevronBtn);
-                        }
+                    var issueId = this.getAttribute('data-issue-id');
+                    if (issueId && issueData.selectedPageId) {
+                        var clientIssue = issueData.pages[issueData.selectedPageId].final.find(function (i) {
+                            return String(i.id) === String(issueId);
+                        });
+                        if (clientIssue) openFinalEditor(clientIssue);
                     }
                 } else {
                     // For non-client users, open edit modal
@@ -3429,6 +4409,14 @@
                         if (issue) openFinalEditor(issue);
                     }
                 }
+            });
+        });
+
+        document.querySelectorAll('#finalIssuesBody .client-quick-status').forEach(function (button) {
+            button.addEventListener('click', function (e) {
+                e.preventDefault();
+                e.stopPropagation();
+                quickUpdateClientIssueStatus(this.getAttribute('data-issue-id'), this.getAttribute('data-status-id'), this);
             });
         });
 
@@ -3454,6 +4442,8 @@
                 }
             });
         });
+
+        document.dispatchEvent(new CustomEvent('pms:issueTableUpdated'));
 
         // Helper function to toggle issue row expansion
         function toggleIssueRow(btn) {
@@ -3530,43 +4520,6 @@
             // and apply logic consistently
             document.querySelectorAll('#finalIssuesBody img').forEach(function (img) {
                 img.style.cursor = 'pointer';
-            });
-            
-            // Add event listeners for grouped URLs collapse with manual toggle
-            document.querySelectorAll('#finalIssuesBody .grouped-urls-toggle').forEach(function (toggleBtn) {
-                toggleBtn.addEventListener('click', function (e) {
-                    e.preventDefault();
-                    e.stopPropagation();
-
-                    var targetId = this.getAttribute('data-bs-target');
-                    if (targetId) {
-                        var collapseEl = document.querySelector(targetId);
-                        var chevron = this.querySelector('i');
-
-                        if (collapseEl) {
-                            // Toggle using inline style
-                            var isHidden = collapseEl.style.display === 'none';
-
-                            if (isHidden) {
-                                // Expand
-                                collapseEl.style.display = 'block';
-                                if (chevron) {
-                                    chevron.classList.remove('fa-chevron-down');
-                                    chevron.classList.add('fa-chevron-up');
-                                }
-                                this.setAttribute('aria-expanded', 'true');
-                            } else {
-                                // Collapse
-                                collapseEl.style.display = 'none';
-                                if (chevron) {
-                                    chevron.classList.remove('fa-chevron-up');
-                                    chevron.classList.add('fa-chevron-down');
-                                }
-                                this.setAttribute('aria-expanded', 'false');
-                            }
-                        }
-                    }
-                });
             });
         }, 100);
     }
@@ -3902,7 +4855,7 @@
                 priority = priority[0] || 'N/A';
             }
 
-            var status = issue.status || 'open';
+            var status = issue.status_name || issue.status || 'open';
             var statusId = issue.status_id || null;
             var qaStatusHtml = getReporterQaStatusHtml(issue);
 
@@ -3962,7 +4915,7 @@
                     '<div class="fw-bold">' + escapeHtml(issue.common_title) + '</div>' +
                     '<div class="small text-muted">' + escapeHtml(issue.title) + '</div>'
                     :
-                    '<div class="fw-bold">' + escapeHtml(issue.title) + '</div>' +
+                    '<div>' + escapeHtml(issue.title) + '</div>' +
                     (titlePreview ? '<div class="small text-muted">' + escapeHtml(titlePreview) + '</div>' : '')
                 ) +
                 '</div>' +
@@ -3970,7 +4923,7 @@
                 '</td>' +
                 '<td>' + getSeverityBadge(severity) + '</td>' +
                 '<td>' + getPriorityBadge(priority) + '</td>' +
-                '<td>' + getStatusBadge(statusId) + '</td>';
+                '<td>' + getStatusBadge(statusId, status) + '</td>';
 
             // QA Status, Reporter, QA Name, Client Ready columns - hide for client
             if (userRole !== 'client') {
@@ -3992,7 +4945,7 @@
                 '<span class="badge bg-secondary">' + pageCount + ' page(s)</span>' +
                 '</td>';
 
-            // Actions column - hide for client
+            // Actions column
             if (userRole !== 'client') {
                 mainRowHtml += '<td class="action-buttons-cell">' +
                     '<button class="btn btn-sm btn-outline-primary me-1 final-edit" data-id="' + issue.id + '" type="button" title="Edit Issue">' +
@@ -4000,6 +4953,12 @@
                     '</button>' +
                     '<button class="btn btn-sm btn-outline-danger final-delete" data-id="' + issue.id + '" type="button" title="' + escapeAttr(deleteTitle) + '"' + (testerDeleteBlocked ? ' disabled' : '') + '>' +
                     '<i class="fas fa-trash"></i>' +
+                    '</button>' +
+                    '</td>';
+            } else {
+                mainRowHtml += '<td class="action-buttons-cell">' +
+                    '<button class="btn btn-sm btn-outline-primary issue-open" data-id="' + issue.id + '" type="button" title="Update status or add comment">' +
+                    '<i class="fas fa-pen-to-square me-1"></i>Update' +
                     '</button>' +
                     '</td>';
             }
@@ -4011,7 +4970,7 @@
             existingMainRow.style.cursor = 'pointer';
 
             // Create new details row HTML
-            var detailsRowHtml = '<td colspan="11" class="p-0 border-0">' +
+            var detailsRowHtml = '<td colspan="9" class="p-0 border-0">' +
                 '<div class="bg-light p-4 border-top">' +
                 '<div class="row g-3">' +
                 '<div class="col-md-8">' +
@@ -4029,7 +4988,7 @@
                 '<div class="mb-2"><strong>Issue Key:</strong><br>' +
                 '<span class="badge bg-primary">' + escapeHtml(issueKey) + '</span>' +
                 '</div>' +
-                '<div class="mb-2"><strong>Status:</strong><br>' + getStatusBadge(statusId) + '</div>' +
+                '<div class="mb-2"><strong>Status:</strong><br>' + getStatusBadge(statusId, status) + '</div>' +
                 (userRole !== 'client' ? '<div class="mb-2"><strong>QA Status:</strong><br>' + qaStatusHtml + '</div>' : '') +
                 '<div class="mb-2"><strong>Severity:</strong><br>' +
                 '<span class="badge bg-warning text-dark">' + escapeHtml((severity || 'N/A').toUpperCase()) + '</span>' +
@@ -4101,9 +5060,18 @@
                         urlsHtml += '</div></div></div>';
                     }
 
+                    if (userRole === 'client') {
+                        return '<div class="mb-2"><strong>Page:</strong><br><small class="text-muted">' + escapeHtml(getPageName(issueData.selectedPageId || (issue.pages && issue.pages[0]) || '')) + '</small></div>';
+                    }
+
                     return pagesHtml + urlsHtml;
                 })() +
                 (function () {
+                    if (userRole === 'client') {
+                        return buildClientQuickStatusActions(issue) +
+                            '<div class="small text-muted mt-3">Use comments below to share regression details and screenshots.</div>';
+                    }
+
                     var metaHtml = '';
                     if (typeof issueMetadataFields !== 'undefined') {
                         issueMetadataFields.forEach(function (f) {
@@ -4184,12 +5152,12 @@
                     e.stopPropagation();
 
                     if (userRole === 'client') {
-                        var row = this.closest('tr');
-                        if (row) {
-                            var chevronBtn = row.querySelector('.chevron-toggle-btn');
-                            if (chevronBtn) {
-                                toggleIssueRow(chevronBtn);
-                            }
+                        var issueId = this.getAttribute('data-issue-id');
+                        if (issueId && issueData.selectedPageId) {
+                            var clientIssue = issueData.pages[issueData.selectedPageId].final.find(function (i) {
+                                return String(i.id) === String(issueId);
+                            });
+                            if (clientIssue) openFinalEditor(clientIssue);
                         }
                     } else {
                         var issueId = this.getAttribute('data-issue-id');
@@ -4202,6 +5170,14 @@
                     }
                 });
             }
+
+            mainRow.querySelectorAll('.client-quick-status').forEach(function (button) {
+                button.addEventListener('click', function (e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    quickUpdateClientIssueStatus(this.getAttribute('data-issue-id'), this.getAttribute('data-status-id'), this);
+                });
+            });
 
             // Row click handler
             mainRow.addEventListener('click', function (e) {
@@ -4283,7 +5259,8 @@
                             e.stopPropagation();
                             e.preventDefault();
                             var src = this.getAttribute('src');
-                            if (src) openIssueImageModal(src);
+                            var alt = this.getAttribute('alt') || '';
+                            if (src) openIssueImageModal(src, alt);
                         };
 
                         img.addEventListener('click', img._imageClickHandler);
@@ -4324,10 +5301,7 @@
                     });
                 }
             }, 100);
-        }
-
-    
-    function addNewIssueRow(issueDataObj) {
+        }    function addNewIssueRow(issueDataObj) {
         // For new issues, just re-render the table
         // The new issue will appear at the top due to the unshift() in the save function
         renderFinalIssues();
@@ -4336,229 +5310,139 @@
     function renderCommonIssues() {
         var tbody = document.getElementById('commonIssuesBody');
         if (!tbody) return;
-        var colspanCount = (userRole === 'client') ? 2 : 4;
-        if (!issueData.common.length) {
-            tbody.innerHTML = '<tr><td colspan="' + colspanCount + '" class="text-center py-5 text-muted">No common issues found.</td></tr>';
+        
+        var userRole = (window.ProjectConfig ? window.ProjectConfig.userRole : '');
+        var colspan = (userRole === 'client') ? 3 : 5;
+
+        var commonIssues = (window.issueData && Array.isArray(window.issueData.common)) ? window.issueData.common : [];
+
+        if (commonIssues.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="' + colspan + '" class="text-center py-5 text-muted">' + 
+                (userRole === 'client' ? 'No shared issues available right now.' : 'No common issues found.') + 
+                '</td></tr>';
             return;
         }
 
-        tbody.innerHTML = issueData.common.map(function (it) {
-            var pagesStr = (it.pages || []).map(getPageName).slice(0, 5).join(', ') + ((it.pages && it.pages.length > 5) ? '...' : '');
+        tbody.innerHTML = commonIssues.map(function (it) {
             var uniqueId = 'common-issue-details-' + it.id;
-            var pageCount = (it.pages || []).length;
-            var descriptionPreview = stripHtml(it.description || '').substring(0, 100);
-            if (descriptionPreview && stripHtml(it.description || '').length > 100) descriptionPreview += '...';
-            var testerDeleteBlocked = !!(isTesterRole && it.can_tester_delete === false);
-            var deleteTitle = testerDeleteBlocked
-                ? 'Testers cannot delete this issue because it has comments or QA status is set on an Open issue.'
-                : 'Delete Common Issue';
-
-            // Try to find the actual issue data from loaded pages
-            var actualIssue = null;
-            if (it.issue_id && it.pages && it.pages.length > 0) {
-                var firstPageId = it.pages[0];
-                if (issueData.pages[firstPageId] && issueData.pages[firstPageId].final) {
-                    actualIssue = issueData.pages[firstPageId].final.find(function (i) {
-                        return String(i.id) === String(it.issue_id);
-                    });
-                }
-            }
-
-            // Main row with expand button
-            var mainRow = '<tr class="align-middle issue-expandable-row" data-collapse-target="#' + uniqueId + '">';
+            var rawDesc = it.description || it.details || '';
+            var descriptionPreview = stripHtml(rawDesc).substring(0, 100);
+            if (descriptionPreview && stripHtml(rawDesc).length > 100) descriptionPreview += '...';
             
-            // Checkbox column - hide for client
+            var severity = it.severity || 'N/A';
+            var priority = it.priority || 'N/A';
+            var status = it.status_name || it.status || 'open';
+            var statusId = it.status_id || null;
+            var qaStatusHtml = getReporterQaStatusHtml(it);
+            var pageCount = (it.pages || []).length;
+            var displayKey = it.issue_key || it.key || ((window.ProjectConfig ? window.ProjectConfig.projectCode : 'ISS') + '-' + (it.issue_id || it.id));
+
+            var mainRow = '<tr class="align-middle issue-expandable-row" data-collapse-target="#' + uniqueId + '" style="cursor: pointer;">';
+            
+            // 1. Checkbox (non-client)
             if (userRole !== 'client') {
-                mainRow += '<td class="text-center checkbox-cell">' +
-                    '<input type="checkbox" class="form-check-input common-select" data-id="' + it.id + '"' + (testerDeleteBlocked ? ' disabled' : '') + '>' +
+                mainRow += '<td class="text-center checkbox-cell" style="width: 40px;">' +
+                    '<input type="checkbox" class="form-check-input common-select" data-id="' + it.id + '">' +
                     '</td>';
             }
-            
-            mainRow += '<td style="min-width: 250px; max-width: 400px;">' +
+
+            // 2. Issue Key
+            mainRow += '<td style="width: 115px;"><span class="badge bg-primary">' + escapeHtml(displayKey) + '</span></td>';
+
+            // 3. Title + Description
+            mainRow += '<td>' +
                 '<div class="d-flex align-items-center">' +
-                '<button class="btn btn-link p-0 me-2 text-muted chevron-toggle-btn" ' +
-                'data-collapse-target="#' + uniqueId + '" ' +
-                'aria-label="Expand details for ' + escapeHtml(it.title) + '" ' +
-                'style="border: none; background: none; font-size: 1rem;">' +
-                '<i class="fas fa-chevron-right chevron-icon"></i>' +
-                '</button>' +
+                '<div class="me-2 text-muted" style="width: 20px;"><i class="fas fa-chevron-right chevron-icon"></i></div>' +
                 '<div>' +
-                '<div class="fw-bold text-dark">' + escapeHtml(it.title) + '</div>' +
-                (descriptionPreview ? '<div class="small text-muted">' + escapeHtml(descriptionPreview) + '</div>' : '') +
+                '<div class="fw-bold text-dark text-truncate-cell" title="' + escapeAttr(it.common_title || it.title) + '">' + escapeHtml(it.common_title || it.title) + '</div>' +
+                (it.common_title && it.common_title !== it.title ? '<div class="small text-muted text-truncate-cell" title="' + escapeAttr(it.title) + '">Issue Title: ' + escapeHtml(it.title) + '</div>' : '') +
+                (descriptionPreview ? '<div class="small text-muted text-truncate-cell" title="' + escapeAttr(stripHtml(rawDesc)) + '">' + escapeHtml(descriptionPreview) + '</div>' : '') +
                 '</div>' +
                 '</div>' +
-                '</td>' +
-                '<td class="small text-muted">' +
-                '<span class="badge bg-secondary">' + pageCount + ' page(s)</span>' +
                 '</td>';
-            
-            // Actions column - hide for client
+
+            // 4. Page(s)
+            mainRow += '<td style="width: 125px;"><span class="badge bg-secondary">' + pageCount + ' page(s)</span></td>';
+
+            // 5. Actions (non-client)
             if (userRole !== 'client') {
-                mainRow += '<td class="text-end action-buttons-cell">' +
+                mainRow += '<td class="text-end action-buttons-cell" style="width: 105px;">' +
                     '<div class="btn-group">' +
-                    '<button class="btn btn-sm btn-outline-primary common-edit bg-white" data-id="' + it.id + '" title="Edit Common Issue">' +
-                    '<i class="fas fa-pencil-alt"></i>' +
-                    '</button>' +
-                    '<button class="btn btn-sm btn-outline-danger common-delete bg-white" data-id="' + it.id + '" title="' + escapeAttr(deleteTitle) + '"' + (testerDeleteBlocked ? ' disabled' : '') + '>' +
-                    '<i class="far fa-trash-alt"></i>' +
-                    '</button>' +
+                    '<button class="btn btn-sm btn-outline-primary common-edit bg-white" data-id="' + it.id + '" title="Edit Common Issue"><i class="fas fa-pencil-alt"></i></button>' +
+                    '<button class="btn btn-sm btn-outline-danger common-delete bg-white" data-id="' + it.id + '" title="Delete Common Issue"><i class="fas fa-trash"></i></button>' +
                     '</div>' +
                     '</td>';
             }
-            
+
             mainRow += '</tr>';
 
-            // Build metadata section if actual issue is found
-            var metadataHtml = '';
-            if (actualIssue) {
-                var severity = actualIssue.severity || 'N/A';
-                var priority = actualIssue.priority || 'N/A';
-                var status = actualIssue.status || 'open';
-                var statusId = actualIssue.status_id || null;
-                var qaStatusHtml = getReporterQaStatusHtml(actualIssue);
-
-                // Reporters - handle both IDs and names
-                var reportersArray = [];
-
-                // First, add reporters from reporters array (these are IDs)
-                if (Array.isArray(actualIssue.reporters) && actualIssue.reporters.length > 0) {
-                    reportersArray = actualIssue.reporters;
-                }
-
-                // If no reporters array, use reporter_name (this is already a name string)
-                var reporterHtml = '';
-                if (reportersArray.length > 0) {
-                    // These are IDs, convert to names
-                    reporterHtml = reportersArray.map(function (reporterId) {
-                        var reporterName = 'Unknown';
-                        if (ProjectConfig.projectUsers) {
-                            var found = ProjectConfig.projectUsers.find(function (u) { return u.id == reporterId; });
-                            if (found) reporterName = found.full_name;
-                        }
-                        return '<span class="badge bg-info me-1">' + escapeHtml(reporterName) + '</span>';
-                    }).join('');
-                } else if (actualIssue.reporter_name) {
-                    // This is already a name string
-                    reporterHtml = '<span class="badge bg-info me-1">' + escapeHtml(actualIssue.reporter_name) + '</span>';
-                } else {
-                    reporterHtml = '<span class="text-muted">N/A</span>';
-                }
-
-                // Grouped URLs
-                var urlsHtml = '';
-                if (actualIssue.grouped_urls && actualIssue.grouped_urls.length > 0) {
-                    var urlsId = 'common-urls-' + it.id;
-                    urlsHtml = '<div class="mb-2">';
-                    urlsHtml += '<strong>Grouped URLs:</strong> ';
-                    urlsHtml += '<span class="badge bg-info">' + actualIssue.grouped_urls.length + '</span> ';
-                    urlsHtml += '<button type="button" class="btn btn-xs btn-link p-0 ms-1 grouped-urls-toggle-btn" data-target="' + urlsId + '" aria-expanded="false">';
-                    urlsHtml += '<i class="fas fa-chevron-down"></i>';
-                    urlsHtml += '</button>';
-                    urlsHtml += '<div class="collapse mt-2" id="' + urlsId + '">';
-                    urlsHtml += '<div class="small p-2 border rounded bg-light" style="max-height: 150px; overflow-y: auto;">';
-
-                    actualIssue.grouped_urls.forEach(function (urlString) {
-                        var urlData = (ProjectConfig.groupedUrls || []).find(function (u) {
-                            return u.url === urlString || u.normalized_url === urlString;
-                        });
-                        var displayUrl = urlData ? urlData.url : urlString;
-                        if (displayUrl) {
-                            urlsHtml += '<div class="mb-1">';
-                            urlsHtml += '<a href="' + escapeHtml(displayUrl) + '" target="_blank" class="text-decoration-none">';
-                            urlsHtml += '<i class="fas fa-external-link-alt me-1 text-primary"></i>';
-                            urlsHtml += '<span class="text-primary">' + escapeHtml(displayUrl) + '</span>';
-                            urlsHtml += '</a></div>';
-                        }
-                    });
-                    urlsHtml += '</div></div></div>';
-                }
-
-                // Build metadata HTML - Common Title first, then conditionally show other fields
-                metadataHtml = '';
-                
-                // Common Title - show for everyone at the top
-                if (actualIssue.common_title) {
-                    metadataHtml += '<div class="mb-2"><strong>Common Title:</strong><br>' + escapeHtml(actualIssue.common_title) + '</div>';
-                }
-                
-                metadataHtml += '<div class="mb-2"><strong>Issue Key:</strong><br>' +
-                    '<span class="badge bg-primary">' + escapeHtml(actualIssue.issue_key || 'N/A') + '</span>' +
-                    '</div>' +
-                    '<div class="mb-2"><strong>Status:</strong><br>' + getStatusBadge(statusId) + '</div>' +
-                    '<div class="mb-2"><strong>Severity:</strong><br>' +
-                    '<span class="badge bg-warning text-dark">' + escapeHtml((severity || 'N/A').toUpperCase()) + '</span>' +
-                    '</div>' +
-                    '<div class="mb-2"><strong>Priority:</strong><br>' +
-                    '<span class="badge bg-info text-dark">' + escapeHtml((priority || 'N/A').toUpperCase()) + '</span>' +
-                    '</div>';
-                
-                // QA Status, Reporter(s), Created, Updated - hide for client
-                if (userRole !== 'client') {
-                    metadataHtml += '<div class="mb-2"><strong>QA Status:</strong><br>' + qaStatusHtml + '</div>' +
-                        '<div class="mb-2"><strong>Reporter(s):</strong><br>' +
-                        (reportersArray.length > 0 ? reportersArray.map(function (reporterId) {
-                            var reporterName = 'Unknown';
-                            if (ProjectConfig.projectUsers) {
-                                var found = ProjectConfig.projectUsers.find(function (u) { return u.id == reporterId; });
-                                if (found) reporterName = found.full_name;
-                            }
-                            return escapeHtml(reporterName);
-                        }).join(', ') : (actualIssue.reporter_name ? escapeHtml(actualIssue.reporter_name) : '<span class="text-muted">N/A</span>')) +
-                        '</div>';
-                }
-                
-                metadataHtml += '<div class="mb-2"><strong>Page(s):</strong><br>' + escapeHtml(pagesStr) + '</div>' +
-                    urlsHtml;
-                
-                // Created and Updated - hide for client
-                if (userRole !== 'client') {
-                    if (actualIssue.created_at) {
-                        metadataHtml += '<div class="mb-2"><strong>Created:</strong><br><small class="text-muted">' + new Date(actualIssue.created_at).toLocaleString() + '</small></div>';
-                    }
-                    if (actualIssue.updated_at) {
-                        metadataHtml += '<div class="mb-2"><strong>Updated:</strong><br><small class="text-muted">' + new Date(actualIssue.updated_at).toLocaleString() + '</small></div>';
-                    }
-                }
-
-                // Add metadata fields
-                if (typeof issueMetadataFields !== 'undefined') {
-                    issueMetadataFields.forEach(function (f) {
-                        if (f.field_key === 'severity' || f.field_key === 'priority') return;
-                        var value = actualIssue[f.field_key];
-                        if (value && value.length > 0) {
-                            var displayValue = Array.isArray(value) ? value.join(', ') : value;
-                            metadataHtml += '<div class="mb-2"><strong>' + escapeHtml(f.field_label) + ':</strong> ' + escapeHtml(displayValue) + '</div>';
-                        }
-                    });
-                }
-            } else {
-                metadataHtml = '<div class="mb-2"><strong>Title:</strong> ' + escapeHtml(it.title) + '</div>' +
-                    '<div class="mb-2"><strong>Pages:</strong> ' +
-                    '<span class="badge bg-secondary">' + pageCount + '</span><br>' +
-                    '<small class="text-muted">' + escapeHtml(pagesStr) + '</small>' +
-                    '</div>' +
-                    (it.issue_id ? '<div class="mb-2"><strong>Issue ID:</strong> ' + escapeHtml(it.issue_id) + '</div>' : '') +
-                    '<div class="alert alert-info small mt-2"><i class="fas fa-info-circle me-1"></i>Load the page to see full issue details</div>';
-            }
-
-            // Expandable details row
+            // Details Row (Expanded) - Matching Issues All Style
             var detailsRow = '<tr class="collapse" id="' + uniqueId + '">' +
-                '<td colspan="' + colspanCount + '" class="p-0 border-0">' +
+                '<td colspan="' + colspan + '" class="p-0 border-0">' +
                 '<div class="bg-light p-4 border-top">' +
                 '<div class="row g-3">' +
+                // Left Column: Details/Description
                 '<div class="col-md-8">' +
-                '<h6 class="fw-bold mb-3"><i class="fas fa-file-alt me-2"></i>Description</h6>' +
+                '<h6 class="fw-bold mb-3"><i class="fas fa-file-alt me-2"></i>Issue Details</h6>' +
                 '<div class="card">' +
-                '<div class="card-body">' +
-                (decorateIssueImages(it.description) || actualIssue && decorateIssueImages(actualIssue.details) || '<p class="text-muted">No description provided.</p>') +
+                '<div class="card-body issue-content">' + (decorateIssueImages(rawDesc) || '<p class="text-muted">No details provided.</p>') + '</div>' +
                 '</div>' +
                 '</div>' +
-                '</div>' +
+                // Right Column: Metadata
                 '<div class="col-md-4">' +
-                '<h6 class="fw-bold mb-3"><i class="fas fa-info-circle me-2"></i>Details</h6>' +
+                '<h6 class="fw-bold mb-3"><i class="fas fa-info-circle me-2"></i>Metadata</h6>' +
                 '<div class="card">' +
                 '<div class="card-body">' +
-                metadataHtml +
+                '<div class="mb-2"><strong>Issue Key:</strong><br><span class="badge bg-primary">' + escapeHtml(displayKey) + '</span></div>' +
+                '<div class="mb-2"><strong>Status:</strong><br>' + getStatusBadge(statusId, status) + '</div>' +
+                (userRole !== 'client' ? '<div class="mb-2"><strong>QA Status:</strong><br>' + qaStatusHtml + '</div>' : '') +
+                '<div class="mb-2"><strong>Severity:</strong><br><span class="badge bg-warning text-dark">' + escapeHtml((severity || 'N/A').toUpperCase()) + '</span></div>' +
+                '<div class="mb-2"><strong>Priority:</strong><br><span class="badge bg-info text-dark">' + escapeHtml((priority || 'N/A').toUpperCase()) + '</span></div>' +
+                (userRole !== 'client' ? '<div class="mb-2"><strong>Reporter(s):</strong><br>' + (it.reporters ? escapeHtml(it.reporters) : '<span class="text-muted">N/A</span>') + '</div>' : '') +
+                    (function() {
+                        // Pages section
+                        var pagesHtml = '<div class="mb-2"><strong>Pages:</strong> <span class="badge bg-secondary ms-1">' + pageCount + '</span>' +
+                            '<div class="mt-1 border rounded bg-white p-2" style="max-height:120px;overflow-y:auto;">' +
+                            '<ul class="list-unstyled mb-0 small">';
+                        (it.pages || []).forEach(function(pageId) {
+                            pagesHtml += '<li><i class="fas fa-file-alt text-muted me-1"></i>' + escapeHtml(getPageName(pageId)) + '</li>';
+                        });
+                        pagesHtml += '</ul></div></div>';
+
+                        // Grouped URLs section
+                        if (it.grouped_urls && it.grouped_urls.length > 0) {
+                            pagesHtml += '<div class="mb-2"><strong>Grouped URLs:</strong> <span class="badge bg-info ms-1">' + it.grouped_urls.length + '</span>' +
+                                '<button class="btn btn-link p-0 ms-1 text-primary grouped-urls-toggle" style="font-size:12px;text-decoration:none;" data-bs-target="#common-grouped-urls-list-' + it.id + '"><small>Show/Hide</small></button>' +
+                                '<div id="common-grouped-urls-list-' + it.id + '" class="mt-1 border rounded bg-white p-2" style="display:none; max-height:150px; overflow-y:auto;">' +
+                                '<ul class="list-unstyled mb-0 small" style="word-break: break-all;">';
+                            it.grouped_urls.forEach(function (url) {
+                                pagesHtml += '<li class="mb-1 pb-1 border-bottom last-child-border-0">' +
+                                    '<i class="fas fa-link text-muted me-1"></i>' +
+                                    '<a href="' + escapeAttr(url) + '" target="_blank" class="text-decoration-none">' + escapeHtml(url) + '</a>' +
+                                    '</li>';
+                            });
+                            pagesHtml += '</ul></div></div>';
+                        }
+
+                        return pagesHtml;
+                    })() +
+                (function () {
+                    var metaHtml = '';
+                    if (typeof issueMetadataFields !== 'undefined') {
+                        issueMetadataFields.forEach(function (f) {
+                            if (f.field_key === 'severity' || f.field_key === 'priority') return;
+                            var value = (it.metadata && it.metadata[f.field_key]) || it[f.field_key];
+                            if (value && value.length > 0) {
+                                var displayValue = Array.isArray(value) ? value.join(', ') : value;
+                                metaHtml += '<div class="mb-2 small"><strong>' + escapeHtml(f.field_label) + ':</strong> ' + escapeHtml(displayValue) + '</div>';
+                            }
+                        });
+                    }
+                    if (userRole !== 'client' && it.updated_at) {
+                        metaHtml += '<div class="mt-3 pt-2 border-top small text-muted">Updated: ' + new Date(it.updated_at).toLocaleString() + '</div>';
+                    }
+                    return metaHtml;
+                })() +
                 '</div>' +
                 '</div>' +
                 '</div>' +
@@ -4570,123 +5454,65 @@
             return mainRow + detailsRow;
         }).join('');
 
-        // Add click handlers for chevron toggle buttons in common issues
-        document.querySelectorAll('#commonIssuesBody .chevron-toggle-btn').forEach(function (btn) {
-            // Click handler for chevron button
-            btn.addEventListener('click', function (e) {
-                e.stopPropagation();
-                toggleCommonIssueRow(this);
-            });
-
-            // Keyboard handler (Enter or Space)
-            btn.addEventListener('keydown', function (e) {
-                if (e.keyCode === 13 || e.keyCode === 32) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    toggleCommonIssueRow(this);
-                }
-            });
-        });
-
-        // Add click handler for entire row
+        // Re-attach listeners for expandable behavior
         document.querySelectorAll('#commonIssuesBody .issue-expandable-row').forEach(function (row) {
-            row.style.cursor = 'pointer';
-
             row.addEventListener('click', function (e) {
-                // Don't expand if clicking on buttons, checkbox, inputs, or action buttons
-                if (e.target.closest('button') ||
-                    e.target.closest('input') ||
-                    e.target.closest('select') ||
-                    e.target.closest('.action-buttons-cell') ||
-                    e.target.closest('.checkbox-cell')) {
-                    return;
-                }
-
-                // Find the chevron button in this row and trigger it
-                var chevronBtn = this.querySelector('.chevron-toggle-btn');
-                if (chevronBtn) {
-                    toggleCommonIssueRow(chevronBtn);
-                }
-            });
-        });
-
-        // Helper function to toggle common issue row expansion
-        function toggleCommonIssueRow(btn) {
-            var targetId = btn.getAttribute('data-collapse-target');
-            if (targetId) {
-                var collapseEl = document.querySelector(targetId);
-                var chevronIcon = btn.querySelector('.chevron-icon');
-
-                if (collapseEl) {
-                    var isExpanded = collapseEl.classList.contains('show');
-
-                    if (isExpanded) {
-                        collapseEl.classList.remove('show');
-                        if (chevronIcon) chevronIcon.className = 'fas fa-chevron-right chevron-icon';
-                    } else {
-                        // Before expanding, check if we need to load issue details
-                        var commonIssueId = targetId.replace('#common-issue-details-', '');
-                        var commonIssue = issueData.common.find(function (ci) { return String(ci.id) === String(commonIssueId); });
-
-                        if (commonIssue && commonIssue.issue_id && commonIssue.pages && commonIssue.pages.length > 0) {
-                            var firstPageId = commonIssue.pages[0];
-
-                            // Check if page data is already loaded
-                            if (!issueData.pages[firstPageId] || !issueData.pages[firstPageId].final) {
-                                // Load the page data first
-                                loadFinalIssues(firstPageId).then(function () {
-                                    // Re-render common issues with updated data
-                                    renderCommonIssues();
-                                    // Now expand the row
-                                    var newCollapseEl = document.querySelector(targetId);
-                                    if (newCollapseEl) {
-                                        newCollapseEl.classList.add('show');
-                                        var newChevronIcon = document.querySelector('[data-collapse-target="' + targetId + '"] .chevron-icon');
-                                        if (newChevronIcon) newChevronIcon.className = 'fas fa-chevron-down chevron-icon';
-                                    }
-                                }).catch(function (err) {
-                                    // Expand anyway with basic info
-                                    collapseEl.classList.add('show');
-                                    if (chevronIcon) chevronIcon.className = 'fas fa-chevron-down chevron-icon';
-                                });
-                                return; // Don't expand yet, wait for data to load
-                            }
-                        }
-
-                        // Expand normally if data is already loaded
-                        collapseEl.classList.add('show');
-                        if (chevronIcon) chevronIcon.className = 'fas fa-chevron-down chevron-icon';
-                    }
-                }
-            }
-        }
-        
-        // Add event listeners for grouped URLs toggle buttons
-        document.querySelectorAll('#commonIssuesBody .grouped-urls-toggle-btn').forEach(function(btn) {
-            btn.addEventListener('click', function(e) {
-                e.preventDefault();
-                e.stopPropagation();
-                var targetId = this.getAttribute('data-target');
-                var targetEl = document.getElementById(targetId);
-                var icon = this.querySelector('i');
+                if (e.target.closest('button') || e.target.closest('input') || e.target.closest('.action-buttons-cell')) return;
+                var targetId = this.getAttribute('data-collapse-target');
+                var detailsRow = document.querySelector(targetId);
+                var chevron = this.querySelector('.chevron-icon');
+                if (!detailsRow) return;
                 
-                if (targetEl) {
-                    if (targetEl.classList.contains('show')) {
-                        targetEl.classList.remove('show');
-                        if (icon) {
-                            icon.classList.remove('fa-chevron-up');
-                            icon.classList.add('fa-chevron-down');
-                        }
-                    } else {
-                        targetEl.classList.add('show');
-                        if (icon) {
-                            icon.classList.remove('fa-chevron-down');
-                            icon.classList.add('fa-chevron-up');
-                        }
-                    }
+                if (detailsRow.classList.contains('show')) {
+                    detailsRow.classList.remove('show');
+                    if (chevron) { chevron.classList.remove('fa-chevron-down'); chevron.classList.add('fa-chevron-right'); }
+                } else {
+                    detailsRow.classList.add('show');
+                    if (chevron) { chevron.classList.remove('fa-chevron-right'); chevron.classList.add('fa-chevron-down'); }
                 }
             });
         });
+
+        // Attach action listeners
+        document.querySelectorAll('.common-select').forEach(function(el) { el.addEventListener('click', function(e) { e.stopPropagation(); }); });
+
+        document.querySelectorAll('.common-edit').forEach(function(el) {
+            el.addEventListener('click', function(e) {
+                e.stopPropagation();
+                if (window.editCommonIssue) {
+                    window.editCommonIssue(this.dataset.id);
+                }
+            });
+        });
+
+        document.querySelectorAll('.common-delete').forEach(function(el) {
+            el.addEventListener('click', function(e) {
+                e.stopPropagation();
+                var id = this.dataset.id;
+                if (!canEdit()) return;
+                if (!confirm('Delete this common issue? This cannot be undone.')) return;
+                var fd = new FormData();
+                fd.append('action', 'delete');
+                fd.append('project_id', projectId);
+                fd.append('ids', id);
+                fetch(issuesApiBase, { method: 'POST', body: fd, credentials: 'same-origin' })
+                    .then(function(r) { return r.json(); })
+                    .then(function(res) {
+                        if (res && res.success) {
+                            if (typeof showToast === 'function') showToast('Common issue deleted.', 'success');
+                            if (window.loadCommonIssues) window.loadCommonIssues({ preserveFilters: true, keepPage: true });
+                        } else {
+                            if (typeof showToast === 'function') showToast((res && res.error) ? res.error : 'Failed to delete.', 'danger');
+                        }
+                    })
+                    .catch(function() {
+                        if (typeof showToast === 'function') showToast('Failed to delete.', 'danger');
+                    });
+            });
+        });
+
+
+        document.dispatchEvent(new CustomEvent('pms:issueTableUpdated'));
     }
 
     function renderAll() { renderFinalIssues(); renderCommonIssues(); updateSelectionButtons(); }
@@ -4715,8 +5541,8 @@
 
         if (!activeUsers.length) {
             issuePresenceRenderSignature = '';
-            el.className = 'small mt-1 text-muted';
-            el.textContent = 'No active viewers/editors on this issue.';
+            el.className = '';
+            el.textContent = '';
             return;
         }
 
@@ -4899,6 +5725,19 @@
         if (finalMarkClientReady) finalMarkClientReady.disabled = !finalChecked || !canEdit();
     }
 
+    // Event delegation for grouped URLs toggle - instant, no setTimeout delay
+    document.addEventListener('click', function(e) {
+        var btn = e.target.closest('.grouped-urls-toggle');
+        if (!btn) return;
+        e.preventDefault();
+        e.stopPropagation();
+        var targetId = btn.getAttribute('data-bs-target');
+        if (targetId) {
+            var el = document.querySelector(targetId);
+            if (el) el.style.display = (el.style.display === 'none' || !el.style.display) ? 'block' : 'none';
+        }
+    });
+
     // Global image click delegation for image previews
     document.addEventListener('click', function(e) {
         var target = e.target;
@@ -4913,6 +5752,16 @@
         }
     });
 
+    document.addEventListener('error', function (e) {
+        var target = e.target;
+        if (!target || target.tagName !== 'IMG') return;
+        if (!(target.classList.contains('issue-image-thumb') || target.classList.contains('editable-issue-image'))) return;
+        if (tryRecoverIssueImageElement(target)) {
+            e.preventDefault();
+            return;
+        }
+    }, true);
+
     function getPageName(id) { var p = (pages || []).find(function (x) { return String(x.id) === String(id); }); return p ? p.page_name : id; }
     // escapeHtml defined at top of scope
     // stripHtml, getSeverityBadge, getPriorityBadge, getStatusBadge defined earlier in scope
@@ -4922,6 +5771,11 @@
         if (!html) return ''; 
         return String(html).replace(/<img\b([^>]*)>/gi, function (_, attrs) { 
             let newAttrs = attrs;
+
+            newAttrs = newAttrs.replace(/\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i, function (match, dq, sq, bare) {
+                var currentSrc = dq || sq || bare || '';
+                return 'src="' + escapeAttr(normalizeIssueImageSrc(currentSrc)) + '"';
+            });
             
             // Add issue-image-thumb class
             if (/class\s*=/.test(attrs)) { 
@@ -4943,7 +5797,7 @@
         var i = document.getElementById('issueImagePreview');
         if (!m || !i) return;
         
-        i.src = src || '';
+        i.src = normalizeIssueImageSrc(src || '');
         i.alt = alt || '';
         
         var altTextDiv = document.getElementById('issueImageAltText');
@@ -4994,14 +5848,24 @@
         }
 
         var currentUserId = String(ProjectConfig.userId || '');
+        var displayItems = items.slice().reverse();
 
-        listEl.innerHTML = items.map(function (c, idx) {
+        listEl.innerHTML = displayItems.map(function (c, idx) {
             var isOwn = String(c.user_id) === currentUserId;
             var isRegression = (c.comment_type === 'regression');
             var isDeleted = !!c.deleted_at;
             var canEdit = !!c.can_edit;
             var canDelete = !!c.can_delete;
             var canViewHistory = !!c.can_view_history && isAdminUser;
+            var userName = String(c.user_name || 'User');
+            var userInitials = userName
+                .split(/\s+/)
+                .filter(Boolean)
+                .slice(0, 2)
+                .map(function (part) { return part.charAt(0); })
+                .join('')
+                .toUpperCase() || 'U';
+            var userChipLabel = isOwn ? 'You' : userInitials;
 
             var commentText = decorateIssueImages(c.text || '');
             commentText = commentText.replace(/@([A-Za-z0-9._-]+)/g, '<span class="badge bg-warning text-dark">@$1</span>');
@@ -5023,6 +5887,7 @@
             var bgClass = '';
             var borderStyle = '';
             var regressionHeading = '';
+            var roleHeading = '';
             if (isRegression) {
                 bgClass = '';
                 borderStyle = 'background: #e7f3ff !important; border-left: 3px solid #0d6efd;';
@@ -5037,39 +5902,60 @@
                 bgClass = 'bg-light';
             }
 
-            var regressionBadge = isRegression ? '<span class="badge bg-info ms-2" style="font-size: 0.65rem;"><i class="fas fa-retweet me-1"></i>Regression</span>' : '';
+            if (userRole === 'client') {
+                roleHeading = '';
+                regressionHeading = '';
+                borderStyle += 'border-radius: 14px; box-shadow: 0 8px 20px rgba(13,110,253,0.08);';
+            }
+
+            var regressionBadge = (isRegression && userRole !== 'client') ? '<span class="badge bg-info ms-2" style="font-size: 0.65rem;"><i class="fas fa-retweet me-1"></i>Regression</span>' : '';
             var editedBadge = c.edited_at ? '<small class="text-muted">(edited)</small>' : '';
             var actionButtons = '';
             if (!isDeleted) {
-                actionButtons += '<button class="btn btn-xs btn-link p-0 text-decoration-none issue-comment-reply" ' +
+                actionButtons += '<button type="button" class="message-action-btn issue-comment-reply" ' +
+                    'title="Reply" aria-label="Reply" ' +
                     'data-comment-id="' + (c.id || idx) + '" ' +
-                    'data-user-name="' + escapeAttr(c.user_name || 'User') + '" ' +
+                    'data-user-name="' + escapeAttr(userName) + '" ' +
                     'data-comment-text="' + escapeAttr((c.text || '').replace(/<[^>]*>/g, '').substring(0, 100)) + '">' +
-                    '<i class="fas fa-reply"></i> Reply</button>';
+                    '<i class="fas fa-reply"></i></button>';
             }
             if (canEdit) {
-                actionButtons += ' <button class="btn btn-xs btn-link p-0 text-decoration-none issue-comment-edit" data-comment-id="' + (c.id || idx) + '" data-comment-html="' + escapeAttr(c.text || '') + '"><i class="fas fa-edit"></i> Edit</button>';
+                actionButtons += '<button type="button" class="message-action-btn issue-comment-edit" title="Edit" aria-label="Edit" data-comment-id="' + (c.id || idx) + '" data-comment-html="' + escapeAttr(c.text || '') + '"><i class="fas fa-edit"></i></button>';
             }
             if (canDelete) {
-                actionButtons += ' <button class="btn btn-xs btn-link p-0 text-decoration-none text-danger issue-comment-delete" data-comment-id="' + (c.id || idx) + '"><i class="fas fa-trash"></i> Delete</button>';
+                actionButtons += '<button type="button" class="message-action-btn text-danger issue-comment-delete" title="Delete" aria-label="Delete" data-comment-id="' + (c.id || idx) + '"><i class="fas fa-trash"></i></button>';
             }
             if (canViewHistory) {
-                actionButtons += ' <button class="btn btn-xs btn-link p-0 text-decoration-none issue-comment-history" data-comment-id="' + (c.id || idx) + '"><i class="fas fa-history"></i> History</button>';
+                actionButtons += '<button type="button" class="message-action-btn issue-comment-history" title="History" aria-label="History" data-comment-id="' + (c.id || idx) + '"><i class="fas fa-history"></i></button>';
             }
 
             return '<div class="message ' + (isOwn ? 'own-message' : 'other-message') + ' mb-3" data-comment-id="' + (c.id || idx) + '">' +
-                '<div class="d-flex justify-content-between align-items-start mb-1">' +
-                '<div><span class="fw-semibold text-primary">' + escapeHtml(c.user_name || 'User') + '</span>' + regressionBadge + '</div>' +
-                '<div class="d-flex align-items-center gap-2"><small class="text-muted">' + escapeHtml(c.time || '') + '</small>' + editedBadge + '</div>' +
+                '<div class="message-main">' +
+                '<div class="message-meta-row">' +
+                '<div class="message-meta-left">' +
+                regressionBadge +
                 '</div>' +
-                '<div class="d-flex flex-wrap gap-2 mb-2">' + actionButtons + '</div>' +
+                '<div class="message-meta-right">' +
+                '<small class="text-muted">' + escapeHtml(c.time || '') + '</small>' + editedBadge +
+                '<div class="message-action-row">' + actionButtons + '</div>' +
+                '<span class="message-author-chip" title="' + escapeAttr(isOwn ? 'You' : userName) + '" aria-label="' + escapeAttr(isOwn ? 'You' : userName) + '">' + escapeHtml(userChipLabel) + '</span>' +
+                '</div>' +
+                '</div>' +
                 replyPreview +
                 '<div class="message-content p-2 rounded ' + bgClass + '" style="' + borderStyle + '">' +
+                roleHeading +
                 regressionHeading +
                 commentText +
                 '</div>' +
+                '</div>' +
                 '</div>';
         }).join('');
+
+        requestAnimationFrame(function () {
+            try {
+                listEl.scrollTop = listEl.scrollHeight;
+            } catch (e) { }
+        });
 
         document.querySelectorAll('.issue-comment-reply').forEach(function (btn) {
             btn.addEventListener('click', function (e) {
@@ -5104,6 +5990,64 @@
                 showIssueCommentHistory(commentId);
             });
         });
+    }
+
+    function showIssueCommentDeleteConfirmation(callback) {
+        var modalHtml = `
+            <div class="modal fade" id="issueCommentDeleteConfirmModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
+                <div class="modal-dialog modal-dialog-centered">
+                    <div class="modal-content">
+                        <div class="modal-header bg-danger-subtle">
+                            <h5 class="modal-title">
+                                <i class="fas fa-trash text-danger me-2"></i>
+                                Delete Comment
+                            </h5>
+                        </div>
+                        <div class="modal-body">
+                            <p class="mb-0">Delete this comment? This action cannot be undone.</p>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-outline-secondary" id="issueCommentDeleteCancel">Cancel</button>
+                            <button type="button" class="btn btn-danger" id="issueCommentDeleteConfirm">
+                                <i class="fas fa-trash me-1"></i> Delete
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        var existing = document.getElementById('issueCommentDeleteConfirmModal');
+        if (existing) {
+            try {
+                var existingInst = bootstrap.Modal.getInstance(existing);
+                if (existingInst) existingInst.dispose();
+            } catch (e) { }
+            existing.remove();
+            cleanupModalOverlayState();
+        }
+
+        document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+        var modalEl = document.getElementById('issueCommentDeleteConfirmModal');
+        var modal = new bootstrap.Modal(modalEl);
+
+        document.getElementById('issueCommentDeleteConfirm').addEventListener('click', function () {
+            modal.hide();
+            callback(true);
+        });
+
+        document.getElementById('issueCommentDeleteCancel').addEventListener('click', function () {
+            modal.hide();
+            callback(false);
+        });
+
+        modalEl.addEventListener('hidden.bs.modal', function () {
+            modalEl.remove();
+            cleanupModalOverlayState();
+        });
+
+        modal.show();
     }
 
     function updateIssueCommentCount(items) {
@@ -5185,11 +6129,12 @@
             if (opts.clearEditor) {
                 if (window.jQuery && jQuery.fn.summernote) jQuery('#finalIssueCommentEditor').summernote('code', '');
                 var commentTypeEl = document.getElementById('finalIssueCommentType');
-                if (commentTypeEl) commentTypeEl.value = 'normal';
+                if (commentTypeEl) commentTypeEl.value = (userRole === 'client' ? 'regression' : 'normal');
                 var previewEl = document.getElementById('issueCommentReplyPreview');
                 if (previewEl) previewEl.style.display = 'none';
                 var replyToEl = document.getElementById('replyToCommentId');
                 if (replyToEl) replyToEl.value = '';
+                updateFinalIssueCommentCharCount();
             }
 
             renderIssueComments(key);
@@ -5345,32 +6290,34 @@
         var issueId = document.getElementById('finalIssueEditId').value || 'new';
         if (!issueId || issueId === 'new') return;
         var key = String(issueId);
-        if (!window.confirm('Delete this comment?')) return;
+        showIssueCommentDeleteConfirmation(function (confirmed) {
+            if (!confirmed) return;
 
-        var fd = new FormData();
-        fd.append('action', 'delete');
-        fd.append('project_id', projectId);
-        fd.append('issue_id', key);
-        fd.append('comment_id', String(commentId));
-        fetch(issueCommentsApi, { method: 'POST', body: fd, credentials: 'same-origin' })
-            .then(function (r) { return r.json(); })
-            .then(function (res) {
-                if (!res || res.error) {
-                    if (typeof showToast === 'function') showToast((res && res.error) ? res.error : 'Failed to delete comment', 'danger');
-                    return;
-                }
-                if (res.comment) {
-                    upsertIssueComment(key, res.comment);
-                } else {
-                    loadIssueComments(key);
-                    return;
-                }
-                renderIssueComments(key);
-                if (typeof showToast === 'function') showToast('Comment deleted', 'success');
-            })
-            .catch(function () {
-                if (typeof showToast === 'function') showToast('Failed to delete comment', 'danger');
-            });
+            var fd = new FormData();
+            fd.append('action', 'delete');
+            fd.append('project_id', projectId);
+            fd.append('issue_id', key);
+            fd.append('comment_id', String(commentId));
+            fetch(issueCommentsApi, { method: 'POST', body: fd, credentials: 'same-origin' })
+                .then(function (r) { return r.json(); })
+                .then(function (res) {
+                    if (!res || res.error) {
+                        if (typeof showToast === 'function') showToast((res && res.error) ? res.error : 'Failed to delete comment', 'danger');
+                        return;
+                    }
+                    if (res.comment) {
+                        upsertIssueComment(key, res.comment);
+                    } else {
+                        loadIssueComments(key);
+                        return;
+                    }
+                    renderIssueComments(key);
+                    if (typeof showToast === 'function') showToast('Comment deleted', 'success');
+                })
+                .catch(function () {
+                    if (typeof showToast === 'function') showToast('Failed to delete comment', 'danger');
+                });
+        });
     }
 
     function showIssueCommentHistory(commentId) {
@@ -5435,10 +6382,13 @@
     }
 
     function showReplyPreview(commentId, userName, commentText) {
+        setFinalIssueComposeExpanded(true, { focus: false });
+
         // Create or update reply preview
         var previewEl = document.getElementById('issueCommentReplyPreview');
         if (!previewEl) {
-            var editorWrap = document.querySelector('#finalIssueCommentEditor').closest('.mb-3');
+            var editorEl = document.querySelector('#finalIssueCommentEditor');
+            var editorWrap = editorEl ? (editorEl.closest('.mb-3') || editorEl.closest('.client-chat-editor-wrap') || editorEl.parentElement) : null;
             if (!editorWrap) return;
 
             var previewHtml = '<div id="issueCommentReplyPreview" class="alert alert-info mb-3" style="display:none; background: linear-gradient(135deg, #e7f3ff 0%, #f0f8ff 100%); border: 1px solid #b6d4fe; border-left: 4px solid #0d6efd;">' +
@@ -5478,9 +6428,7 @@
 
         // Focus editor after a short delay
         setTimeout(function () {
-            if (window.jQuery && jQuery.fn.summernote) {
-                jQuery('#finalIssueCommentEditor').summernote('focus');
-            }
+            focusFinalIssueCommentEditor();
         }, 300);
     }
 
@@ -5493,6 +6441,9 @@
         // Get comment type
         var commentTypeEl = document.getElementById('finalIssueCommentType');
         var commentType = commentTypeEl ? commentTypeEl.value : 'normal';
+        if (userRole === 'client') {
+            commentType = 'regression';
+        }
 
         // Get reply_to if exists
         var replyToEl = document.getElementById('replyToCommentId');
@@ -5640,7 +6591,7 @@
                 if (sel) {
                     // Professional Select2 setup with custom template and fallback
                     if (window.jQuery && jQuery.fn.select2) {
-                        // Pehle destroy karo, fir options inject karo, fir select2 init karo
+                        // Rebuild Select2 cleanly after replacing the options.
                         try {
                             if (jQuery(sel).data('select2')) {
                                 jQuery(sel).select2('destroy');
@@ -5742,6 +6693,14 @@
         _metadataReady = true;
         var cbs = _metadataReadyResolvers.splice(0);
         cbs.forEach(function (fn) { try { fn(); } catch (e) {} });
+        
+        // NEW: Once metadata is ready, ensure fields are enabled correctly
+
+        var modalEl = document.getElementById('finalIssueModal');
+        if (modalEl && (modalEl.classList.contains('show') || modalEl.classList.contains('is-open'))) {
+            // Only re-apply if the modal is currently open
+            applyTesterRegressionReadonlyState();
+        }
     }
 
     function loadMetadataOptions() {
@@ -5798,18 +6757,28 @@
     }
 
     async function addOrUpdateFinalIssue() {
-        var selectedPageId = issueData.selectedPageId;
-        if (!selectedPageId) {
-            var selectedPagesFallback = (window.jQuery ? (jQuery('#finalIssuePages').val() || []) : []);
-            if (selectedPagesFallback.length) {
-                selectedPageId = selectedPagesFallback[0];
-                issueData.selectedPageId = selectedPageId;
+        // Get selected pages from the select element
+        var selectedPagesFallback = [];
+        if (window.jQuery) {
+            var $pagesEl = jQuery('#finalIssuePages');
+            if ($pagesEl.length) {
+                selectedPagesFallback = $pagesEl.val() || [];
+                // Ensure it's an array
+                if (!Array.isArray(selectedPagesFallback)) {
+                    selectedPagesFallback = [selectedPagesFallback].filter(Boolean);
+                }
             }
         }
-        if (!selectedPageId) {
-            issueNotify('Please select at least one page before saving the issue.', 'warning');
-            return;
+        var normalizedSelectedPages = normalizeProjectPageIds(selectedPagesFallback);
+        var selectedPageId = resolveValidSelectedPageId(issueData.selectedPageId, normalizedSelectedPages);
+        if (selectedPageId) {
+            issueData.selectedPageId = selectedPageId;
         }
+        // Allow saving with no pages selected (user can remove all page associations)
+        // if (!selectedPageId) {
+        //     issueNotify('Please select at least one page before saving the issue.', 'warning');
+        //     return;
+        // }
         
         // Prevent multiple clicks and show loading state
         var saveBtn = document.getElementById('finalIssueSaveBtn');
@@ -5817,6 +6786,8 @@
             return; // Already saving
         }
         
+        var saveButtonLabel = (userRole === 'client') ? 'Update' : 'Save Issue';
+
         if (saveBtn) {
             saveBtn.disabled = true;
             saveBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Saving...';
@@ -5846,7 +6817,7 @@
             status: document.getElementById('finalIssueStatus').value,
             qa_status: qaStatusValue,
             priority: document.getElementById('finalIssueField_priority') ? document.getElementById('finalIssueField_priority').value : 'medium',
-            pages: jQuery('#finalIssuePages').val() || [],
+            pages: normalizedSelectedPages, // Allow empty array if user removes all pages
             grouped_urls: normalizeGroupedUrlsSelection(jQuery('#finalIssueGroupedUrls').val() || []),
             reporters: jQuery('#finalIssueReporters').val() || [],
             reporter_qa_status_map: reporterQaMap,
@@ -5867,10 +6838,18 @@
             // Reset button state
             if (saveBtn) {
                 saveBtn.disabled = false;
-                saveBtn.innerHTML = '<i class="fas fa-save me-2"></i>Save Issue';
+                saveBtn.textContent = saveButtonLabel;
             }
             issueNotify('Issue title is required.', 'warning'); 
             return; 
+        }
+
+        if (!validateCommonTitleRequirement()) {
+            if (saveBtn) {
+                saveBtn.disabled = false;
+                saveBtn.textContent = saveButtonLabel;
+            }
+            return;
         }
 
         // Get client_ready checkbox value
@@ -5889,6 +6868,9 @@
         var pendingCommentPlain = String(pendingCommentHtml || '').replace(/<[^>]*>/g, '').trim();
         var pendingCommentType = ((document.getElementById('finalIssueCommentType') || {}).value || 'normal');
         var pendingReplyTo = ((document.getElementById('replyToCommentId') || {}).value || '');
+        if (userRole === 'client') {
+            pendingCommentType = 'regression';
+        }
 
         try {
             var fd = new FormData();
@@ -5897,7 +6879,7 @@
             if (editId) fd.append('id', editId);
             if (editId && expectedUpdatedAt) fd.append('expected_updated_at', expectedUpdatedAt);
             if (editId) fd.append('expected_history_id', (document.getElementById('finalIssueModal') || {}).dataset.expectedHistoryId || '0');
-            fd.append('page_id', selectedPageId);
+            fd.append('page_id', normalizedSelectedPages.length ? normalizedSelectedPages[0] : 0);
             fd.append('metadata', JSON.stringify(metadata));
             fd.append('client_ready', clientReady);
 
@@ -5917,54 +6899,28 @@
                 'X-Session-Refresh': '1'
             };
             
-            // Add retry logic for connection issues
-            var maxRetries = 2;
-            var retryDelay = 1000; // 1 second
             var res, controller, timeoutId;
-            
-            for (var attempt = 0; attempt <= maxRetries; attempt++) {
-                try {
-                    controller = new AbortController();
-                    timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
-                    
-                    res = await fetch(issuesApiBase, { 
-                        method: 'POST', 
-                        body: fd, 
-                        credentials: 'same-origin',
-                        signal: controller.signal,
-                        headers: headers
-                    });
-                    
-                    clearTimeout(timeoutId);
-                    break; // Success, exit retry loop
-                    
-                } catch (fetchError) {
-                    if (timeoutId) clearTimeout(timeoutId);
-                    
-                    // If this is the last attempt or not a connection error, throw the error
-                    if (attempt === maxRetries || 
-                        !(fetchError.message && (
-                            fetchError.message.includes('Failed to fetch') || 
-                            fetchError.message.includes('ERR_') || 
-                            fetchError.message.includes('CONNECTION') ||
-                            fetchError.name === 'AbortError'
-                        ))) {
-                        throw fetchError;
-                    }
-                    
-                    // Wait before retrying
-                    console.warn(`Save attempt ${attempt + 1} failed, retrying in ${retryDelay}ms...`);
-                    await new Promise(resolve => setTimeout(resolve, retryDelay));
-                    retryDelay *= 2; // Exponential backoff
-                }
+            controller = new AbortController();
+            timeoutId = setTimeout(function() { controller.abort(); }, 30000);
+            try {
+                res = await fetch(issuesApiBase, { 
+                    method: 'POST', 
+                    body: fd, 
+                    credentials: 'same-origin',
+                    signal: controller.signal,
+                    headers: headers
+                });
+            } finally {
+                clearTimeout(timeoutId);
             }
-            
+
             var json = null;
             try {
                 var text = await res.text();
                 json = text ? JSON.parse(text) : null;
             } catch (pE) {
                 console.error('Failed to parse JSON response', pE);
+                console.error('Raw text that failed to parse:', text);
             }
 
             if (res.status === 409 || (json && json.conflict)) {
@@ -5976,7 +6932,7 @@
                 // Reset button state
                 if (saveBtn) {
                     saveBtn.disabled = false;
-                    saveBtn.innerHTML = '<i class="fas fa-save me-2"></i>Save Issue';
+                    saveBtn.textContent = saveButtonLabel;
                 }
 
                 showIssueConflictDialog(conflictMsg, function () {
@@ -6001,18 +6957,6 @@
             ensurePageStore(store, selectedPageId);
             var pagesArr = (data.pages && data.pages.length) ? data.pages : [selectedPageId];
 
-            // Use the updated issue data from server response, not form data
-            var payload = json.issue || Object.assign({ id: String(editId || json.id || ''), issue_key: String(json.issue_key || '') }, data);
-            // Normalize: ensure 'details' field exists (API returns 'description')
-            if (payload.details === undefined || payload.details === '') {
-                payload.details = payload.description || data.details || '';
-            }
-            payload.id = String(payload.id || '');
-            var list = store[selectedPageId].final || [];
-            var idx = list.findIndex(function (it) { return String(it.id) === String(payload.id); });
-            if (idx >= 0) list[idx] = payload; else list.unshift(payload);
-            store[selectedPageId].final = list;
-
             var savedIssueId = String(editId || json.id || '');
             var pendingCommentSaved = true;
             if (pendingCommentPlain && savedIssueId) {
@@ -6024,7 +6968,7 @@
                     // Reset button state
                     if (saveBtn) {
                         saveBtn.disabled = false;
-                        saveBtn.innerHTML = '<i class="fas fa-save me-2"></i>Save Issue';
+                        saveBtn.textContent = saveButtonLabel;
                     }
                     issueNotify('Issue saved, but comment could not be saved. Please click "Add Comment" and try again.', 'warning');
                     return;
@@ -6042,7 +6986,7 @@
             // Reset save button state
             if (saveBtn) {
                 saveBtn.disabled = false;
-                saveBtn.innerHTML = '<i class="fas fa-save me-2"></i>Save Issue';
+                saveBtn.textContent = saveButtonLabel;
             }
             
             // Show success message after modal closes
@@ -6070,21 +7014,27 @@
                     var issueIndex = issueData.pages[issueData.selectedPageId].final.findIndex(function(i) {
                         return String(i.id) === String(savedIssueId);
                     });
-                    if (issueIndex !== -1 && (json.issue || payload)) {
-                        issueData.pages[issueData.selectedPageId].final[issueIndex] = normalizeIssueFromApi(json.issue || payload);
+                    if (issueIndex !== -1 && json.issue) {
+                        issueData.pages[issueData.selectedPageId].final[issueIndex] = normalizeIssueFromApi(json.issue);
                     }
                 }
             } else {
                 // For new issues, use server response data
-                if (json.issue || payload) {
+                if (json.issue) {
                     var list = issueData.pages[selectedPageId].final || [];
-                    list.unshift(normalizeIssueFromApi(json.issue || payload));
+                    // Avoid duplicate: remove existing entry with same id if any
+                    list = list.filter(function(it) { return String(it.id) !== String(json.issue.id); });
+                    list.unshift(normalizeIssueFromApi(json.issue));
                     issueData.pages[selectedPageId].final = list;
                 }
             }
 
-            // Re-render the full table so all fields (status, priority, QA, etc.) reflect instantly
-            renderAll();
+            // Re-render the full table so all fields (status, priority, QA, etc.) reflect instantly.
+            // On Common Issues page, we skip the immediate built-in render to prevent flickering
+            // with older logic; the 'pms:issues-changed' event will trigger the correct refresh.
+            if (!document.getElementById('commonIssuesBody') || document.getElementById('issues-list')) {
+                renderAll();
+            }
             showFinalIssuesTab();
 
             if (!editId && issueData.comments['new']) {
@@ -6100,11 +7050,16 @@
                 page_id: String(selectedPageId || ''),
                 issue: json.issue || null  // pass full updated issue for instant row update
             });
+
+            // Refresh regression stats if the panel exists
+            if (typeof window.loadRegressionStats === 'function') {
+                window.loadRegressionStats();
+            }
         } catch (e) {
             // Reset button state on error
             if (saveBtn) {
                 saveBtn.disabled = false;
-                saveBtn.innerHTML = '<i class="fas fa-save me-2"></i>Save Issue';
+                saveBtn.textContent = saveButtonLabel;
             }
             
             // Handle timeout errors
@@ -6277,6 +7232,11 @@
                 ids: ids.slice(),
                 page_id: String(issueData.selectedPageId || '')
             });
+
+            // Refresh regression stats if the panel exists
+            if (typeof window.loadRegressionStats === 'function') {
+                window.loadRegressionStats();
+            }
         } catch (e) { issueNotify((e && e.message) ? e.message : 'Unable to delete issues.', 'danger'); }
     }
 
@@ -6421,37 +7381,55 @@
 
     var addF = document.getElementById('issueAddFinalBtn'); if (addF) addF.addEventListener('click', function () { openFinalEditor(null); });
 
-    // Alt+N shortcut: trigger Add Issue / Add Common Issue on pages where these buttons exist.
+    // Keyboard shortcuts: Alt+A (Add), Alt+S (Save), Alt+N (New/Add)
     document.addEventListener('keydown', function (e) {
         if (!e || !e.altKey) return;
-        if (String(e.key || '').toLowerCase() !== 'n') return;
+        var key = String(e.key || '').toLowerCase();
 
-        // If any modal is open, skip global "new" shortcut.
-        if (document.querySelector('.modal.show')) return;
-
-        var finalBtn = document.getElementById('issueAddFinalBtn');
-        var commonBtn = document.getElementById('commonAddBtn');
-
-        // Prefer the visible/active action button.
-        if (isVisibleAndEnabled(finalBtn)) {
-            e.preventDefault();
-            e.stopPropagation();
-            finalBtn.click();
-            return;
+        // 1. Alt+S: Save Issue (only if modal is open)
+        if (key === 's') {
+            var saveBtn = document.getElementById('finalIssueSaveBtn');
+            if (saveBtn && isVisibleAndEnabled(saveBtn)) {
+                e.preventDefault();
+                e.stopPropagation();
+                saveBtn.click();
+                return;
+            }
         }
-        if (isVisibleAndEnabled(commonBtn)) {
-            e.preventDefault();
-            e.stopPropagation();
-            commonBtn.click();
+
+        // 2. Alt+A or Alt+N: Add Issue
+        if (key === 'a' || key === 'n') {
+            // If any modal is open, skip global "add" shortcut (unless it's Alt+S)
+            if (document.querySelector('.modal.show')) return;
+
+            var finalBtn = document.getElementById('issueAddFinalBtn') || document.getElementById('addIssueBtn');
+            var commonBtn = document.getElementById('commonAddBtn');
+
+            // Prefer the visible/active action button.
+            if (isVisibleAndEnabled(finalBtn)) {
+                e.preventDefault();
+                e.stopPropagation();
+                finalBtn.click();
+                return;
+            }
+            if (isVisibleAndEnabled(commonBtn)) {
+                e.preventDefault();
+                e.stopPropagation();
+                commonBtn.click();
+            }
         }
     });
 
     var finalIssueModalEl = document.getElementById('finalIssueModal');
     if (finalIssueModalEl) {
+        finalIssueModalEl.addEventListener('shown.bs.modal', function () {
+            normalizeClientFinalIssueOverlayState();
+            syncClientSidebarExpandButton();
+        });
         finalIssueModalEl.addEventListener('keydown', function (e) {
             if (!e || !e.altKey) return;
             if (String(e.key || '').toLowerCase() !== 's') return;
-            if (!finalIssueModalEl.classList.contains('show')) return;
+            if (!finalIssueModalEl.classList.contains('show') && !finalIssueModalEl.classList.contains('is-open')) return;
             var saveBtn = document.getElementById('finalIssueSaveBtn');
             if (!saveBtn || saveBtn.disabled || saveBtn.classList.contains('d-none')) return;
             e.preventDefault();
@@ -6459,7 +7437,25 @@
             saveBtn.click();
         });
 
+        if (userRole === 'client') {
+            finalIssueModalEl.addEventListener('click', function (e) {
+                var expandBtn = e.target && e.target.closest ? e.target.closest('.client-sidebar-expand') : null;
+                if (expandBtn) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    toggleClientSidebarDialogExpanded();
+                    return;
+                }
+                var dismissBtn = e.target && e.target.closest ? e.target.closest('.client-sidebar-close') : null;
+                if (!dismissBtn) return;
+                e.preventDefault();
+                e.stopPropagation();
+                requestClientFinalIssueOverlayClose();
+            });
+        }
+
         finalIssueModalEl.addEventListener('click', function (e) {
+            if (userRole === 'client') return;
             var dismissBtn = e.target && e.target.closest ? e.target.closest('[data-bs-dismiss="modal"]') : null;
             if (dismissBtn) {
                 // Try immediate leave when user explicitly closes modal.
@@ -6467,6 +7463,7 @@
             }
         });
         finalIssueModalEl.addEventListener('hide.bs.modal', function (e) {
+            if (userRole === 'client') return;
             if (finalIssueBypassCloseConfirm) {
                 finalIssueBypassCloseConfirm = false;
                 stopDraftAutosave();
@@ -6525,12 +7522,17 @@
         finalIssueModalEl.addEventListener('hidden.bs.modal', function () {
             stopIssuePresenceTracking();
             clearIssueConflictNotice();
+            document.body.classList.remove('client-issue-sidebar-open');
+            document.body.classList.remove('client-issue-sidebar-dialog-expanded');
+            finalIssueModalEl.classList.remove('is-dialog-expanded');
+            setFinalIssueComposeExpanded(false, { focus: false });
             cleanupModalOverlayState();
         });
     }
     document.addEventListener('hidden.bs.modal', function (e) {
         if (e && e.target && e.target.id === 'finalIssueModal') {
             stopIssuePresenceTracking();
+            document.body.classList.remove('client-issue-sidebar-open');
             cleanupModalOverlayState();
         }
     });
@@ -6640,6 +7642,39 @@
             addIssueComment(String(id));
         });
     }
+    var composeToggleBtn = document.getElementById('finalIssueComposeToggle');
+    if (composeToggleBtn) {
+        composeToggleBtn.addEventListener('click', function (e) {
+            e.preventDefault();
+            setFinalIssueComposeExpanded(!finalIssueComposeExpanded);
+            setTimeout(function () {
+                try { composeToggleBtn.focus(); } catch (err) { }
+            }, 0);
+        });
+        composeToggleBtn.addEventListener('keydown', function (e) {
+            if (!e) return;
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                setFinalIssueComposeExpanded(!finalIssueComposeExpanded);
+                return;
+            }
+            if (!finalIssueComposeExpanded) return;
+            if (e.key === 'Tab' && !e.shiftKey) {
+                e.preventDefault();
+                focusFinalIssueCommentEditor();
+            }
+        });
+    }
+    syncFinalIssueComposeUi();
+
+    ['clientIssueSearch', 'clientIssueStatusFilter'].forEach(function (id) {
+        var field = document.getElementById(id);
+        if (!field) return;
+        var eventName = field.tagName === 'SELECT' ? 'change' : 'input';
+        field.addEventListener(eventName, function () {
+            renderFinalIssues();
+        });
+    });
 
     var resetBtn = document.getElementById('btnResetToTemplate');
     if (resetBtn) {
@@ -6662,7 +7697,7 @@
     }
 
     var historyBtn = document.getElementById('btnShowHistory');
-    if (historyBtn) {
+    if (historyBtn && userRole !== 'client') {
         historyBtn.addEventListener('shown.bs.tab', function () {
             var id = document.getElementById('finalIssueEditId').value;
             if (!id) {
@@ -7094,6 +8129,7 @@
     }
 
     function loadVisitHistoryTab() {
+        if (userRole === 'client') return;
         var wrap = document.getElementById('visitHistoryEntries');
         if (wrap) wrap.innerHTML = '<div class="text-center py-4 text-muted">Loading visit history...</div>';
         var id = (document.getElementById('finalIssueEditId') || {}).value;
@@ -7115,6 +8151,7 @@
     }
 
     document.addEventListener('shown.bs.tab', function (e) {
+        if (userRole === 'client') return;
         var target = e && e.target ? e.target : null;
         if (!target) return;
         var targetPane = target.getAttribute('data-bs-target') || target.getAttribute('href') || '';
@@ -7140,7 +8177,8 @@
         if (target && target.classList && target.classList.contains('issue-image-thumb')) {
             e.preventDefault();
             var src = target.getAttribute('src');
-            if (src) openIssueImageModal(src);
+            var alt = target.getAttribute('alt') || '';
+            if (src) openIssueImageModal(src, alt);
         }
     });
 
@@ -7265,34 +8303,31 @@
                         var i = issueData.common.find(function (x) { return String(x.id) === id; });
 
                         if (i) {
-                            var actualIssueId = i.issue_id;
+                            var actualIssueId = String(i.issue_id);
 
                             if (i.pages && i.pages.length > 0) {
-                                var firstPageId = i.pages[0];
+                                var firstPageId = String(i.pages[0]);
 
                                 ensurePageStore(issueData.pages, firstPageId);
                                 issueData.selectedPageId = firstPageId;
 
-                                if (!issueData.pages[firstPageId].final || issueData.pages[firstPageId].final.length === 0) {
-                                    loadFinalIssues(firstPageId).then(function () {
-                                        var finalIssue = issueData.pages[firstPageId].final.find(function (x) {
-                                            return String(x.id) === String(actualIssueId);
-                                        });
-
-                                        if (finalIssue) {
-                                            openFinalEditor(finalIssue);
-                                        }
-                                    }).catch(function (error) {
-                                        // Silently handle error
-                                    });
-                                } else {
+                                var findAndOpen = function() {
                                     var finalIssue = issueData.pages[firstPageId].final.find(function (x) {
-                                        return String(x.id) === String(actualIssueId);
+                                        return String(x.id) === actualIssueId;
                                     });
-
                                     if (finalIssue) {
                                         openFinalEditor(finalIssue);
+                                    } else if (typeof issueNotify === 'function') {
+                                        issueNotify('Could not find the underlying issue to edit.', 'warning');
                                     }
+                                };
+
+                                if (!issueData.pages[firstPageId].final || issueData.pages[firstPageId].final.length === 0) {
+                                    loadFinalIssues(firstPageId).then(findAndOpen).catch(function () {
+                                        if (typeof issueNotify === 'function') issueNotify('Failed to load issue data.', 'warning');
+                                    });
+                                } else {
+                                    findAndOpen();
                                 }
                             }
                         }
@@ -7315,9 +8350,11 @@
     });
 
     if (finalIssueModalEl) {
-        finalIssueModalEl.addEventListener('shown.bs.modal', function () {
+        finalIssueModalEl.addEventListener('shown.bs.modal', async function () {
             // No auto-focus - let modal container handle focus
             applyIssueQaPermissionState();
+            await refreshTesterRegressionLock();
+            applyTesterRegressionReadonlyState();
             var currentIssueId = (document.getElementById('finalIssueEditId') || {}).value;
             if (currentIssueId) {
                 startIssuePresenceTracking(currentIssueId);
@@ -7326,9 +8363,9 @@
             // Legacy code for old select field (if it exists)
             var sel = document.getElementById('finalIssueTitle');
             if (sel) {
-                sel.disabled = false;
+                sel.disabled = isTesterEditLockedByRegression();
                 if (window.jQuery && jQuery.fn.select2) {
-                    jQuery('#finalIssueTitle').prop('disabled', false).trigger('change.select2');
+                    jQuery('#finalIssueTitle').prop('disabled', isTesterEditLockedByRegression()).trigger('change.select2');
                 }
             }
             
@@ -7388,10 +8425,33 @@
     initSummernote();
     loadCommonIssues();
 
+    // On issues_page_detail.php the page_id comes from the URL (set above at startup).
+    // The DOMContentLoaded auto-select only fires when #issues tab exists on the page.
+    // For the standalone detail page there is no tab, so we must load issues here.
+    if (issueData.selectedPageId) {
+        ensurePageStore(issueData.pages, issueData.selectedPageId);
+        updateEditingState();
+        renderAll();
+        loadFinalIssues(issueData.selectedPageId);
+
+    }
+
     // Define editFinalIssue for table edit buttons
     window.editFinalIssue = function (id) {
-        var issue = issueData.pages[issueData.selectedPageId].final.find(function (i) { return String(i.id) === String(id); });
+        var issue = (issueData.pages[issueData.selectedPageId] && issueData.pages[issueData.selectedPageId].final) 
+            ? issueData.pages[issueData.selectedPageId].final.find(function (i) { return String(i.id) === String(id); })
+            : null;
         if (issue) openFinalEditor(issue);
+    };
+
+    // Define editCommonIssue for Common Issues table
+    window.editCommonIssue = function (id) {
+        var issue = (issueData.common || []).find(function (i) { return String(i.id) === String(id); });
+        if (issue) openFinalEditor(issue);
+    };
+
+    window.addCommonIssue = function () {
+        openFinalEditor();
     };
 
     // Expose necessary functions globally for external pages
@@ -7400,4 +8460,20 @@
     window.loadCommonIssues = loadCommonIssues;
     window.openFinalEditor = openFinalEditor;
     window.updateIssueTabCounts = updateIssueTabCounts;
-})(); // IIFE invocation - this actually executes the function
+    window.renderFinalIssues = renderFinalIssues;
+    window.renderCommonIssues = renderCommonIssues;
+    window.renderAll = renderAll;
+
+    // Expose toggleGroupedUrls globally (used by onclick in rendered HTML)
+    window.toggleGroupedUrls = function(issueId, event) {
+        if (event) event.stopPropagation();
+        var content = document.getElementById('grouped-urls-content-' + issueId);
+        if (content) {
+            if (content.style.display === 'none' || !content.style.display) {
+                content.style.display = 'block';
+            } else {
+                content.style.display = 'none';
+            }
+        }
+    };
+})();

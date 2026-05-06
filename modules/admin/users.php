@@ -148,10 +148,7 @@ function sendCredentialsMailForUser(PDO $db, $uid, $mailMode, $requestId = '') {
     }
 
     $mailMode = in_array($mailMode, ['setup', 'reset'], true) ? $mailMode : 'setup';
-    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-    $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
-    $baseDir = rtrim((string)getBaseDir(), '/');
-    $loginUrl = $scheme . '://' . $host . $baseDir . '/modules/auth/login.php';
+    $loginUrl = getConfiguredAppUrl() . '/modules/auth/login.php';
 
     try {
         $db->beginTransaction();
@@ -174,8 +171,8 @@ function sendCredentialsMailForUser(PDO $db, $uid, $mailMode, $requestId = '') {
 
         $tempPassword = generateTemporaryPassword(12);
         $newHash = password_hash($tempPassword, PASSWORD_DEFAULT);
-        $upd = $db->prepare("UPDATE users SET password = ?, force_password_reset = 1, temp_password = ?, account_setup_completed = 0 WHERE id = ?");
-        $upd->execute([$newHash, $tempPassword, $uid]);
+        $upd = $db->prepare("UPDATE users SET password = ?, force_password_reset = 1, temp_password = NULL, account_setup_completed = 0 WHERE id = ?");
+        $upd->execute([$newHash, $uid]);
 
         $subject = ($mailMode === 'reset')
             ? "PMS Password Reset - Login Details"
@@ -189,11 +186,10 @@ function sendCredentialsMailForUser(PDO $db, $uid, $mailMode, $requestId = '') {
             $mailMode
         );
 
-        $sent = $mailer->send($recipientEmail, $subject, $body, true);
-        
-        // Commit the password and temp_password changes regardless of email success
-        // This ensures admin can see the temp password even if email fails
+        // Commit first so the new password is always saved before attempting email send.
         $db->commit();
+
+        $sent = $mailer->send($recipientEmail, $subject, $body, true);
         
         if ($sent) {
             logCredentialsMailAttempt($db, $requestId, $uid, $mailMode, 'success', (string)($user['username'] ?? "User#{$uid}") . ' sent.');
@@ -201,7 +197,7 @@ function sendCredentialsMailForUser(PDO $db, $uid, $mailMode, $requestId = '') {
         }
 
         logCredentialsMailAttempt($db, $requestId, $uid, $mailMode, 'fail', (string)($user['username'] ?? "User#{$uid}") . ' mail send failed.');
-        return ['success' => false, 'error' => (string)($user['username'] ?? "User#{$uid}") . ' mail send failed. Temporary password is visible in the users table.', 'temp_password_saved' => true];
+        return ['success' => false, 'error' => (string)($user['username'] ?? "User#{$uid}") . ' mail send failed. Generate a new reset email if needed.'];
     } catch (Exception $e) {
         if ($db->inTransaction()) {
             $db->rollBack();
@@ -214,6 +210,18 @@ function sendCredentialsMailForUser(PDO $db, $uid, $mailMode, $requestId = '') {
 
 // Handle user actions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $isAjaxAction = isset($_POST['send_credentials_email_single']);
+    $csrfFromRequest = $_POST['csrf_token'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+    if (!verifyCsrfToken($csrfFromRequest)) {
+        if ($isAjaxAction) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'error' => 'Invalid request token.']);
+        } else {
+            $_SESSION['error'] = 'Invalid request. Please try again.';
+            header('Location: users.php');
+        }
+        exit;
+    }
     if (isset($_POST['send_credentials_email_single'])) {
         @set_time_limit(180);
         @ignore_user_abort(true);
@@ -258,23 +266,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             } else {
                 $stmt = $db->prepare(
-                    "INSERT INTO users (username, email, password, full_name, role, force_password_reset, can_manage_issue_config, can_manage_devices, temp_password, account_setup_completed) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, 0)"
+                    "INSERT INTO users (username, email, password, full_name, role, force_password_reset, can_manage_issue_config, can_manage_devices, temp_password, account_setup_completed) VALUES (?, ?, ?, ?, ?, 1, ?, ?, NULL, 0)"
                 );
                 $canManageConfig = isset($_POST['can_manage_issue_config']) ? 1 : 0;
                 $canManageDevices = isset($_POST['can_manage_devices']) ? 1 : 0;
 
                 try {
-                    if ($stmt->execute([$username, $email, $password, $fullName, $role, $canManageConfig, $canManageDevices, $rawPassword])) {
+                    if ($stmt->execute([$username, $email, $password, $fullName, $role, $canManageConfig, $canManageDevices])) {
                         $mailNote = '';
                         if (!empty($_POST['send_setup_email'])) {
                             try {
                                 require_once __DIR__ . '/../../includes/email.php';
                                 $mailer = class_exists('EmailSender') ? new EmailSender() : null;
                                 if ($mailer && filter_var($email, FILTER_VALIDATE_EMAIL)) {
-                                    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-                                    $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
-                                    $baseDir = rtrim((string)getBaseDir(), '/');
-                                    $loginUrl = $scheme . '://' . $host . $baseDir . '/modules/auth/login.php';
+                                    $loginUrl = getConfiguredAppUrl() . '/modules/auth/login.php';
                                     $subject = "PMS Account Setup - Login Details";
                                     $body = buildAccountMailBody($fullName, $username, $email, $rawPassword, $loginUrl, 'setup');
                                     $sent = $mailer->send($email, $subject, $body, true);
@@ -316,25 +321,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $prevStmt->execute([$userId]);
         $prev = $prevStmt->fetch(PDO::FETCH_ASSOC) ?: ['can_manage_issue_config' => 0, 'can_manage_devices' => 0];
         
-        $stmt = $db->prepare("
-            UPDATE users 
-            SET full_name = ?, role = ?, is_active = ?, can_manage_issue_config = ?, can_manage_devices = ?
-            WHERE id = ?
-        ");
-        
-        $stmt->execute([$fullName, $role, $isActive, $canManageConfig, $canManageDevices, $userId]);
+        try {
+            $db->beginTransaction();
+            
+            $stmt = $db->prepare("
+                UPDATE users 
+                SET full_name = ?, role = ?, is_active = ?, can_manage_issue_config = ?, can_manage_devices = ?
+                WHERE id = ?
+            ");
+            $stmt->execute([$fullName, $role, $isActive, $canManageConfig, $canManageDevices, $userId]);
 
-        // Notify user if permission changed
-        $baseDir = getBaseDir();
-        if ((int)$prev['can_manage_issue_config'] !== (int)$canManageConfig) {
-            $msg = $canManageConfig ? 'You have been granted Issue Config access.' : 'Your Issue Config access has been removed.';
-            createNotification($db, (int)$userId, 'system', $msg, $baseDir . "/modules/admin/issue_config.php");
+            // Sync role in user_assignments for active assignments
+            $syncStmt = $db->prepare("
+                UPDATE user_assignments 
+                SET role = ? 
+                WHERE user_id = ? AND (is_removed IS NULL OR is_removed = 0)
+            ");
+            $syncStmt->execute([$role, $userId]);
+
+            $db->commit();
+            
+            // Notify user if permission changed
+            $baseDir = getBaseDir();
+            if ((int)$prev['can_manage_issue_config'] !== (int)$canManageConfig) {
+                $msg = $canManageConfig ? 'You have been granted Issue Config access.' : 'Your Issue Config access has been removed.';
+                createNotification($db, (int)$userId, 'system', $msg, $baseDir . "/modules/admin/issue_config.php");
+            }
+            if ((int)$prev['can_manage_devices'] !== (int)$canManageDevices) {
+                $msg = $canManageDevices ? 'You have been granted Device Management access.' : 'Your Device Management access has been removed.';
+                createNotification($db, (int)$userId, 'system', $msg, $baseDir . "/modules/admin/devices.php");
+            }
+            
+            $_SESSION['success'] = "User updated successfully and project roles synchronized!";
+        } catch (Exception $e) {
+            if ($db->inTransaction()) $db->rollBack();
+            error_log("User update/sync failed: " . $e->getMessage());
+            $_SESSION['error'] = "Failed to update user. Please try again.";
         }
-        if ((int)$prev['can_manage_devices'] !== (int)$canManageDevices) {
-            $msg = $canManageDevices ? 'You have been granted Device Management access.' : 'Your Device Management access has been removed.';
-            createNotification($db, (int)$userId, 'system', $msg, $baseDir . "/modules/admin/devices.php");
-        }
-        $_SESSION['success'] = "User updated successfully!";
     } elseif (isset($_POST['reset_password'])) {
         $isAjax = (
             (isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower((string)$_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest') ||
@@ -537,10 +560,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!$mailer) {
                 $_SESSION['error'] = "Email service is not available.";
             } else {
-                $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-                $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
-                $baseDir = rtrim((string)getBaseDir(), '/');
-                $loginUrl = $scheme . '://' . $host . $baseDir . '/modules/auth/login.php';
+                $loginUrl = getConfiguredAppUrl() . '/modules/auth/login.php';
 
                 $ok = 0;
                 $failed = 0;
@@ -679,11 +699,15 @@ if (isset($_GET['action']) && $_GET['action'] === 'verify_credentials_mail') {
     exit;
 }
 
-// Get all users (excluding client role - they have separate management page)
+// Get all users with locked status
 $users = $db->query("
     SELECT u.*, 
+           u.two_factor_enabled,
            COUNT(DISTINCT p.id) as project_count,
-           COUNT(DISTINCT pp.id) as page_count
+           COUNT(DISTINCT pp.id) as page_count,
+           (SELECT COUNT(*) FROM login_attempts la 
+            WHERE la.username_hash = MD5(LOWER(u.username)) 
+            AND la.attempted_at > DATE_SUB(NOW(), INTERVAL 15 MINUTE)) as login_attempt_count
     FROM users u
     LEFT JOIN projects p ON u.id = p.project_lead_id
     LEFT JOIN project_pages pp ON (
@@ -694,7 +718,7 @@ $users = $db->query("
     WHERE u.role != 'client'
     GROUP BY u.id
     ORDER BY u.role, u.full_name
-")->fetchAll();
+") -> fetchAll();
 
 // Recent credentials mail logs for admin visibility
 $credentialsMailLogs = [];
@@ -776,6 +800,9 @@ if (!empty($_SESSION['success'])) {
         <button type="button" class="btn btn-outline-success" id="bulkMailBtn" data-bs-toggle="modal" data-bs-target="#bulkMailModal" disabled>
             <i class="fas fa-paper-plane"></i> Send Setup/Reset Mail
         </button>
+        <button type="button" class="btn btn-outline-info" id="bulk2FAReminderBtn" disabled>
+            <i class="fas fa-shield-alt"></i> Send 2FA Reminders
+        </button>
         <span class="align-self-center text-muted small" id="selectedUsersHint">0 users selected</span>
     </div>
 
@@ -803,6 +830,7 @@ echo '<script>(function(){try{function focusClose(){var container=document.query
                             <th>Setup Status</th>
                             <th>Temp Password</th>
                             <th>Status</th>
+                            <th>2FA</th>
                             <th>Actions</th>
                         </tr>
                     </thead>
@@ -833,11 +861,7 @@ echo '<script>(function(){try{function focusClose(){var container=document.query
                                 <?php endif; ?>
                             </td>
                             <td>
-                                <?php if (empty($user['account_setup_completed']) && !empty($user['temp_password'])): ?>
-                                    <code class="text-danger"><?php echo htmlspecialchars($user['temp_password']); ?></code>
-                                <?php else: ?>
-                                    <span class="text-muted">-</span>
-                                <?php endif; ?>
+                                <span class="text-muted">Not stored</span>
                             </td>
                             <td>
                                 <?php if ($user['is_active']): ?>
@@ -847,20 +871,47 @@ echo '<script>(function(){try{function focusClose(){var container=document.query
                                 <?php endif; ?>
                             </td>
                             <td>
+                                <?php if (!empty($user['two_factor_enabled'])): ?>
+                                    <span class="badge bg-success" title="2FA Enabled"><i class="fas fa-shield-alt"></i> On</span>
+                                <?php else: ?>
+                                    <span class="badge bg-secondary" title="2FA Disabled"><i class="fas fa-shield-alt"></i> Off</span>
+                                <?php endif; ?>
+                            </td>
+                            <td>
                                 <button type="button" class="btn btn-sm btn-warning" 
                                         data-bs-toggle="modal" 
                                         data-bs-target="#editUserModal<?php echo $user['id']; ?>">
                                     <i class="fas fa-edit"></i>
                                 </button>
+                                <button type="button" class="btn btn-sm <?php echo ((int)($user['login_attempt_count'] ?? 0) >= 5) ? 'btn-danger' : 'btn-outline-secondary'; ?> unlock-user-btn"
+                                        data-username="<?php echo htmlspecialchars($user['username']); ?>"
+                                        data-username-hash="<?php echo md5(strtolower($user['username'])); ?>"
+                                        title="<?php echo ((int)($user['login_attempt_count'] ?? 0) >= 5) ? 'Account Locked - Click to Unlock' : 'Unlock / Clear Login Attempts'; ?>">
+                                    <i class="fas fa-<?php echo ((int)($user['login_attempt_count'] ?? 0) >= 5) ? 'lock' : 'unlock'; ?>"></i>
+                                </button>
                                 <button type="button" class="btn btn-sm btn-info send-reset-email-btn" 
                                         data-user-id="<?php echo $user['id']; ?>"
                                         data-username="<?php echo htmlspecialchars($user['username']); ?>"
                                         title="Send Reset Password Email">
+                                    <i class="fas fa-envelope"></i>
+                                </button>
+                                <button type="button" class="btn btn-sm btn-secondary manual-reset-password-btn" 
+                                        data-user-id="<?php echo $user['id']; ?>"
+                                        data-username="<?php echo htmlspecialchars($user['username']); ?>"
+                                        title="Set Manual Password (Copy/Paste)">
                                     <i class="fas fa-key"></i>
                                 </button>
                                     <button type="button" class="btn btn-sm btn-secondary view-user-btn" data-user-id="<?php echo $user['id']; ?>">
                                         <i class="fas fa-eye"></i>
                                     </button>
+                                <?php if (empty($user['two_factor_enabled']) && $user['is_active']): ?>
+                                    <button type="button" class="btn btn-sm btn-outline-primary send-2fa-reminder-btn" 
+                                             data-user-id="<?php echo $user['id']; ?>"
+                                             data-fullname="<?php echo htmlspecialchars($user['full_name']); ?>"
+                                             title="Send 2FA Reminder Email">
+                                         <i class="fas fa-shield-alt"></i>
+                                     </button>
+                                <?php endif; ?>
                                 <button type="button" class="btn btn-sm btn-danger" 
                                         data-bs-toggle="modal" 
                                         data-bs-target="#deleteUserModal<?php echo $user['id']; ?>">
@@ -874,6 +925,7 @@ echo '<script>(function(){try{function focusClose(){var container=document.query
                             <div class="modal-dialog">
                                 <div class="modal-content">
                                     <form method="POST">
+                                        <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                                         <input type="hidden" name="user_id" value="<?php echo $user['id']; ?>">
                                         <div class="modal-header">
                                             <h5 class="modal-title">Edit User: <?php echo renderUserNameLink(['id'=>$user['id'],'full_name'=>$user['full_name'],'role'=>$user['role']]); ?></h5>
@@ -888,7 +940,6 @@ echo '<script>(function(){try{function focusClose(){var container=document.query
                                             <div class="mb-3">
                                                 <label>Role *</label>
                                                 <select name="role" class="form-select" required>
-                                                    <option value="super_admin" <?php echo $user['role'] === 'super_admin' ? 'selected' : ''; ?>>Super Admin</option>
                                                     <option value="admin" <?php echo $user['role'] === 'admin' ? 'selected' : ''; ?>>Admin</option>
                                                     <option value="project_lead" <?php echo $user['role'] === 'project_lead' ? 'selected' : ''; ?>>Project Lead</option>
                                                     <option value="qa" <?php echo $user['role'] === 'qa' ? 'selected' : ''; ?>>QA</option>
@@ -936,6 +987,7 @@ echo '<script>(function(){try{function focusClose(){var container=document.query
                             <div class="modal-dialog">
                                 <div class="modal-content">
                                     <form method="POST">
+                                        <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                                         <input type="hidden" name="user_id" value="<?php echo $user['id']; ?>">
                                         <div class="modal-header">
                                             <h5 class="modal-title text-danger">Delete User</h5>
@@ -1046,6 +1098,7 @@ echo '<script>(function(){try{function focusClose(){var container=document.query
     <div class="modal-dialog">
         <div class="modal-content">
             <form method="POST" id="bulkMailForm">
+                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                 <input type="hidden" name="send_credentials_email" value="1">
                 <input type="hidden" name="selected_user_ids" id="selectedUserIdsInput" value="">
                 <div class="modal-header">
@@ -1084,6 +1137,7 @@ echo '<script>(function(){try{function focusClose(){var container=document.query
     <div class="modal-dialog">
         <div class="modal-content">
             <form method="POST">
+                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                 <div class="modal-header">
                     <h5 class="modal-title">Add New User</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
@@ -1104,7 +1158,6 @@ echo '<script>(function(){try{function focusClose(){var container=document.query
                     <div class="mb-3">
                         <label>Role *</label>
                         <select name="role" class="form-select" required>
-                            <option value="super_admin">Super Admin</option>
                             <option value="admin">Admin</option>
                             <option value="project_lead">Project Lead</option>
                             <option value="qa">QA</option>
@@ -1127,11 +1180,11 @@ echo '<script>(function(){try{function focusClose(){var container=document.query
                     </div>
                     <div class="mb-3">
                         <label>Password *</label>
-                        <input type="password" name="password" class="form-control" required>
+                        <input type="password" name="password" autocomplete="off" class="form-control" required>
                     </div>
                     <div class="mb-3">
                         <label>Confirm Password *</label>
-                        <input type="password" name="confirm_password" class="form-control" required>
+                        <input type="password" name="confirm_password" autocomplete="off" class="form-control" required>
                     </div>
                     <div class="mb-3 form-check">
                         <input type="checkbox" name="send_setup_email" class="form-check-input" id="sendSetupEmailNow" value="1">
@@ -1149,7 +1202,7 @@ echo '<script>(function(){try{function focusClose(){var container=document.query
     </div>
 </div>
 
-<script>
+<script nonce="<?php echo $cspNonce ?? ''; ?>">
 $(document).ready(function() {
     // Ensure users table is initialized with checkbox column non-sortable.
     // This prevents header-sort click conflicts with the select-all checkbox.
@@ -1379,7 +1432,8 @@ $(document).ready(function() {
                         send_credentials_email_single: 1,
                         user_id: uid,
                         mail_mode: mode,
-                        request_id: requestId
+                        request_id: requestId,
+                        csrf_token: window._csrfToken || (document.querySelector('meta[name="csrf-token"]') || {}).getAttribute('content') || ''
                     }
                 });
                 if (resp && resp.success) {
@@ -1457,7 +1511,51 @@ $(document).ready(function() {
     refreshBulkMailUi();
 });
 </script>
-<!-- User Details Modal -->
+<script nonce="<?php echo $cspNonce ?? ''; ?>">
+window._adminUsersConfig = {
+    baseDir: '<?php echo htmlspecialchars(rtrim(getBaseDir(), '/'), ENT_QUOTES, 'UTF-8'); ?>'
+};
+</script>
+<!-- Manual Reset Password Modal -->
+<div class="modal fade" id="manualResetPasswordModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form id="manualResetPasswordForm" method="POST" data-reset-password-form="1">
+                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
+                <input type="hidden" name="user_id" id="manualResetUserId" value="">
+                <div class="modal-header">
+                    <h5 class="modal-title">Set Manual Temporary Password</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <p>Setting a temporary password for <strong id="manualResetUsername"></strong>.</p>
+                    <div class="alert alert-warning py-2 small">
+                        <i class="fas fa-exclamation-triangle"></i> Use this if the automated email fails. You must copy and send this password to the user manually.
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Temporary Password</label>
+                        <div class="input-group">
+                            <input type="text" name="new_password" id="manualResetPasswordInput" class="form-control" required>
+                            <button class="btn btn-outline-secondary" type="button" id="generateRandomPass">
+                                <i class="fas fa-sync-alt"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Confirm Password</label>
+                        <input type="text" name="confirm_password" id="manualResetConfirmInput" class="form-control" required>
+                    </div>
+                    <p class="text-info small"><i class="fas fa-info-circle"></i> The user will be forced to change this password on their next login.</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" name="reset_password" class="btn btn-primary">Set Password</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
 <div class="modal fade" id="viewUserModal" tabindex="-1">
   <div class="modal-dialog modal-xl">
     <div class="modal-content">
@@ -1477,230 +1575,31 @@ $(document).ready(function() {
   </div>
 </div>
 
+<script src="<?php echo htmlspecialchars(getBaseDir(), ENT_QUOTES, 'UTF-8'); ?>/assets/js/admin-users.js"></script>
+
 <script>
-$(document).on('click', '.view-user-btn', function() {
-    var uid = $(this).data('user-id');
-    $('#viewUserContent').html('<p><strong>Loading...</strong></p>');
-    var modal = new bootstrap.Modal(document.getElementById('viewUserModal'));
-    modal.show();
-
-    $.ajax({
-        url: '<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/admin/users.php',
-        method: 'GET',
-        data: { action: 'get_user_details', user_id: uid },
-        success: function(resp) {
-            try {
-                var data = typeof resp === 'object' ? resp : JSON.parse(resp);
-                if (data.error) {
-                    $('#viewUserContent').html('<p class="text-danger">Error: ' + $('<div>').text(data.error).html() + '</p>');
-                    return;
-                }
-                if (!data.user) {
-                    $('#viewUserContent').html('<p class="text-danger">User not found.</p>');
-                    return;
-                }
-
-                var html = [];
-                html.push('<h5>' + $('<div>').text(data.user.full_name).html() + ' <small class="text-muted">(' + $('<div>').text(data.user.username).html() + ')</small></h5>');
-                html.push('<p><strong>Email:</strong> ' + $('<div>').text(data.user.email).html() + ' &nbsp; <strong>Role:</strong> ' + $('<div>').text(data.user.role).html() + '</p>');
-                if (data.user.can_manage_issue_config == 1) {
-                    html.push('<p><span class="badge bg-primary me-2">Has Issue Config Access</span></p>');
-                }
-                if (data.user.can_manage_devices == 1) {
-                    html.push('<p><span class="badge bg-success">Can Manage Devices</span></p>');
-                }
-
-                // Projects
-                html.push('<h6>Projects (' + (data.projects ? data.projects.length : 0) + ')</h6>');
-                if (data.projects && data.projects.length) {
-                    html.push('<ul>');
-                    data.projects.forEach(function(p) {
-                        html.push('<li>' + $('<div>').text(p.title).html() + ' <small class="text-muted">(' + $('<div>').text(p.po_number||'').html() + ')</small></li>');
-                    });
-                    html.push('</ul>');
-                } else {
-                    html.push('<p class="text-muted">No projects.</p>');
-                }
-
-                // Pages
-                html.push('<h6>Pages (' + (data.pages ? data.pages.length : 0) + ')</h6>');
-                if (data.pages && data.pages.length) {
-                    html.push('<ul>');
-                    data.pages.forEach(function(pg) {
-                        html.push('<li>' + $('<div>').text(pg.title).html() + ' <small class="text-muted">(ID ' + pg.id + ')</small></li>');
-                    });
-                    html.push('</ul>');
-                } else {
-                    html.push('<p class="text-muted">No pages.</p>');
-                }
-
-                // Assignments
-                html.push('<h6>Assignments (' + (data.assignments ? data.assignments.length : 0) + ')</h6>');
-                if (data.assignments && data.assignments.length) {
-                    html.push('<table class="table table-sm"><thead><tr><th>Project</th><th>Role</th><th>Assigned By</th><th>At</th></tr></thead><tbody>');
-                    data.assignments.forEach(function(a) {
-                        var proj = a.project_title ? $('<div>').text(a.project_title).html() : (a.project_id || 'N/A');
-                        var by = a.assigned_by_name ? $('<div>').text(a.assigned_by_name).html() : (a.assigned_by || 'System');
-                        html.push('<tr><td>' + proj + '</td><td>' + (a.role||'') + '</td><td>' + by + '</td><td>' + (a.assigned_at||'') + '</td></tr>');
-                    });
-                    html.push('</tbody></table>');
-                } else {
-                    html.push('<p class="text-muted">No assignments.</p>');
-                }
-
-                // Activity
-                html.push('<h6>Recent Activity (' + (data.activity ? data.activity.length : 0) + ')</h6>');
-                if (data.activity && data.activity.length) {
-                    html.push('<ul>');
-                    data.activity.forEach(function(a) {
-                        var entity = '';
-                        if (a.entity_type === 'project' && a.project_title) {
-                            entity = ' - Project: <strong>' + $('<div>').text(a.project_title).html() + '</strong>';
-                        } else if (a.entity_type && a.entity_id) {
-                            entity = ' - ' + a.entity_type + ' ' + a.entity_id;
-                        }
-                        
-                        // Parse details if available for more context
-                        if (a.details) {
-                            try {
-                                var details = JSON.parse(a.details);
-                                if (details.title) entity += ' ("' + $('<div>').text(details.title).html() + '")';
-                                else if (details.page_name) entity += ' (Page: "' + $('<div>').text(details.page_name).html() + '")';
-                                else if (details.asset_name) entity += ' (Asset: "' + $('<div>').text(details.asset_name).html() + '")';
-                            } catch(e) {}
-                        }
-
-                        html.push('<li><small class="text-muted">[' + (a.created_at||'') + ']</small> ' + $('<div>').text(a.action).html() + entity + '</li>');
-                    });
-                    html.push('</ul>');
-                } else {
-                    html.push('<p class="text-muted">No recent activity.</p>');
-                }
-
-                $('#viewUserContent').html(html.join(''));
-            } catch (e) {
-                $('#viewUserContent').html('<p class="text-danger">Failed to load details. Server response:<pre>' + $('<div>').text(resp).html() + '</pre></p>');
-                console.error('Failed parsing user-details response', resp, e);
-            }
-        },
-        error: function(xhr) {
-            var body = xhr.responseText || xhr.statusText || '';
-            $('#viewUserContent').html('<p class="text-danger">Request failed: ' + xhr.status + ' ' + $('<div>').text(body).html() + '</p>');
-            console.error('User details request failed', xhr.status, body);
+document.addEventListener('click', function(e) {
+    var btn = e.target.closest('.unlock-user-btn');
+    if (!btn) return;
+    var username = btn.getAttribute('data-username');
+    var hash = btn.getAttribute('data-username-hash');
+    if (!confirm('Unlock account for "' + username + '"?')) return;
+    fetch('<?php echo getBaseDir(); ?>/api/unlock_account.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': window._csrfToken || '' },
+        body: 'action=unlock&username_hash=' + encodeURIComponent(hash) + '&csrf_token=' + encodeURIComponent(window._csrfToken || '')
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            if (typeof showToast === 'function') showToast('Account unlocked for ' + username, 'success');
+            btn.remove();
+        } else {
+            if (typeof showToast === 'function') showToast('Failed to unlock: ' + (data.error || ''), 'danger');
         }
-    });
-});
-
-// Handle send reset email button click
-$('.send-reset-email-btn').on('click', function() {
-    const userId = $(this).data('user-id');
-    const username = $(this).data('username');
-    const btn = $(this);
-    
-    // Show confirmation modal
-    const modalHtml = `
-        <div class="modal fade" id="confirmResetEmailModal" tabindex="-1" aria-labelledby="confirmResetEmailModalLabel" aria-hidden="true">
-            <div class="modal-dialog">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <h5 class="modal-title" id="confirmResetEmailModalLabel">
-                            <i class="fas fa-paper-plane text-primary"></i> Send Password Reset Email
-                        </h5>
-                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                    </div>
-                    <div class="modal-body">
-                        <p>Are you sure you want to send a password reset email to <strong>${username}</strong>?</p>
-                        <div class="alert alert-info mb-0">
-                            <i class="fas fa-info-circle"></i> A new temporary password will be generated and sent to the user's email address.
-                        </div>
-                    </div>
-                    <div class="modal-footer">
-                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                        <button type="button" class="btn btn-primary" id="confirmSendResetEmail">
-                            <i class="fas fa-paper-plane"></i> Send Email
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    `;
-    
-    // Remove existing modal if any
-    $('#confirmResetEmailModal').remove();
-    
-    // Add modal to body
-    $('body').append(modalHtml);
-    
-    // Show modal
-    const modal = new bootstrap.Modal(document.getElementById('confirmResetEmailModal'));
-    modal.show();
-    
-    // Handle confirm button click
-    $('#confirmSendResetEmail').off('click').on('click', function() {
-        const confirmBtn = $(this);
-        confirmBtn.prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i> Sending...');
-        
-        btn.prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i>');
-        
-        const requestId = 'reset_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-        
-        $.ajax({
-            url: window.location.pathname,
-            method: 'POST',
-            data: {
-                send_credentials_email_single: 1,
-                user_id: userId,
-                mail_mode: 'reset',
-                request_id: requestId
-            },
-            dataType: 'json',
-            success: function(response) {
-                modal.hide();
-                
-                if (response.success) {
-                    if (typeof showToast === 'function') {
-                        showToast(`Password reset email sent to ${response.username || username}`, 'success');
-                    } else {
-                        alert(`Password reset email sent to ${response.username || username}`);
-                    }
-                    // Reload page to show updated temp password
-                    setTimeout(function() {
-                        location.reload();
-                    }, 1500);
-                } else {
-                    // Even if email failed, temp password is saved - show message and reload
-                    const errorMsg = response.error || 'Failed to send reset email';
-                    if (typeof showToast === 'function') {
-                        showToast(errorMsg, 'warning');
-                    } else {
-                        alert(errorMsg);
-                    }
-                    
-                    // Reload page to show temp password in table
-                    setTimeout(function() {
-                        location.reload();
-                    }, 2000);
-                }
-            },
-            error: function(xhr) {
-                modal.hide();
-                
-                const errorMsg = 'Error sending reset email: ' + (xhr.responseText || xhr.statusText);
-                if (typeof showToast === 'function') {
-                    showToast(errorMsg, 'danger');
-                } else {
-                    alert(errorMsg);
-                }
-                btn.prop('disabled', false).html('<i class="fas fa-key"></i>');
-            }
-        });
-    });
-    
-    // Reset button state when modal is closed without confirming
-    $('#confirmResetEmailModal').on('hidden.bs.modal', function() {
-        $(this).remove();
-    });
+    })
+    .catch(() => { if (typeof showToast === 'function') showToast('Request failed', 'danger'); });
 });
 </script>
 
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<?php include __DIR__ . '/../../includes/footer.php'; 

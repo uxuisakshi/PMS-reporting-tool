@@ -1,7 +1,9 @@
 <?php
+ob_start();
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/functions.php';
 require_once __DIR__ . '/../includes/helpers.php';
+ob_end_clean();
 
 header('Content-Type: application/json');
 
@@ -103,7 +105,7 @@ try {
     
     // Check permissions
     $canUpdate = false;
-    if (in_array($userRole, ['admin', 'super_admin'])) {
+    if (in_array($userRole, ['admin'])) {
         $canUpdate = true;
     } elseif ($userRole === 'project_lead' && $pageEnv['project_lead_id'] == $userId) {
         $canUpdate = true;
@@ -156,6 +158,5 @@ try {
     
 } catch (Exception $e) {
     error_log("Page Status Update API Error: " . $e->getMessage());
-    echo json_encode(['success' => false, 'message' => 'Database error: ' . $e->getMessage()]);
+    echo json_encode(['success' => false, 'message' => 'A database error occurred']);
 }
-?>

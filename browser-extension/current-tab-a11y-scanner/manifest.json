@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "Current Tab A11y Scanner",
+  "version": "0.1.0",
+  "description": "Scan the active tab, export an Excel report, and optionally upload a testing screenshot to PMS.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "downloads",
+    "tabs"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Current Tab A11y Scanner"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "vendor/axe.min.js"
+      ],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ]
+    }
+  ]
+}

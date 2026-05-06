@@ -1,17 +1,13 @@
 <?php
-if (isset($_GET['test'])) {
-    header('Content-Type: application/json');
-    echo json_encode(['success' => true, 'message' => 'Admin QA breakdown API is working', 'timestamp' => date('Y-m-d H:i:s')]);
-    exit;
-}
-
+ob_start();
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../includes/auth.php';
+ob_end_clean();
 
 header('Content-Type: application/json');
 
 $auth = new Auth();
-if (!$auth->isLoggedIn() || !isset($_SESSION['role']) || !in_array($_SESSION['role'], ['admin', 'super_admin'])) {
+if (!$auth->isLoggedIn() || !isset($_SESSION['role']) || !in_array($_SESSION['role'], ['admin'])) {
     http_response_code(401);
     echo json_encode(['success' => false, 'error' => 'Unauthorized']);
     exit;
@@ -184,4 +180,3 @@ catch (Exception $e) {
     error_log('Admin QA breakdown query failed: ' . $e->getMessage());
     echo json_encode(['success' => false, 'error' => 'Database error: ' . $e->getMessage()]);
 }
-?>

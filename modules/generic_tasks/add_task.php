@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
 require_once __DIR__ . '/../../includes/functions.php';
+require_once __DIR__ . '/../../includes/helpers.php';
 
 $auth = new Auth();
 $auth->requireLogin();
@@ -12,6 +13,11 @@ $message = '';
 $error = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error'] = 'Invalid request. Please try again.';
+        header('Location: index.php');
+        exit;
+    }
     $categoryId = $_POST['category_id'] ?? '';
     $description = $_POST['description'] ?? '';
         $hours = isset($_POST['hours_spent']) && $_POST['hours_spent'] !== '' ? floatval($_POST['hours_spent']) : 0;
@@ -54,6 +60,7 @@ include __DIR__ . '/../../includes/header.php';
                     <?php endif; ?>
                     
                     <form method="POST">
+                        <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                         <div class="mb-3">
                             <label class="form-label">Task Date *</label>
                             <input type="date" name="task_date" class="form-control" value="<?php echo date('Y-m-d'); ?>" required>
@@ -92,4 +99,4 @@ include __DIR__ . '/../../includes/header.php';
     </div>
 </div>
 
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<?php include __DIR__ . '/../../includes/footer.php'; 

@@ -2,6 +2,7 @@
 
 require_once __DIR__ . '/AnalyticsEngine.php';
 require_once __DIR__ . '/AnalyticsReport.php';
+require_once __DIR__ . '/ClientComplianceScoreResolver.php';
 
 /**
  * Compliance Trend Analytics Engine
@@ -12,6 +13,12 @@ require_once __DIR__ . '/AnalyticsReport.php';
  * Requirements: 11.1, 11.2, 11.4
  */
 class ComplianceTrendAnalytics extends AnalyticsEngine {
+    private $complianceResolver;
+
+    public function __construct() {
+        parent::__construct();
+        $this->complianceResolver = new ClientComplianceScoreResolver();
+    }
     
     /**
      * Generate compliance trend analytics report
@@ -117,51 +124,95 @@ class ComplianceTrendAnalytics extends AnalyticsEngine {
      * @return array
      */
     private function analyzeDailyTrends($issues) {
+        if (empty($issues)) {
+            return [];
+        }
+
         $dailyData = [];
-        
-        // Group issues by creation date
+        $createdByDate = [];
+        $resolvedByDate = [];
+        $eventDates = [];
+
         foreach ($issues as $issue) {
-            $date = date('Y-m-d', strtotime($issue['created_at'] ?? date('Y-m-d')));
-            
-            if (!isset($dailyData[$date])) {
-                $dailyData[$date] = [
-                    'date' => $date,
-                    'new_issues' => 0,
-                    'resolved_issues' => 0,
-                    'total_issues' => 0,
-                    'compliance_score' => 0,
-                    'severity_breakdown' => []
-                ];
-            }
-            
-            $dailyData[$date]['new_issues']++;
-            $severity = $issue['severity'] ?? 'Medium';
-            $dailyData[$date]['severity_breakdown'][$severity] = ($dailyData[$date]['severity_breakdown'][$severity] ?? 0) + 1;
-            
-            // Track resolved issues by resolution date
-            if (in_array($issue['status'] ?? 'Open', ['Resolved', 'Closed']) && !empty($issue['resolved_at'])) {
+            $createdDate = date('Y-m-d', strtotime($issue['created_at'] ?? date('Y-m-d')));
+            $createdByDate[$createdDate][] = $issue;
+            $eventDates[] = $createdDate;
+
+            if ($this->isResolvedTrendIssue($issue) && !empty($issue['resolved_at'])) {
                 $resolvedDate = date('Y-m-d', strtotime($issue['resolved_at']));
-                if (isset($dailyData[$resolvedDate])) {
-                    $dailyData[$resolvedDate]['resolved_issues']++;
-                }
+                $resolvedByDate[$resolvedDate][] = $issue;
+                $eventDates[] = $resolvedDate;
             }
         }
-        
-        // Calculate compliance scores and running totals
+
+        $startDate = min($eventDates);
+        $endDate = max(max($eventDates), date('Y-m-d'));
+        $cursor = strtotime($startDate);
+        $endTimestamp = strtotime($endDate);
+
+        while ($cursor <= $endTimestamp) {
+            $date = date('Y-m-d', $cursor);
+            $dailyData[$date] = [
+                'date' => $date,
+                'new_issues' => 0,
+                'resolved_issues' => 0,
+                'total_issues' => 0,
+                'cumulative_resolved' => 0,
+                'compliance_score' => 0,
+                'severity_breakdown' => []
+            ];
+
+            foreach ($createdByDate[$date] ?? [] as $issue) {
+                $dailyData[$date]['new_issues']++;
+                $severity = $issue['severity'] ?? 'Medium';
+                $dailyData[$date]['severity_breakdown'][$severity] = ($dailyData[$date]['severity_breakdown'][$severity] ?? 0) + 1;
+            }
+
+            $dailyData[$date]['resolved_issues'] = count($resolvedByDate[$date] ?? []);
+            $cursor = strtotime('+1 day', $cursor);
+        }
+
         $runningTotal = 0;
         $runningResolved = 0;
-        
-        ksort($dailyData);
+
         foreach ($dailyData as $date => &$data) {
             $runningTotal += $data['new_issues'];
             $runningResolved += $data['resolved_issues'];
-            
+
             $data['total_issues'] = $runningTotal;
             $data['cumulative_resolved'] = $runningResolved;
-            $data['compliance_score'] = $this->calculateComplianceScore($runningTotal, $runningResolved);
+            $data['compliance_score'] = $this->calculateComplianceScoreForDate($issues, $date);
         }
-        
+
         return array_values($dailyData);
+    }
+
+    private function calculateComplianceScoreForDate(array $issues, string $date): float {
+        $effectiveIssues = [];
+        $dateTimestamp = strtotime($date . ' 23:59:59');
+
+        foreach ($issues as $issue) {
+            $createdAt = strtotime((string) ($issue['created_at'] ?? ''));
+            if ($createdAt === false || $createdAt > $dateTimestamp) {
+                continue;
+            }
+
+            $effectiveIssue = $issue;
+            $resolvedAt = strtotime((string) ($issue['resolved_at'] ?? ''));
+            if ($resolvedAt === false || $resolvedAt > $dateTimestamp) {
+                $effectiveIssue['status'] = 'Open';
+                $effectiveIssue['status_name'] = 'Open';
+            }
+
+            $effectiveIssues[] = $effectiveIssue;
+        }
+
+        return $this->complianceResolver->calculateWcagComplianceFromIssues($effectiveIssues);
+    }
+
+    private function isResolvedTrendIssue(array $issue): bool {
+        $status = strtolower(trim((string) ($issue['status_name'] ?? ($issue['status'] ?? ''))));
+        return in_array($status, ['resolved', 'closed', 'fixed'], true);
     }
     
     /**
@@ -172,6 +223,7 @@ class ComplianceTrendAnalytics extends AnalyticsEngine {
      */
     private function analyzeWeeklyTrends($issues) {
         $weeklyData = [];
+        $issuesByWeek = [];
         
         foreach ($issues as $issue) {
             $week = date('Y-W', strtotime($issue['created_at'] ?? date('Y-m-d')));
@@ -189,6 +241,7 @@ class ComplianceTrendAnalytics extends AnalyticsEngine {
             }
             
             $weeklyData[$week]['new_issues']++;
+            $issuesByWeek[$week][] = $issue;
             
             if (in_array($issue['status'] ?? 'Open', ['Resolved', 'Closed']) && !empty($issue['resolved_at'])) {
                 $resolvedWeek = date('Y-W', strtotime($issue['resolved_at']));
@@ -205,7 +258,27 @@ class ComplianceTrendAnalytics extends AnalyticsEngine {
         // Calculate metrics for each week
         ksort($weeklyData);
         foreach ($weeklyData as $week => &$data) {
-            $data['compliance_score'] = $this->calculateWeeklyComplianceScore($data);
+            // Get week end date to evaluate issues as they were at that point in time
+            $weekEndDate = date('Y-m-d', strtotime($week . '-7'));
+            
+            // Filter issues: only those created before or during week, and resolved (if resolved) by week end
+            $weekEffectiveIssues = [];
+            foreach ($issues as $issue) {
+                $createdDate = $issue['created_at'] ?? '';
+                if ($createdDate <= $weekEndDate . ' 23:59:59') {
+                    // Include resolved status as of this week's end date
+                    $resolvedDate = $issue['resolved_at'] ?? '';
+                    $isResolved = !empty($resolvedDate) && $resolvedDate <= $weekEndDate . ' 23:59:59';
+                    
+                    $effectiveIssue = $issue;
+                    if (!$isResolved) {
+                        $effectiveIssue['status'] = 'Open';
+                    }
+                    $weekEffectiveIssues[] = $effectiveIssue;
+                }
+            }
+            
+            $data['compliance_score'] = $this->complianceResolver->calculateWcagComplianceFromIssues($weekEffectiveIssues);
             $data['avg_resolution_time'] = !empty($data['resolution_times']) ? 
                 round(array_sum($data['resolution_times']) / count($data['resolution_times']), 1) : 0;
             unset($data['resolution_times']); // Remove raw data to save space
@@ -222,6 +295,7 @@ class ComplianceTrendAnalytics extends AnalyticsEngine {
      */
     private function analyzeMonthlyTrends($issues) {
         $monthlyData = [];
+        $issuesByMonth = [];
         
         foreach ($issues as $issue) {
             $month = date('Y-m', strtotime($issue['created_at'] ?? date('Y-m-d')));
@@ -240,6 +314,7 @@ class ComplianceTrendAnalytics extends AnalyticsEngine {
             }
             
             $monthlyData[$month]['new_issues']++;
+            $issuesByMonth[$month][] = $issue;
             
             $severity = $issue['severity'] ?? 'Medium';
             $monthlyData[$month]['severity_distribution'][$severity] = ($monthlyData[$month]['severity_distribution'][$severity] ?? 0) + 1;
@@ -259,7 +334,28 @@ class ComplianceTrendAnalytics extends AnalyticsEngine {
         ksort($monthlyData);
         foreach ($monthlyData as $month => &$data) {
             $data['resolution_rate'] = $this->calculatePercentage($data['resolved_issues'], $data['new_issues']);
-            $data['compliance_score'] = $this->calculateMonthlyComplianceScore($data);
+            
+            // Get month end date to evaluate issues as they were at that point in time
+            $monthEndDate = date('Y-m-t', strtotime($month . '-01'));
+            
+            // Filter issues: only those created before or during month, and resolved (if resolved) by month end
+            $monthEffectiveIssues = [];
+            foreach ($issues as $issue) {
+                $createdDate = $issue['created_at'] ?? '';
+                if ($createdDate <= $monthEndDate . ' 23:59:59') {
+                    // Include resolved status as of this month's end date
+                    $resolvedDate = $issue['resolved_at'] ?? '';
+                    $isResolved = !empty($resolvedDate) && $resolvedDate <= $monthEndDate . ' 23:59:59';
+                    
+                    $effectiveIssue = $issue;
+                    if (!$isResolved) {
+                        $effectiveIssue['status'] = 'Open';
+                    }
+                    $monthEffectiveIssues[] = $effectiveIssue;
+                }
+            }
+            
+            $data['compliance_score'] = $this->complianceResolver->calculateWcagComplianceFromIssues($monthEffectiveIssues);
         }
         
         return array_values($monthlyData);
@@ -273,6 +369,7 @@ class ComplianceTrendAnalytics extends AnalyticsEngine {
      */
     private function analyzeYearlyTrends($issues) {
         $yearlyData = [];
+        $issuesByYear = [];
         
         foreach ($issues as $issue) {
             $year = date('Y', strtotime($issue['created_at'] ?? date('Y-m-d')));
@@ -290,6 +387,7 @@ class ComplianceTrendAnalytics extends AnalyticsEngine {
             }
             
             $yearlyData[$year]['new_issues']++;
+            $issuesByYear[$year][] = $issue;
             
             if (in_array($issue['status'] ?? 'Open', ['Resolved', 'Closed']) && !empty($issue['resolved_at'])) {
                 $resolvedYear = date('Y', strtotime($issue['resolved_at']));
@@ -306,7 +404,28 @@ class ComplianceTrendAnalytics extends AnalyticsEngine {
         ksort($yearlyData);
         foreach ($yearlyData as $year => &$data) {
             $data['resolution_rate'] = $this->calculatePercentage($data['resolved_issues'], $data['new_issues']);
-            $data['compliance_score'] = $this->calculateYearlyComplianceScore($data);
+            
+            // Get year end date to evaluate issues as they were at that point in time
+            $yearEndDate = date('Y-12-31', strtotime($year . '-01-01'));
+            
+            // Filter issues: only those created before or during year, and resolved (if resolved) by year end
+            $yearEffectiveIssues = [];
+            foreach ($issues as $issue) {
+                $createdDate = $issue['created_at'] ?? '';
+                if ($createdDate <= $yearEndDate . ' 23:59:59') {
+                    // Include resolved status as of this year's end date
+                    $resolvedDate = $issue['resolved_at'] ?? '';
+                    $isResolved = !empty($resolvedDate) && $resolvedDate <= $yearEndDate . ' 23:59:59';
+                    
+                    $effectiveIssue = $issue;
+                    if (!$isResolved) {
+                        $effectiveIssue['status'] = 'Open';
+                    }
+                    $yearEffectiveIssues[] = $effectiveIssue;
+                }
+            }
+            
+            $data['compliance_score'] = $this->complianceResolver->calculateWcagComplianceFromIssues($yearEffectiveIssues);
             $data['avg_resolution_time'] = !empty($data['resolution_times']) ? 
                 round(array_sum($data['resolution_times']) / count($data['resolution_times']), 1) : 0;
             unset($data['resolution_times']);
@@ -343,7 +462,10 @@ class ComplianceTrendAnalytics extends AnalyticsEngine {
                 $resolutionTime = $this->calculateResolutionTime($issue['created_at'], $issue['resolved_at']);
                 $resolutionData[$month]['resolution_times'][] = $resolutionTime;
                 
-                $severity = $issue['severity'] ?? 'Medium';
+                $severity = ucfirst(strtolower((string) ($issue['severity'] ?? 'Medium')));
+                if (!isset($resolutionData[$month]['severity_resolved'][$severity])) {
+                    $resolutionData[$month]['severity_resolved'][$severity] = 0;
+                }
                 $resolutionData[$month]['severity_resolved'][$severity]++;
             }
         }
@@ -457,7 +579,7 @@ class ComplianceTrendAnalytics extends AnalyticsEngine {
         }));
         
         $resolutionRate = $this->calculatePercentage($resolvedIssues, $totalIssues);
-        $complianceScore = $this->calculateComplianceScore($totalIssues, $resolvedIssues);
+        $complianceScore = $this->complianceResolver->calculateWcagComplianceFromIssues($issues);
         
         return [
             'total_issues' => $totalIssues,
@@ -550,7 +672,7 @@ class ComplianceTrendAnalytics extends AnalyticsEngine {
      * @return string
      */
     private function extractWCAGLevel($issue) {
-        $content = strtolower(($issue['title'] ?? '') . ' ' . ($issue['description'] ?? ''));
+        $content = $this->normalizeLowerText(($issue['title'] ?? '') . ' ' . ($issue['description'] ?? ''));
         
         // Check for explicit WCAG level mentions
         if (preg_match('/wcag\s*(2\.1|2\.0)?\s*level?\s*(aaa|aa|a)\b/i', $content, $matches)) {
@@ -596,7 +718,7 @@ class ComplianceTrendAnalytics extends AnalyticsEngine {
         
         $adjustment = 0;
         foreach ($severityDistribution as $severity => $count) {
-            $penalty = $penaltyMap[strtolower($severity)] ?? -3;
+            $penalty = $penaltyMap[$this->normalizeLowerText($severity)] ?? -3;
             $adjustment += ($count / $totalIssues) * $penalty;
         }
         

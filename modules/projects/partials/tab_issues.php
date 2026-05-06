@@ -155,9 +155,11 @@
                                         <div class="small text-muted" id="issueSelectedPageMeta">Tester: - | Env: - | Issues: -</div>
                                     </div>
                                     <div class="d-flex gap-2 issues-actions">
+                                        <?php if ($_SESSION['role'] !== 'client'): ?>
                                         <button class="btn btn-sm btn-outline-primary" id="issueAddFinalBtn" disabled>
                                             <i class="fas fa-plus"></i> Add Issue
                                         </button>
+                                        <?php endif; ?>
                                     </div>
                                 </div>
                                 
@@ -188,30 +190,60 @@
             <div class="tab-content">
                                         <div class="tab-pane fade show active" id="final_issues_tab" role="tabpanel">
                                             <div class="d-flex justify-content-between align-items-center mb-2">
-                                                <div class="small text-muted">Issues added by users for the final report.</div>
+                                                <div class="small text-muted">
+                                                    Issues added by users for the final report.
+                                                    <?php if ($_SESSION['role'] === 'client'): ?>
+                                                    Use the Update button to change status or add a regression comment.
+                                                    <?php endif; ?>
+                                                </div>
+                                                <?php if ($_SESSION['role'] !== 'client'): ?>
                                                 <div class="d-flex gap-2 issue-expand-actions">
                                                     <button class="btn btn-sm btn-outline-secondary" id="finalDeleteSelected" disabled>Delete Selected</button>
                                                 </div>
+                                                <?php endif; ?>
                                             </div>
+                                            <?php if ($_SESSION['role'] === 'client'): ?>
+                                            <div class="row g-2 align-items-end mb-3">
+                                                <div class="col-md-6">
+                                                    <label for="clientIssueSearch" class="form-label">Search issues</label>
+                                                    <input type="search" class="form-control" id="clientIssueSearch" placeholder="Search by issue title or details">
+                                                </div>
+                                                <div class="col-md-3">
+                                                    <label for="clientIssueStatusFilter" class="form-label">Filter by status</label>
+                                                    <select class="form-select" id="clientIssueStatusFilter">
+                                                        <option value="">All statuses</option>
+                                                        <option value="open">Open</option>
+                                                        <option value="in_progress">In Progress</option>
+                                                        <option value="fixed">Fixed</option>
+                                                        <option value="resolved">Resolved</option>
+                                                        <option value="reopened">Reopened</option>
+                                                    </select>
+                                                </div>
+                                            </div>
+                                            <?php endif; ?>
                                             <div class="table-responsive">
                                                 <table class="table table-sm table-hover align-middle">
                                                     <thead class="table-light">
                                                         <tr>
+                                                            <?php if ($_SESSION['role'] !== 'client'): ?>
                                                             <th style="width:30px;"><input type="checkbox" id="finalSelectAll"></th>
+                                                            <?php endif; ?>
                                                             <th style="width:80px;">Issue Key</th>
                                                             <th>Issue Title</th>
                                                             <th style="width:100px;">Severity</th>
                                                             <th style="width:100px;">Priority</th>
                                                             <th style="width:120px;">Status</th>
+                                                            <?php if ($_SESSION['role'] !== 'client'): ?>
                                                             <th style="width:120px;">QA Status</th>
                                                             <th style="width:120px;">Reporter</th>
                                                             <th style="width:120px;">QA Name</th>
+                                                            <?php endif; ?>
                                                             <th style="width:150px;">Pages</th>
                                                             <th style="width:120px;">Actions</th>
                                                         </tr>
                                                     </thead>
                                                     <tbody id="finalIssuesBody">
-                                                        <tr><td colspan="11" class="text-muted text-center">Select a page to view issues.</td></tr>
+                                                        <tr><td colspan="<?php echo ($_SESSION['role'] === 'client') ? '7' : '11'; ?>" class="text-muted text-center">Select a page to view issues.</td></tr>
                                                     </tbody>
                                                 </table>
                                             </div>
@@ -229,28 +261,38 @@
                     <div class="d-flex justify-content-between align-items-center mb-3">
                         <div>
                             <h6 class="mb-0">Common Issues</h6>
-                            <div class="small text-muted">Manage issues that apply to multiple pages.</div>
+                            <div class="small text-muted"><?php echo $_SESSION['role'] === 'client' ? 'Read-only summary of issues that apply to multiple pages.' : 'Manage issues that apply to multiple pages.'; ?></div>
                         </div>
+                        <?php if ($_SESSION['role'] !== 'client'): ?>
                         <button class="btn btn-sm btn-outline-primary" id="commonAddBtn"><i class="fas fa-plus"></i> Add Common Issue</button>
+                        <?php endif; ?>
                     </div>
 
                     <div class="table-responsive">
                         <table class="table table-sm align-middle">
                             <thead>
                                 <tr>
+                                    <?php if ($_SESSION['role'] !== 'client'): ?>
                                     <th style="width:30px;"><input type="checkbox" id="commonSelectAll"></th>
+                                    <?php endif; ?>
                                     <th>Common Issue Title</th>
                                     <th>Pages</th>
+                                    <?php if ($_SESSION['role'] !== 'client'): ?>
                                     <th style="width:110px;">Actions</th>
+                                    <?php endif; ?>
                                 </tr>
                             </thead>
                             <tbody id="commonIssuesBody">
-                                <tr><td colspan="4" class="text-muted text-center">No common issues added yet.</td></tr>
+                                <tr><td colspan="<?php echo ($_SESSION['role'] === 'client') ? '2' : '4'; ?>" class="text-muted text-center">No common issues added yet.</td></tr>
                             </tbody>
                         </table>
                     </div>
                     <div class="alert alert-info small mt-3 mb-0">
+                        <?php if ($_SESSION['role'] === 'client'): ?>
+                        Shared issues are maintained by the delivery team when the same problem appears on multiple pages.
+                        <?php else: ?>
                         Tip: If a final issue applies to more than one page, fill the "Common Issue Title" field while adding it.
+                        <?php endif; ?>
                     </div>
                 </div>
             </div>
@@ -279,7 +321,7 @@
                                 </div>
                                 
                                 <!-- Common Issue Title (shows when multiple pages selected) -->
-                                <div class="col-lg-4">
+                                <div class="col-lg-4<?php echo $_SESSION['role'] === 'client' ? ' d-none' : ''; ?>">
                                     <div id="finalIssueCommonTitleWrap" class="d-none">
                                         <label class="form-label mb-1 small text-muted fw-bold">Common Title</label>
                                         <input type="text" class="form-control form-control-sm" id="finalIssueCommonTitle" placeholder="Common title for multi-page issue">
@@ -293,7 +335,7 @@
                             <div class="row g-3">
                                 <div class="col-lg-8">
                                     <label class="form-label mb-1 fw-bold">Issue Details</label>
-                                    <div class="d-flex justify-content-end mb-1">
+                                    <div class="d-flex justify-content-end mb-1<?php echo $_SESSION['role'] === 'client' ? ' d-none' : ''; ?>">
                                         <button class="btn btn-xs btn-outline-info" id="btnResetToTemplate">
                                             <i class="fas fa-undo"></i> Reset to Template
                                         </button>
@@ -306,22 +348,27 @@
                                             <li class="nav-item">
                                                 <button class="nav-link active py-2 fw-bold" id="btnShowChat" data-bs-toggle="tab" data-bs-target="#tabChat">Chat / Comments</button>
                                             </li>
+                                    <?php if ($_SESSION['role'] !== 'client'): ?>
                                     <li class="nav-item">
                                         <button class="nav-link py-2 fw-bold" id="btnShowHistory" data-bs-toggle="tab" data-bs-target="#tabHistory">Edit History</button>
                                     </li>
                                     <li class="nav-item">
                                         <button class="nav-link py-2 fw-bold" id="btnShowVisitHistory" data-bs-toggle="tab" data-bs-target="#tabVisitHistory">Visit History</button>
                                     </li>
+                                    <?php endif; ?>
                                 </ul>
                                 <div class="tab-content mt-3">
                                     <div class="tab-pane fade show active" id="tabChat">
                                                 <div class="issue-chat-container">
                                                     <div class="mb-3">
+                                                        <?php if ($_SESSION['role'] !== 'client'): ?>
+                                                        <label class="form-label small fw-bold">Comment Type</label>
+                                                        <select id="finalIssueCommentType" class="form-select form-select-sm mb-2" style="max-width: 200px;">
+                                                            <option value="normal">Normal Comment</option>
+                                                            <option value="regression">Regression Comment</option>
+                                                        </select>
+                                                        <?php endif; ?>
                                                         <textarea id="finalIssueCommentEditor" class="issue-summernote"></textarea>
-                                                        <div class="small text-muted mt-1">
-                                                            <i class="fas fa-info-circle me-1"></i>
-                                                            Type @ to mention users
-                                                        </div>
                                                     </div>
                                                     <div class="text-end mb-3">
                                                         <button class="btn btn-sm btn-primary" id="finalIssueAddCommentBtn">
@@ -336,6 +383,7 @@
                                                     </div>
                                                 </div>
                                             </div>
+                                    <?php if ($_SESSION['role'] !== 'client'): ?>
                                     <div class="tab-pane fade" id="tabHistory">
                                         <div id="historyEntries" class="small border rounded p-3 bg-light" style="max-height: 400px; overflow-y: auto;">
                                             <div class="text-center py-5 text-muted">Loading history...</div>
@@ -346,6 +394,7 @@
                                             <div class="text-center py-5 text-muted">Loading visit history...</div>
                                         </div>
                                     </div>
+                                    <?php endif; ?>
                                 </div>
                             </div>
                         </div>
@@ -359,8 +408,8 @@
                                             </option>
                                         <?php endforeach; ?>
                                     </select>
-                                    <label class="form-label mt-2">QA Status (Multi-select)</label>
-                                    <select id="finalIssueQaStatus" class="form-select form-select-sm issue-select2-tags" multiple>
+                                    <label class="form-label mt-2<?php echo $_SESSION['role'] === 'client' ? ' d-none' : ''; ?>">QA Status (Multi-select)</label>
+                                    <select id="finalIssueQaStatus" class="form-select form-select-sm issue-select2-tags<?php echo $_SESSION['role'] === 'client' ? ' d-none' : ''; ?>" multiple>
                                         <?php foreach ($qaStatuses as $qs): ?>
                                             <option value="<?php echo htmlspecialchars($qs['status_key']); ?>"><?php echo htmlspecialchars($qs['status_label']); ?></option>
                                         <?php endforeach; ?>
@@ -372,7 +421,7 @@
                                         <?php endforeach; ?>
                                     </select>
                                     <div class="d-grid gap-1 mt-2">
-                                        <button type="button" class="btn btn-sm btn-outline-primary" id="btnOpenUrlSelectionModal">
+                                        <button type="button" class="btn btn-sm btn-outline-primary<?php echo $_SESSION['role'] === 'client' ? ' d-none' : ''; ?>" id="btnOpenUrlSelectionModal">
                                             <i class="fas fa-link me-1"></i> Manage Grouped URLs
                                         </button>
                                         <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="collapse" data-bs-target="#finalIssueGroupedUrlsPreview" aria-expanded="false">
@@ -388,14 +437,16 @@
                                     <div class="d-none" aria-hidden="true">
                                         <select id="finalIssueGroupedUrls" class="form-select form-select-sm issue-select2" multiple></select>
                                     </div>
+                                    <?php if ($_SESSION['role'] !== 'client'): ?>
                                     <label class="form-label mt-2">Reporter Name(s)</label>
                                     <select id="finalIssueReporters" class="form-select form-select-sm issue-select2" multiple>
                                         <?php foreach ($projectUsers as $u): ?>
                                             <option value="<?php echo (int)$u['id']; ?>"><?php echo htmlspecialchars($u['full_name']); ?></option>
                                         <?php endforeach; ?>
                                     </select>
+                                    <?php endif; ?>
                                     <!-- Dynamic Metadata Container -->
-                                    <div id="finalIssueMetadataContainer"></div>
+                                    <div id="finalIssueMetadataContainer" class="<?php echo $_SESSION['role'] === 'client' ? 'd-none' : ''; ?>"></div>
                                 </div>
                             </div>
                         </div>
@@ -478,17 +529,17 @@
 
             <!-- Issue Image Modal -->
             <div class="modal fade issue-image-modal" id="issueImageModal" tabindex="-1" aria-hidden="true">
-                <div class="modal-dialog modal-xl modal-dialog-centered">
+                <div class="modal-dialog modal-lg modal-dialog-centered">
                     <div class="modal-content">
-                        <div class="modal-header">
-                            <h5 class="modal-title">Image Preview</h5>
+                        <div class="modal-header py-2">
+                            <h6 class="modal-title mb-0">Image Preview</h6>
                             <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                         </div>
-                        <div class="modal-body">
+                        <div class="modal-body p-3" style="overflow: hidden;">
                             <div class="text-center">
-                                <img id="issueImagePreview" src="" alt="" class="img-fluid" style="max-height: 70vh;">
+                                <img id="issueImagePreview" src="" alt="" class="img-fluid" style="max-height: 55vh; object-fit: contain;">
                             </div>
-                            <div id="issueImageAltText" class="mt-3 p-3 bg-light rounded" style="display: none;">
+                            <div id="issueImageAltText" class="mt-2 p-2 bg-light rounded small" style="display: none;">
                                 <strong>Alt Text:</strong> <span id="issueImageAltTextContent"></span>
                             </div>
                         </div>

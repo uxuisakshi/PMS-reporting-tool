@@ -12,8 +12,8 @@
  * @return bool True if user has permission, false otherwise
  */
 function canCreateProject($db, $userId) {
-    // Admin and super_admin always have permission
-    if (isset($_SESSION['role']) && in_array($_SESSION['role'], ['admin', 'super_admin'])) {
+    // Admin and admin always have permission
+    if (isset($_SESSION['role']) && in_array($_SESSION['role'], ['admin'])) {
         return true;
     }
     
@@ -43,18 +43,18 @@ function canCreateProject($db, $userId) {
  * @return bool True if user has permission, false otherwise
  */
 function canEditProjectById($db, $userId, $projectId) {
-    // Admin and super_admin always have permission
-    if (isset($_SESSION['role']) && in_array($_SESSION['role'], ['admin', 'super_admin'])) {
+    // Admin and admin always have permission
+    if (isset($_SESSION['role']) && in_array($_SESSION['role'], ['admin'])) {
         return true;
     }
     
     try {
-        // Check if user is project lead
-        $stmt = $db->prepare("SELECT project_lead_id FROM projects WHERE id = ?");
+        // Check if user is project lead or creator
+        $stmt = $db->prepare("SELECT project_lead_id, created_by FROM projects WHERE id = ?");
         $stmt->execute([$projectId]);
         $project = $stmt->fetch();
         
-        if ($project && $project['project_lead_id'] == $userId) {
+        if ($project && ($project['project_lead_id'] == $userId || $project['created_by'] == $userId)) {
             return true;
         }
         
@@ -85,8 +85,8 @@ function canEditProjectById($db, $userId, $projectId) {
  * @return array Array of project IDs
  */
 function getProjectsWithPermission($db, $userId, $permissionType) {
-    // Admin and super_admin have access to all projects
-    if (isset($_SESSION['role']) && in_array($_SESSION['role'], ['admin', 'super_admin'])) {
+    // Admin and admin have access to all projects
+    if (isset($_SESSION['role']) && in_array($_SESSION['role'], ['admin'])) {
         try {
             $stmt = $db->query("SELECT id FROM projects ORDER BY title");
             return $stmt->fetchAll(PDO::FETCH_COLUMN);
@@ -123,14 +123,14 @@ function getProjectsWithPermission($db, $userId, $permissionType) {
  * @return bool True if user has permission, false otherwise
  */
 function canEditProject($db, $userId, $projectId) {
-    // Admin and super_admin always have permission
-    if (isset($_SESSION['role']) && in_array($_SESSION['role'], ['admin', 'super_admin'])) {
+    // Admin and admin always have permission
+    if (isset($_SESSION['role']) && in_array($_SESSION['role'], ['admin'])) {
         return true;
     }
     
     try {
-        // Get project's lead
-        $stmt = $db->prepare("SELECT project_lead_id FROM projects WHERE id = ?");
+        // Get project's lead/creator
+        $stmt = $db->prepare("SELECT project_lead_id, created_by FROM projects WHERE id = ?");
         $stmt->execute([$projectId]);
         $project = $stmt->fetch();
         
@@ -138,8 +138,8 @@ function canEditProject($db, $userId, $projectId) {
             return false;
         }
         
-        // Project lead can always edit their own project
-        if ($project['project_lead_id'] == $userId) {
+        // Project lead/creator can always edit their own project
+        if ($project['project_lead_id'] == $userId || $project['created_by'] == $userId) {
             return true;
         }
         
@@ -159,8 +159,8 @@ function canEditProject($db, $userId, $projectId) {
  * @return bool True if user has any project permissions, false otherwise
  */
 function hasAnyProjectPermissions($db, $userId) {
-    // Admin and super_admin always have access
-    if (isset($_SESSION['role']) && in_array($_SESSION['role'], ['admin', 'super_admin'])) {
+    // Admin and admin always have access
+    if (isset($_SESSION['role']) && in_array($_SESSION['role'], ['admin'])) {
         return true;
     }
     
@@ -189,8 +189,8 @@ function hasAnyProjectPermissions($db, $userId) {
  * @return array Array of client IDs
  */
 function getClientsWithAccessibleProjects($db, $userId) {
-    // Admin and super_admin have access to all clients
-    if (isset($_SESSION['role']) && in_array($_SESSION['role'], ['admin', 'super_admin'])) {
+    // Admin and admin have access to all clients
+    if (isset($_SESSION['role']) && in_array($_SESSION['role'], ['admin'])) {
         try {
             $stmt = $db->query("SELECT id FROM clients ORDER BY name");
             return $stmt->fetchAll(PDO::FETCH_COLUMN);
@@ -237,8 +237,8 @@ function hasAnyClientPermissions($db, $userId) {
  * @return bool True if user has permission
  */
 function canCreateProjectForClient($db, $userId, $clientId) {
-    // Admin and super_admin always have permission
-    if (isset($_SESSION['role']) && in_array($_SESSION['role'], ['admin', 'super_admin'])) {
+    // Admin and admin always have permission
+    if (isset($_SESSION['role']) && in_array($_SESSION['role'], ['admin'])) {
         return true;
     }
     
@@ -269,8 +269,8 @@ function canCreateProjectForClient($db, $userId, $clientId) {
  * @return array Array of client IDs
  */
 function getClientsWithPermission($db, $userId, $permissionType) {
-    // Admin and super_admin have access to all clients
-    if (isset($_SESSION['role']) && in_array($_SESSION['role'], ['admin', 'super_admin'])) {
+    // Admin and admin have access to all clients
+    if (isset($_SESSION['role']) && in_array($_SESSION['role'], ['admin'])) {
         try {
             $stmt = $db->query("SELECT id FROM clients ORDER BY name");
             return $stmt->fetchAll(PDO::FETCH_COLUMN);
@@ -296,4 +296,3 @@ function getClientsWithPermission($db, $userId, $permissionType) {
         return [];
     }
 }
-?>

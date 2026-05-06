@@ -1,0 +1,140 @@
+<?xml version="1.0"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:o="urn:schemas-microsoft-com:office:office"
+ xmlns:x="urn:schemas-microsoft-com:office:excel"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:html="http://www.w3.org/TR/REC-html40">
+ <DocumentProperties xmlns="urn:schemas-microsoft-com:office:office">
+  <Title>VAPT Client URL Inventory</Title>
+  <Author>GitHub Copilot</Author>
+  <Created>2026-04-07T00:00:00Z</Created>
+  <Version>16.00</Version>
+ </DocumentProperties>
+ <OfficeDocumentSettings xmlns="urn:schemas-microsoft-com:office:office">
+  <AllowPNG/>
+ </OfficeDocumentSettings>
+ <ExcelWorkbook xmlns="urn:schemas-microsoft-com:office:excel">
+  <WindowHeight>7710</WindowHeight>
+  <WindowWidth>19200</WindowWidth>
+  <WindowTopX>32767</WindowTopX>
+  <WindowTopY>32767</WindowTopY>
+  <ProtectStructure>False</ProtectStructure>
+  <ProtectWindows>False</ProtectWindows>
+ </ExcelWorkbook>
+ <Styles>
+  <Style ss:ID="Default" ss:Name="Normal">
+   <Alignment ss:Vertical="Top" ss:WrapText="1"/>
+   <Borders/>
+   <Font ss:FontName="Calibri" ss:Size="11"/>
+   <Interior/>
+   <NumberFormat/>
+   <Protection/>
+  </Style>
+  <Style ss:ID="s64">
+   <Font ss:FontName="Calibri" ss:Size="11" ss:Bold="1"/>
+   <Interior ss:Color="#D9EAF7" ss:Pattern="Solid"/>
+  </Style>
+  <Style ss:ID="s67">
+   <Alignment ss:Vertical="Top" ss:WrapText="1"/>
+   <Font ss:FontName="Calibri" ss:Size="14" ss:Bold="1"/>
+  </Style>
+  <Style ss:ID="s70">
+   <Alignment ss:Horizontal="Left" ss:Vertical="Top" ss:WrapText="1"/>
+   <Font ss:FontName="Calibri" ss:Size="14" ss:Bold="1"/>
+  </Style>
+ </Styles>
+ <Worksheet ss:Name="Client URLs">
+  <Table ss:ExpandedColumnCount="5" ss:ExpandedRowCount="15" x:FullColumns="1"
+   x:FullRows="1" ss:DefaultRowHeight="14.5">
+   <Column ss:Width="170"/>
+   <Column ss:Width="380"/>
+   <Column ss:Width="120"/>
+   <Column ss:Width="90"/>
+   <Column ss:Width="430"/>
+   <Row ss:AutoFitHeight="0" ss:Height="18.5">
+    <Cell ss:MergeAcross="1" ss:StyleID="s70"><Data ss:Type="String">VAPT Client URL Inventory - Production (Updated 2026-04-07)</Data></Cell>
+    <Cell ss:StyleID="s67"/>
+    <Cell ss:StyleID="s67"/>
+    <Cell ss:StyleID="s67"/>
+   </Row>
+   <Row>
+    <Cell><Data ss:Type="String">Base URL</Data></Cell>
+    <Cell><Data ss:Type="String">https://pms.athenaeumtransformation.com</Data></Cell>
+    <Cell><Data ss:Type="String"></Data></Cell>
+    <Cell><Data ss:Type="String"></Data></Cell>
+   </Row>
+   <Row>
+    <Cell ss:StyleID="s64"><Data ss:Type="String">Section</Data></Cell>
+    <Cell ss:StyleID="s64"><Data ss:Type="String">URL</Data></Cell>
+   </Row>
+   <Row>
+    <Cell><Data ss:Type="String">Dashboard and Analytics</Data></Cell>
+    <Cell><Data ss:Type="String">https://pms.athenaeumtransformation.com/client/dashboard</Data></Cell>
+   </Row>
+   <Row>
+    <Cell><Data ss:Type="String">Dashboard and Analytics</Data></Cell>
+    <Cell><Data ss:Type="String">https://pms.athenaeumtransformation.com/client/project/{project-token}</Data></Cell>
+   </Row>
+   <Row>
+    <Cell><Data ss:Type="String">Dashboard and Analytics</Data></Cell>
+    <Cell><Data ss:Type="String">https://pms.athenaeumtransformation.com/modules/client/projects.php</Data></Cell>
+   </Row>
+   <Row ss:Height="29">
+    <Cell><Data ss:Type="String">Dashboard and Analytics</Data></Cell>
+    <Cell><Data ss:Type="String">https://pms.athenaeumtransformation.com/modules/client/issues_overview.php</Data></Cell>
+   </Row>
+   <Row ss:Height="29">
+    <Cell><Data ss:Type="String">Dashboard and Analytics</Data></Cell>
+    <Cell><Data ss:Type="String">https://pms.athenaeumtransformation.com/modules/client/issues_overview.php?project_id={project-id}</Data></Cell>
+   </Row>
+   <Row ss:Height="29">
+    <Cell><Data ss:Type="String">Dashboard and Analytics</Data></Cell>
+    <Cell><Data ss:Type="String">https://pms.athenaeumtransformation.com/modules/projects/issues_all.php?project_id={project-id}</Data></Cell>
+   </Row>
+   <Row>
+    <Cell><Data ss:Type="String">Support and Preferences</Data></Cell>
+    <Cell><Data ss:Type="String">https://pms.athenaeumtransformation.com/modules/client/preferences.php</Data></Cell>
+   </Row>
+   <Row>
+    <Cell><Data ss:Type="String">Authentication</Data></Cell>
+    <Cell><Data ss:Type="String">https://pms.athenaeumtransformation.com/modules/auth/login.php</Data></Cell>
+   </Row>
+   <Row>
+    <Cell><Data ss:Type="String">Authentication</Data></Cell>
+    <Cell><Data ss:Type="String">https://pms.athenaeumtransformation.com/modules/auth/verify_2fa.php</Data></Cell>
+   </Row>
+   <Row>
+    <Cell><Data ss:Type="String">Profile</Data></Cell>
+    <Cell><Data ss:Type="String">https://pms.athenaeumtransformation.com/modules/profile.php</Data></Cell>
+   </Row>
+   <Row>
+    <Cell><Data ss:Type="String">Support and Preferences</Data></Cell>
+    <Cell><Data ss:Type="String">https://pms.athenaeumtransformation.com/modules/client/history.php</Data></Cell>
+   </Row>
+   <Row>
+    <Cell><Data ss:Type="String">Support and Preferences</Data></Cell>
+    <Cell><Data ss:Type="String">https://pms.athenaeumtransformation.com/modules/client/help.php</Data></Cell>
+   </Row>
+  </Table>
+  <WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel">
+   <Selected/>
+   <FreezePanes/>
+   <FrozenNoSplit/>
+   <SplitHorizontal>3</SplitHorizontal>
+   <TopRowBottomPane>3</TopRowBottomPane>
+   <ActivePane>2</ActivePane>
+   <Panes>
+    <Pane>
+     <Number>3</Number>
+    </Pane>
+    <Pane>
+     <Number>2</Number>
+     <ActiveRow>2</ActiveRow>
+    </Pane>
+   </Panes>
+   <ProtectObjects>False</ProtectObjects>
+   <ProtectScenarios>False</ProtectScenarios>
+  </WorksheetOptions>
+ </Worksheet>
+</Workbook>

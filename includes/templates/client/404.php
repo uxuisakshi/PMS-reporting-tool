@@ -1,9 +1,11 @@
 <!DOCTYPE html>
 <html lang="en">
+<?php require_once __DIR__ . '/../../../includes/helpers.php'; ?>
+<?php $baseDir = getBaseDir(); ?>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Page Not Found - Client Portal</title>
+    <title>Page Not Found</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
@@ -45,11 +47,11 @@
             The page you're looking for doesn't exist or has been moved.
         </p>
         <div class="d-grid gap-2 d-md-block">
-            <a href="/PMS/client/dashboard" class="btn btn-primary">
+            <a href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/client/dashboard" class="btn btn-primary">
                 <i class="fas fa-home me-2"></i>
                 Go to Dashboard
             </a>
-            <a href="/PMS/client/login" class="btn btn-outline-secondary">
+            <a href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/auth/login.php" class="btn btn-outline-secondary">
                 <i class="fas fa-sign-in-alt me-2"></i>
                 Login
             </a>

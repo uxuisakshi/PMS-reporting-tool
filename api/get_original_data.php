@@ -21,6 +21,13 @@ if (!$userId || !$date) {
     exit;
 }
 
+// Validate date format to prevent unexpected behavior
+if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date) || !checkdate((int)substr($date,5,2), (int)substr($date,8,2), (int)substr($date,0,4))) {
+    http_response_code(400);
+    echo json_encode(['success' => false, 'error' => 'Invalid date format']);
+    exit;
+}
+
 try {
     // Get ORIGINAL data (not pending changes) - this is what was in the system before edit request
     $statusStmt = $db->prepare("SELECT uds.*, u.role FROM user_daily_status uds JOIN users u ON uds.user_id = u.id WHERE uds.user_id = ? AND uds.status_date = ?");
@@ -49,9 +56,10 @@ try {
     ]);
     
 } catch (Exception $e) {
+    error_log('get_original_data error: ' . $e->getMessage());
     echo json_encode([
         'success' => false,
-        'error' => 'Database error: ' . $e->getMessage()
+        'error' => 'An internal error occurred'
     ]);
 }
 ?>

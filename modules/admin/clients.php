@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
 require_once __DIR__ . '/../../includes/functions.php';
+require_once __DIR__ . '/../../includes/helpers.php';
 
 $auth = new Auth();
 $auth->requireRole('admin');
@@ -9,6 +10,11 @@ $db = Database::getInstance();
 
 // Handle client actions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error'] = 'Invalid request. Please try again.';
+        header('Location: clients.php');
+        exit;
+    }
     if (isset($_POST['add_client'])) {
         $name = sanitizeInput($_POST['name']);
         $description = sanitizeInput($_POST['description']);
@@ -123,6 +129,7 @@ div.dataTables_length select {
                             <div class="modal-dialog">
                                 <div class="modal-content">
                                     <form method="POST">
+                                        <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                                         <input type="hidden" name="client_id" value="<?php echo $client['id']; ?>">
                                         <div class="modal-header">
                                             <h5 class="modal-title">Edit Client: <?php echo $client['name']; ?></h5>
@@ -157,6 +164,7 @@ div.dataTables_length select {
                             <div class="modal-dialog">
                                 <div class="modal-content">
                                     <form method="POST">
+                                        <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                                         <input type="hidden" name="client_id" value="<?php echo $client['id']; ?>">
                                         <div class="modal-header">
                                             <h5 class="modal-title">Delete Client</h5>
@@ -193,6 +201,7 @@ div.dataTables_length select {
     <div class="modal-dialog">
         <div class="modal-content">
             <form method="POST">
+                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                 <div class="modal-header">
                     <h5 class="modal-title">Add New Client</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
@@ -221,4 +230,4 @@ div.dataTables_length select {
     </div>
 </div>
 
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<?php include __DIR__ . '/../../includes/footer.php'; 

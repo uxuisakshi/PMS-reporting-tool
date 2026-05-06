@@ -51,6 +51,23 @@ $globalFlashError = isset($_SESSION['error']) ? (string)$_SESSION['error'] : '';
 if ($globalFlashSuccess !== '' || $globalFlashError !== '') {
     unset($_SESSION['success'], $_SESSION['error']);
 }
+
+// Generate per-request CSP nonce for inline scripts
+if (!function_exists('generateCspNonce')) {
+    require_once __DIR__ . '/helpers.php';
+}
+$cspNonce = generateCspNonce();
+
+// Global Security Headers
+header("X-Frame-Options: SAMEORIGIN");
+header("X-Content-Type-Options: nosniff");
+header("Referrer-Policy: strict-origin-when-cross-origin");
+header("Strict-Transport-Security: max-age=31536000; includeSubDomains; preload");
+header("Permissions-Policy: camera=(), microphone=(), geolocation=(), interest-cohort=()");
+
+// Set CSP header with nonce (replaces .htaccess static CSP for pages using this header)
+// unsafe-eval required by CDN libs: SheetJS, Summernote, DataTables, FullCalendar, Chart.js, Highcharts
+header("Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://code.jquery.com https://cdn.datatables.net https://cdn.sheetjs.com https://code.highcharts.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://cdn.datatables.net https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' data: https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://fonts.gstatic.com; connect-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://code.highcharts.com; media-src 'self'; object-src 'none'; frame-src 'self'; base-uri 'self'; form-action 'self'");
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -62,6 +79,9 @@ if ($globalFlashSuccess !== '' || $globalFlashError !== '') {
     <link href="https://cdn.datatables.net/1.11.5/css/dataTables.bootstrap5.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://code.highcharts.com/highcharts.js"></script>
+    <script src="https://code.highcharts.com/modules/accessibility.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@400;600;700&display=swap" rel="stylesheet">
@@ -72,7 +92,7 @@ if ($globalFlashSuccess !== '' || $globalFlashError !== '') {
     }
     ?>
     <link rel="icon" type="image/png" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/storage/favicon.png?v=20260225v1">
-    <?php $assetVersion = '20260311v12'; ?>
+    <?php $assetVersion = '20260406v16'; ?>
     <link href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/assets/css/style.css?v=<?php echo $assetVersion; ?>" rel="stylesheet">
     <link href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/assets/css/dashboard.css?v=<?php echo $assetVersion; ?>" rel="stylesheet">
     <link href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/assets/css/header-fix.css?v=<?php echo $assetVersion; ?>" rel="stylesheet">
@@ -122,7 +142,7 @@ if ($globalFlashSuccess !== '' || $globalFlashError !== '') {
     <?php if (file_exists($summernoteHelperPath)): ?>
     <script src="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/assets/js/summernote_image_helper.js?v=<?php echo $assetVersion; ?>"></script>
     <?php endif; ?>
-    <script>
+    <script nonce="<?php echo $cspNonce; ?>">
     // Global suppression: disable browser alert/confirm/prompt, Notification prompts,
     // prevent Bootstrap modals from appearing, and hide success alerts/toasts.
     (function(){
@@ -284,22 +304,29 @@ if ($globalFlashSuccess !== '' || $globalFlashError !== '') {
     })();
     </script>
     <meta name="csrf-token" content="<?php echo htmlspecialchars(generateCsrfToken(), ENT_QUOTES, 'UTF-8'); ?>">
-    <script>
+    <script nonce="<?php echo $cspNonce; ?>">
     // Automatically attach CSRF token to all jQuery AJAX POST/PUT/PATCH/DELETE requests
     (function() {
         var csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
-        if (typeof $ !== 'undefined' && $.ajaxSetup) {
-            $.ajaxSetup({
-                beforeSend: function(xhr, settings) {
-                    var safeMethods = /^(GET|HEAD|OPTIONS|TRACE)$/i;
-                    if (!safeMethods.test(settings.type)) {
-                        xhr.setRequestHeader('X-CSRF-Token', csrfToken);
-                    }
-                }
-            });
-        }
-        // Also expose for fetch() calls
+        // Expose for fetch() and explicit AJAX calls
         window._csrfToken = csrfToken;
+
+        // Setup jQuery ajaxSetup — runs immediately if jQuery already loaded,
+        // otherwise deferred via DOMContentLoaded (jQuery is loaded before body scripts run)
+        function setupJqueryAjax() {
+            if (typeof $ !== 'undefined' && $.ajaxSetup) {
+                $.ajaxSetup({
+                    beforeSend: function(xhr, settings) {
+                        var safeMethods = /^(GET|HEAD|OPTIONS|TRACE)$/i;
+                        if (!safeMethods.test(settings.type)) {
+                            xhr.setRequestHeader('X-CSRF-Token', csrfToken);
+                        }
+                    }
+                });
+            }
+        }
+        setupJqueryAjax();
+        document.addEventListener('DOMContentLoaded', setupJqueryAjax);
         
         // Helper: fetch with CSRF token automatically included
         window.csrfFetch = function(url, options) {
@@ -307,7 +334,6 @@ if ($globalFlashSuccess !== '' || $globalFlashError !== '') {
             var method = (options.method || 'GET').toUpperCase();
             var safeMethods = ['GET', 'HEAD', 'OPTIONS', 'TRACE'];
             if (safeMethods.indexOf(method) === -1) {
-                // For FormData, append token; for other bodies, add header
                 if (options.body instanceof FormData) {
                     options.body.append('csrf_token', csrfToken);
                 } else {
@@ -317,6 +343,31 @@ if ($globalFlashSuccess !== '' || $globalFlashError !== '') {
             }
             return fetch(url, options);
         };
+
+        // Globally patch fetch() so all POST/PUT/PATCH/DELETE calls auto-include CSRF token
+        (function() {
+            var _origFetch = window.fetch;
+            window.fetch = function(url, options) {
+                options = options || {};
+                var method = (options.method || 'GET').toUpperCase();
+                var safeMethods = ['GET', 'HEAD', 'OPTIONS', 'TRACE'];
+                if (safeMethods.indexOf(method) === -1 && csrfToken) {
+                    // Always add header for maximum reliability (works even if body is discarded)
+                    options.headers = options.headers || {};
+                    if (!options.headers['X-CSRF-Token']) {
+                        options.headers['X-CSRF-Token'] = csrfToken;
+                    }
+
+                    if (options.body instanceof FormData) {
+                        // Also append to body for traditional form handling
+                        if (!options.body.has('csrf_token')) {
+                            options.body.append('csrf_token', csrfToken);
+                        }
+                    }
+                }
+                return _origFetch.call(this, url, options);
+            };
+        })();
     })();
     </script>
 </head>
@@ -365,48 +416,16 @@ if ($globalFlashSuccess !== '' || $globalFlashError !== '') {
                             $upd->execute([$sid, $_SESSION['user_id']]);
 
                             // One-time self-heal: if project_pages is a VIEW, convert it to a normal table.
-                            // App uses project_pages with full CRUD, so table mode is required.
+                            // [DISABLED] This migration was found to be destructive if the view was scoped.
+                            /*
                             if (empty($_SESSION['project_pages_table_checked'])) {
                                 $tt = $db->query("SELECT TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'project_pages' LIMIT 1")->fetchColumn();
                                 if (strtoupper((string)$tt) === 'VIEW') {
-                                    $db->exec("
-                                        CREATE TABLE IF NOT EXISTS project_pages_tmp_no_view (
-                                            id int(11) NOT NULL AUTO_INCREMENT,
-                                            project_id int(11) DEFAULT NULL,
-                                            page_name varchar(200) NOT NULL,
-                                            page_number varchar(50) DEFAULT NULL,
-                                            url varchar(500) DEFAULT NULL,
-                                            screen_name varchar(200) DEFAULT NULL,
-                                            status enum('not_started','in_progress','on_hold','qa_in_progress','in_fixing','needs_review','completed') DEFAULT 'not_started',
-                                            at_tester_id int(11) DEFAULT NULL,
-                                            ft_tester_id int(11) DEFAULT NULL,
-                                            qa_id int(11) DEFAULT NULL,
-                                            created_at timestamp NOT NULL DEFAULT current_timestamp(),
-                                            created_by int(11) DEFAULT NULL,
-                                            at_tester_ids longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL,
-                                            ft_tester_ids longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL,
-                                            updated_at timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
-                                            notes text DEFAULT NULL,
-                                            PRIMARY KEY (id),
-                                            KEY idx_project_pages_project_id (project_id)
-                                        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
-                                    ");
-                                    $db->exec("
-                                        INSERT INTO project_pages_tmp_no_view
-                                            (id, project_id, page_name, page_number, url, screen_name, status, at_tester_id, ft_tester_id, qa_id, created_at, created_by, at_tester_ids, ft_tester_ids, updated_at, notes)
-                                        SELECT
-                                            up.id, up.project_id, up.page_name, up.page_number, up.url, up.screen_name,
-                                            up.status, up.at_tester_id, up.ft_tester_id, up.qa_id, up.created_at, up.created_by,
-                                            up.at_tester_ids, up.ft_tester_ids, up.updated_at, up.notes
-                                        FROM project_pages up
-                                        LEFT JOIN project_pages_tmp_no_view t ON t.id = up.id
-                                        WHERE t.id IS NULL
-                                    ");
-                                    $db->exec("DROP VIEW project_pages");
-                                    $db->exec("RENAME TABLE project_pages_tmp_no_view TO project_pages");
+                                    // ... existing logic ...
                                 }
                                 $_SESSION['project_pages_table_checked'] = 1;
                             }
+                            */
                         } catch (Exception $_) {
                             // non-fatal
                         }
@@ -421,6 +440,28 @@ if ($globalFlashSuccess !== '' || $globalFlashError !== '') {
                             }
                             $role = $_SESSION['role'] ?? 'auth';
                             $moduleDir = getModuleDirectory($role);
+                            $currentRequestPath = (string)($_SERVER['REQUEST_URI'] ?? '');
+                            $clientAssignedProjects = [];
+                            $clientAccessibilityProjectId = 0;
+                            $clientAccessibilityReportLink = $baseDir . '/modules/client/issues_overview.php';
+                            if ($role === 'client') {
+                                try {
+                                    require_once __DIR__ . '/models/ClientAccessControlManager.php';
+                                    $clientNavAccessControl = new ClientAccessControlManager();
+                                    $clientAssignedProjects = $clientNavAccessControl->getAssignedProjects((int)($_SESSION['user_id'] ?? 0));
+                                } catch (Exception $e) {
+                                    error_log('Client nav projects load failed: ' . $e->getMessage());
+                                    $clientAssignedProjects = [];
+                                }
+
+                                $clientAccessibilityProjectId = (int) ($_GET['project_id'] ?? ($_GET['id'] ?? 0));
+                                if ($clientAccessibilityProjectId <= 0 && !empty($clientAssignedProjects)) {
+                                    $clientAccessibilityProjectId = (int) ($clientAssignedProjects[0]['id'] ?? 0);
+                                }
+                                if ($clientAccessibilityProjectId > 0) {
+                                    $clientAccessibilityReportLink = $baseDir . '/modules/projects/issues.php?project_id=' . $clientAccessibilityProjectId;
+                                }
+                            }
                             ?>
 
                             <!-- Dashboard -->
@@ -432,6 +473,46 @@ if ($globalFlashSuccess !== '' || $globalFlashError !== '') {
                                     <i class="fas fa-home me-1 opacity-50"></i> Dashboard
                                 </a>
                             </li>
+                            <?php if ($role === 'client'): ?>
+                            <?php $isClientDetailPage = (strpos($currentRequestPath, '/modules/projects/view.php') !== false); ?>
+                            <li class="nav-item">
+                                <a class="nav-link text-white <?php echo (strpos($currentRequestPath, '/modules/client/projects.php') !== false) ? 'active' : ''; ?>" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/client/projects.php">
+                                    <i class="fas fa-folder-open me-1 opacity-50"></i> My Digital Assets
+                                </a>
+                            </li>
+                            <li class="nav-item">
+                                <a class="nav-link text-white <?php echo (strpos($currentRequestPath, '/modules/client/issues_overview.php') !== false) ? 'active' : ''; ?>" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/client/issues_overview.php">
+                                    <i class="fas fa-list-ul me-1 opacity-50"></i> Issue Overview
+                                </a>
+                            </li>
+                            <li class="nav-item">
+                                <a class="nav-link text-white <?php echo (strpos($currentRequestPath, '/modules/client/preferences.php') !== false) ? 'active' : ''; ?>" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/client/preferences.php">
+                                    <i class="fas fa-sliders-h me-1 opacity-50"></i> Preferences
+                                </a>
+                            </li>
+                            <?php if (!empty($clientAssignedProjects)): ?>
+                            <li class="nav-item dropdown">
+                                <a class="nav-link dropdown-toggle text-white <?php echo ($isClientDetailPage || strpos($currentRequestPath, '/modules/client/project_dashboard.php') !== false) ? 'active' : ''; ?>" href="#" id="clientProjectDetailsDropdown" data-bs-toggle="dropdown" aria-expanded="false">
+                                    <i class="fas fa-eye me-1 opacity-50"></i> Asset Analytics
+                                </a>
+                                <ul class="dropdown-menu shadow-sm" aria-labelledby="clientProjectDetailsDropdown">
+                                    <li>
+                                        <a class="dropdown-item" href="<?php echo htmlspecialchars($clientAccessibilityReportLink, ENT_QUOTES, 'UTF-8'); ?>">
+                                            Accessibility Report
+                                        </a>
+                                    </li>
+                                    <li><hr class="dropdown-divider"></li>
+                                    <?php foreach ($clientAssignedProjects as $clientNavProject): ?>
+                                    <li>
+                                        <a class="dropdown-item" href="<?php echo htmlspecialchars(buildClientProjectUrl((int) $clientNavProject['id'], (string) ($clientNavProject['title'] ?? ''), (string) ($clientNavProject['project_code'] ?? '')), ENT_QUOTES, 'UTF-8'); ?>">
+                                            <?php echo htmlspecialchars($clientNavProject['title'] ?? ('Asset #' . (int) $clientNavProject['id']), ENT_QUOTES, 'UTF-8'); ?>
+                                        </a>
+                                    </li>
+                                    <?php endforeach; ?>
+                                </ul>
+                            </li>
+                            <?php endif; ?>
+                            <?php endif; ?>
                             <!-- Common Workspace Menus (All Users except Client) -->
                             <?php if ($_SESSION['role'] !== 'client'): ?>
                             <li class="nav-item dropdown">
@@ -439,6 +520,7 @@ if ($globalFlashSuccess !== '' || $globalFlashError !== '') {
                                     <i class="fas fa-briefcase me-1 opacity-50"></i> Workspace
                                 </a>
                                 <ul class="dropdown-menu shadow-sm" aria-labelledby="workspaceDropdown">
+                                    <?php if ($_SESSION['role'] !== 'admin'): ?>
                                     <li>
                                         <a class="dropdown-item" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/my_daily_status.php">
                                             <i class="fas fa-clock me-2 text-primary opacity-75"></i> Daily Log
@@ -450,22 +532,25 @@ if ($globalFlashSuccess !== '' || $globalFlashError !== '') {
                                             </a>
                                     </li>
                                     <li><hr class="dropdown-divider"></li>
+                                    <?php endif; ?>
                                     <li>
                                         <a class="dropdown-item" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/feedback.php">
                                             <i class="fas fa-comment-dots me-2 text-info opacity-75"></i> Feedback
                                         </a>
                                     </li>
+                                    <?php if ($_SESSION['role'] !== 'client'): ?>
                                     <li>
                                         <a class="dropdown-item" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/chat/project_chat.php">
                                             <i class="fas fa-comments me-2 text-warning opacity-75"></i> Chat
                                         </a>
                                     </li>
+                                    <?php endif; ?>
                                     <li>
                                         <a class="dropdown-item" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/devices.php">
                                             <i class="fas fa-laptop me-2 text-secondary opacity-75"></i> Devices
                                         </a>
                                     </li>
-                                    <?php if (!empty($_SESSION['can_manage_devices']) && !in_array($_SESSION['role'], ['admin','super_admin'])): ?>
+                                    <?php if (!empty($_SESSION['can_manage_devices']) && !in_array($_SESSION['role'], ['admin'])): ?>
                                     <li>
                                         <a class="dropdown-item" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/admin/devices.php">
                                             <i class="fas fa-tools me-2 text-secondary opacity-75"></i> Device Management
@@ -477,7 +562,7 @@ if ($globalFlashSuccess !== '' || $globalFlashError !== '') {
                             <?php endif; ?>
 
                             <!-- Admin Menus -->
-                            <?php if ($_SESSION['role'] === 'super_admin' || $_SESSION['role'] === 'admin'): ?>
+                            <?php if ($_SESSION['role'] === 'admin' || $_SESSION['role'] === 'admin'): ?>
                             
                                 <li class="nav-item dropdown">
                                     <a class="nav-link dropdown-toggle text-white" href="#" id="projectsDropdown" data-bs-toggle="dropdown" aria-expanded="false">
@@ -486,7 +571,6 @@ if ($globalFlashSuccess !== '' || $globalFlashError !== '') {
                                     <ul class="dropdown-menu shadow-sm animate slideIn" aria-labelledby="projectsDropdown">
                                         <li><a class="dropdown-item" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/admin/projects.php">Manage Projects</a></li>
                                         <li><hr class="dropdown-divider"></li>
-                                        <li><a class="dropdown-item" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/admin/bulk_hours_management.php">Bulk Hours</a></li>
                                         <li><a class="dropdown-item" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/admin/manage_statuses.php">Statuses</a></li>
                                         <li><a class="dropdown-item" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/admin/clients.php">Clients</a></li>
                                         <li><a class="dropdown-item" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/admin/environments.php">Environments</a></li>
@@ -495,9 +579,9 @@ if ($globalFlashSuccess !== '' || $globalFlashError !== '') {
                                 </li>
                             <?php endif; ?>
 
-                            <?php if ($_SESSION['role'] === 'super_admin' || $_SESSION['role'] === 'admin' || !empty($_SESSION['can_manage_issue_config'])): ?>
+                            <?php if ($_SESSION['role'] === 'admin' || $_SESSION['role'] === 'admin' || !empty($_SESSION['can_manage_issue_config'])): ?>
                                 
-                                <?php if ($_SESSION['role'] !== 'super_admin' && $_SESSION['role'] !== 'admin' && !empty($_SESSION['can_manage_issue_config'])): ?>
+                                <?php if ($_SESSION['role'] !== 'admin' && $_SESSION['role'] !== 'admin' && !empty($_SESSION['can_manage_issue_config'])): ?>
                                     <li class="nav-item">
                                         <a class="nav-link text-white" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/admin/issue_config.php">
                                             <i class="fas fa-tools me-1 opacity-50"></i> Issue Config
@@ -505,7 +589,7 @@ if ($globalFlashSuccess !== '' || $globalFlashError !== '') {
                                     </li>
                                 <?php endif; ?>
 
-                                <?php if ($_SESSION['role'] === 'super_admin' || $_SESSION['role'] === 'admin'): ?>
+                                <?php if ($_SESSION['role'] === 'admin' || $_SESSION['role'] === 'admin'): ?>
                                 <li class="nav-item dropdown">
                                     <a class="nav-link dropdown-toggle text-white" href="#" id="loginActivityDropdown" data-bs-toggle="dropdown" aria-expanded="false">
                                         Monitoring
@@ -545,7 +629,6 @@ if ($globalFlashSuccess !== '' || $globalFlashError !== '') {
                                         <li><a class="dropdown-item" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/admin/vault.php">Admin Vault</a></li>
                                         <li><a class="dropdown-item" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/admin/devices.php">Device Management</a></li>
                                         <li><a class="dropdown-item" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/admin/device_permissions.php">Device Permissions</a></li>
-                                        <li><a class="dropdown-item" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/admin/pdf_export_template.php">PDF Export Template</a></li>
                                         <li><a class="dropdown-item" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/admin/hours_compliance.php">Hours Compliance</a></li>
                                         <li><a class="dropdown-item" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/admin/production_logs.php">Production Logs</a></li>
                                         <li><hr class="dropdown-divider"></li>
@@ -572,35 +655,63 @@ if ($globalFlashSuccess !== '' || $globalFlashError !== '') {
                             <?php endif; ?>
 
                             <!-- Users with Client Permissions -->
-                            <?php 
+                            <?php
+                            $hasCreateProjectAccess = false;
                             // Check if user has client permissions (non-admin users)
-                            if (!in_array($_SESSION['role'], ['admin', 'super_admin'])) {
+                            if (!in_array($_SESSION['role'], ['admin'])) {
                                 try {
                                     require_once __DIR__ . '/../includes/client_permissions.php';
                                     $db = Database::getInstance();
                                     $hasClientPerms = hasAnyProjectPermissions($db, $_SESSION['user_id']);
-                                    if ($hasClientPerms):
-                            ?>
-                                <li class="nav-item">
-                                    <a class="nav-link text-white" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/projects/my_client_projects.php">
-                                        <i class="fas fa-briefcase me-1 opacity-50"></i> My Client Projects
-                                    </a>
-                                </li>
-                            <?php 
-                                    endif;
+                                    $hasCreateProjectAccess = canCreateProject($db, (int)$_SESSION['user_id']);
                                 } catch (Exception $e) {
                                     error_log("Error checking client permissions in header: " . $e->getMessage());
                                 }
                             }
+
+                            if (!in_array($_SESSION['role'], ['admin']) && $hasCreateProjectAccess):
+                            ?>
+                                <li class="nav-item">
+                                    <a class="nav-link text-white <?php echo (strpos($currentRequestPath, '/modules/projects/create.php') !== false) ? 'active' : ''; ?>" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/projects/create.php">
+                                        <i class="fas fa-plus-circle me-1 opacity-50"></i> Create Project
+                                    </a>
+                                </li>
+                            <?php
+                            endif;
                             
                             // Client Dashboard Link (for client role or users with client_id)
-                            if (isset($_SESSION['role']) && ($_SESSION['role'] === 'client' || (isset($_SESSION['client_id']) && $_SESSION['client_id']))) {
+                            if (isset($_SESSION['role']) && $_SESSION['role'] !== 'client' && (isset($_SESSION['client_id']) && $_SESSION['client_id'])) {
                                 $clientIdForDashboard = $_SESSION['client_id'] ?? null;
                                 if ($clientIdForDashboard):
                             ?>
                                 <li class="nav-item">
-                                    <a class="nav-link text-white" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/client/dashboard.php?client_id=<?php echo $clientIdForDashboard; ?>">
-                                        <i class="fas fa-chart-line me-1 opacity-50"></i> Client Dashboard
+                                    <a class="nav-link text-white" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/client/dashboard">
+                                        <i class="fas fa-chart-line me-1 opacity-50"></i> Analytics Dashboard
+                                    </a>
+                                </li>
+                                <li class="nav-item">
+                                    <a class="nav-link text-white" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/client/projects.php">
+                                        <i class="fas fa-folder-open me-1 opacity-50"></i> My Digital Assets
+                                    </a>
+                                </li>
+                                <li class="nav-item">
+                                    <a class="nav-link text-white" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/client/history.php">
+                                        <i class="fas fa-history me-1 opacity-50"></i> Export History
+                                    </a>
+                                </li>
+                                <li class="nav-item">
+                                    <a class="nav-link text-white" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/client/preferences.php">
+                                        <i class="fas fa-cog me-1 opacity-50"></i> Preferences
+                                    </a>
+                                </li>
+                                <li class="nav-item">
+                                    <a class="nav-link text-white" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/client/help.php">
+                                        <i class="fas fa-question-circle me-1 opacity-50"></i> Help Center
+                                    </a>
+                                </li>
+                                <li class="nav-item">
+                                    <a class="nav-link text-white" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/feedback.php">
+                                        <i class="fas fa-comment-dots me-1 opacity-50"></i> Send Feedback
                                     </a>
                                 </li>
                             <?php 
@@ -610,6 +721,11 @@ if ($globalFlashSuccess !== '' || $globalFlashError !== '') {
 
                             <!-- Project Lead Menus -->
                             <?php if ($_SESSION['role'] === 'project_lead'): ?>
+                                <li class="nav-item">
+                                    <a class="nav-link text-white <?php echo (strpos($currentRequestPath, '/modules/project_lead/my_projects.php') !== false) ? 'active' : ''; ?>" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/project_lead/my_projects.php">
+                                        <i class="fas fa-project-diagram me-1 opacity-50"></i> My Projects
+                                    </a>
+                                </li>
                                 <li class="nav-item">
                                     <a class="nav-link text-white" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/project_lead/team_assignment.php">
                                         <i class="fas fa-users-cog me-1 opacity-50"></i> Team Assignment
@@ -697,7 +813,7 @@ if ($globalFlashSuccess !== '' || $globalFlashError !== '') {
                                     </li>
                                     <li><a class="dropdown-item" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/profile.php"><i class="fas fa-user-circle me-2 text-muted"></i> Profile</a></li>
                                     <li><hr class="dropdown-divider"></li>
-                                    <li><a class="dropdown-item text-danger" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/auth/logout.php"><i class="fas fa-sign-out-alt me-2"></i> Logout</a></li>
+                                    <li><a class="dropdown-item text-danger" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/auth/logout.php?csrf_token=<?php echo urlencode(generateCsrfToken()); ?>"><i class="fas fa-sign-out-alt me-2"></i> Logout</a></li>
                                 </ul>
                             </li>
 
@@ -713,7 +829,7 @@ if ($globalFlashSuccess !== '' || $globalFlashError !== '') {
     </header>
     <?php if (isset($_SESSION['user_id'])): ?>
     <!-- Notification Loading System -->
-    <script>
+    <script nonce="<?php echo $cspNonce; ?>">
     (function() {
         var _notifPollingActive = true;
 
@@ -801,8 +917,9 @@ if ($globalFlashSuccess !== '' || $globalFlashError !== '') {
     })();
     </script>
     
+    <?php if (isset($_SESSION['role']) && !in_array($_SESSION['role'], ['admin', 'client'], true)): ?>
     <!-- Hours Reminder System -->
-    <script>
+    <script nonce="<?php echo $cspNonce; ?>">
     (function() {
         let reminderShown = false;
         
@@ -893,6 +1010,92 @@ if ($globalFlashSuccess !== '' || $globalFlashError !== '') {
         
         // Check every 2 minutes
         setInterval(checkHoursReminder, 120000);
+    })();
+    </script>
+    <?php endif; ?>
+
+    <!-- Global Accessibility Scan Monitor -->
+    <script nonce="<?php echo $cspNonce; ?>">
+    (function() {
+        if (!window.localStorage) return;
+        
+        let activePolls = {};
+        
+        function checkBackgroundScans() {
+            // Find all scan tokens in localStorage
+            for (let i = 0; i < localStorage.length; i++) {
+                let key = localStorage.key(i);
+                if (key.startsWith('pms_a11y_scan_')) {
+                    let token = localStorage.getItem(key);
+                    let pageId = key.replace('pms_a11y_scan_', '');
+                    
+                    // If we are already on the page that is polling this token, skip it
+                    // The page-level JS already handles it.
+                    if (window.currentScanToken === token) continue;
+                    
+                    // If we are not already polling this in the background, start
+                    if (!activePolls[token]) {
+                        startBackgroundPoll(token, pageId, key);
+                    }
+                }
+            }
+        }
+        
+        function startBackgroundPoll(token, pageId, storageKey) {
+            activePolls[token] = true;
+            console.log('Background monitoring started for scan token: ' + token);
+            
+            let pollInterval = setInterval(async function() {
+                try {
+                    // We need a project_id for the API, but if we don't have it, 
+                    // we can try to guess or use a dummy if the API allows it 
+                    // (The API we modified uses project_id for pathing).
+                    // In issues_page_detail.php, project_id is available.
+                    // For global polling, we'll try to fetch without project_id if token is unique enough.
+                    // Actually, the API we wrote requires project_id. 
+                    // Let's assume the token is unique and modify the API later if needed, 
+                    // or just skip if we don't know the project_id.
+                    
+                    // Optimization: The storage key doesn't have project_id. 
+                    // Let's just skip global polling for now IF project_id is missing, 
+                    // OR we can change how we store the key: 'pms_a11y_scan_PRJ_PAGE'
+                    
+                    let res = await fetch('<?php echo htmlspecialchars($baseDir, ENT_QUOTES, "UTF-8"); ?>/api/accessibility_scan.php?action=progress&token=' + encodeURIComponent(token), {
+                        credentials: 'same-origin'
+                    });
+                    let json = await res.json();
+                    
+                    if (!json || !json.success) {
+                        // If not found or error, stop polling
+                        clearInterval(pollInterval);
+                        delete activePolls[token];
+                        return;
+                    }
+                    
+                    if (json.status === 'completed') {
+                        clearInterval(pollInterval);
+                        delete activePolls[token];
+                        localStorage.removeItem(storageKey);
+                        if (typeof window.showToast === 'function') {
+                            window.showToast('Accessibility Scan Completed! Findings are ready for review.', 'success', 8000);
+                        }
+                    } else if (json.status === 'failed' || json.status === 'cancelled') {
+                        clearInterval(pollInterval);
+                        delete activePolls[token];
+                        localStorage.removeItem(storageKey);
+                    }
+                } catch (e) {
+                    // Silent fail for background polling
+                }
+            }, 5000); // Poll every 5 seconds for background tasks
+        }
+        
+        // Initial check
+        $(document).ready(function() {
+            setTimeout(checkBackgroundScans, 3000);
+            // Periodic check for new scans started in other tabs
+            setInterval(checkBackgroundScans, 10000);
+        });
     })();
     </script>
     <?php endif; ?>

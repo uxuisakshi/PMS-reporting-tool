@@ -3,7 +3,7 @@ require_once __DIR__ . '/../../includes/auth.php';
 require_once __DIR__ . '/../../includes/functions.php';
 
 $auth = new Auth();
-$auth->requireRole(['admin', 'super_admin']);
+$auth->requireRole(['admin']);
 $db = Database::getInstance();
 $baseDir = getBaseDir();
 
@@ -14,7 +14,7 @@ $projectFilter = $_GET['project_id'] ?? '';
 $userFilter = $_GET['user_id'] ?? '';
 $searchText = $_GET['search'] ?? '';
 $statusFilter = $_GET['status'] ?? '';
-$dateFrom = $_GET['date_from'] ?? '';
+$dateFrom = $_GET['date_from'] ?? date('Y-m-01'); // default: first day of current month
 $dateTo = $_GET['date_to'] ?? '';
 
 // Build query with filters
@@ -211,7 +211,7 @@ include __DIR__ . '/../../includes/header.php';
                         <button type="submit" class="btn btn-primary me-2">
                             <i class="fas fa-search"></i> Apply Filters
                         </button>
-                        <a href="<?php echo $_SERVER['PHP_SELF']; ?>" class="btn btn-secondary">
+                        <a href="<?php echo htmlspecialchars($_SERVER['PHP_SELF'], ENT_QUOTES, 'UTF-8'); ?>?date_from=<?php echo date('Y-m-01'); ?>" class="btn btn-secondary">
                             <i class="fas fa-times"></i> Clear Filters
                         </a>
                     </div>
@@ -284,7 +284,7 @@ include __DIR__ . '/../../includes/header.php';
                                     ?>
                                 </div>
                                 <?php if ($feedback['is_generic']): ?>
-                                <span class="badge bg-info small mt-1">Project-wide</span>
+                                <span class="badge bg-info small mt-1">General</span>
                                 <?php endif; ?>
                             </td>
                             <td>
@@ -421,181 +421,7 @@ include __DIR__ . '/../../includes/header.php';
 }
 </style>
 
-<script>
-// Update feedback status
-document.addEventListener('change', function(e) {
-    if (e.target.classList.contains('feedback-status-update')) {
-        const feedbackId = e.target.dataset.feedbackId;
-        const newStatus = e.target.value;
-        const originalValue = e.target.dataset.originalValue || 'open';
-        
-        fetch('<?php echo $baseDir; ?>/api/feedback.php', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-            },
-            body: `action=update_status&feedback_id=${feedbackId}&status=${newStatus}`
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                // Show success message
-                const row = e.target.closest('tr');
-                row.classList.add('table-success');
-                setTimeout(() => row.classList.remove('table-success'), 2000);
-                
-                // Store new value as original
-                e.target.dataset.originalValue = newStatus;
-            } else {
-                showToast('Failed to update status: ' + (data.message || 'Unknown error'), 'danger');
-                // Revert to original value
-                e.target.value = originalValue;
-            }
-        })
-        .catch(error => {
-            console.error('Error:', error);
-            showToast('Error updating status', 'danger');
-            // Revert to original value
-            e.target.value = originalValue;
-        });
-    }
-});
+<script>window._feedbacksConfig = { baseDir: "<?php echo $baseDir; ?>" };</script>
+<script src="<?php echo $baseDir; ?>/assets/js/admin-feedbacks.js?v=<?php echo time(); ?>"></script>
 
-// View feedback details
-function viewFeedback(feedbackId) {
-    fetch(`<?php echo $baseDir; ?>/api/feedback.php?action=get_feedback&feedback_id=${feedbackId}`)
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                const feedback = data.feedback;
-                let html = `
-                    <div class="row">
-                        <div class="col-md-6">
-                            <h6>Sender Information</h6>
-                            <p><strong>Name:</strong> ${feedback.sender_name || 'Unknown'}</p>
-                            <p><strong>Username:</strong> @${feedback.sender_username || 'unknown'}</p>
-                        </div>
-                        <div class="col-md-6">
-                            <h6>Feedback Information</h6>
-                            <p><strong>Date:</strong> ${new Date(feedback.created_at).toLocaleString()}</p>
-                            <p><strong>Status:</strong> <span class="badge bg-primary">${feedback.status}</span></p>
-                        </div>
-                    </div>
-                `;
-                
-                if (feedback.project_title) {
-                    html += `
-                        <div class="mt-3">
-                            <h6>Project</h6>
-                            <p><strong>${feedback.project_title}</strong> (${feedback.project_code})</p>
-                        </div>
-                    `;
-                }
-                
-                if (feedback.recipients) {
-                    html += `
-                        <div class="mt-3">
-                            <h6>Recipients</h6>
-                            <p>${feedback.recipients}</p>
-                        </div>
-                    `;
-                }
-                
-                html += `
-                    <div class="mt-3">
-                        <h6>Content</h6>
-                        <div class="border p-3 rounded bg-light">
-                            ${feedback.content}
-                        </div>
-                    </div>
-                `;
-                
-                document.getElementById('feedbackDetails').innerHTML = html;
-                
-                const modal = new bootstrap.Modal(document.getElementById('viewFeedbackModal'));
-                modal.show();
-            } else {
-                showToast('Failed to load feedback details', 'danger');
-            }
-        })
-        .catch(error => {
-            console.error('Error:', error);
-            showToast('Error loading feedback details', 'danger');
-        });
-}
-
-// Delete feedback
-function deleteFeedback(feedbackId) {
-    confirmModal('Are you sure you want to delete this feedback? This action cannot be undone.', function() {
-        fetch('<?php echo $baseDir; ?>/api/feedback.php', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-            },
-            body: `action=delete_feedback&feedback_id=${feedbackId}`
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                // Remove the row from table
-                const row = document.querySelector(`[data-feedback-id="${feedbackId}"]`).closest('tr');
-                row.remove();
-                
-                // Show success message
-                showToast('Feedback deleted successfully', 'success');
-            } else {
-                showToast('Failed to delete feedback: ' + (data.message || 'Unknown error'), 'danger');
-            }
-        })
-        .catch(error => {
-            console.error('Error:', error);
-            showToast('Error deleting feedback', 'danger');
-        });
-    });
-}
-
-// Export feedbacks
-function exportFeedbacks() {
-    const form = document.getElementById('exportForm');
-    const formData = new FormData(form);
-    
-    // Add current filters to export
-    const urlParams = new URLSearchParams(window.location.search);
-    for (const [key, value] of urlParams) {
-        formData.append(key, value);
-    }
-    
-    formData.append('action', 'export');
-    
-    // Create a temporary form to submit
-    const tempForm = document.createElement('form');
-    tempForm.method = 'POST';
-    tempForm.action = '<?php echo $baseDir; ?>/api/feedback.php';
-    tempForm.style.display = 'none';
-    
-    for (const [key, value] of formData) {
-        const input = document.createElement('input');
-        input.type = 'hidden';
-        input.name = key;
-        input.value = value;
-        tempForm.appendChild(input);
-    }
-    
-    document.body.appendChild(tempForm);
-    tempForm.submit();
-    document.body.removeChild(tempForm);
-    
-    // Close modal
-    const modal = bootstrap.Modal.getInstance(document.getElementById('exportModal'));
-    modal.hide();
-}
-
-// Store original values for status selects
-document.addEventListener('DOMContentLoaded', function() {
-    document.querySelectorAll('.feedback-status-update').forEach(select => {
-        select.dataset.originalValue = select.value;
-    });
-});
-</script>
-
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<?php include __DIR__ . '/../../includes/footer.php'; 

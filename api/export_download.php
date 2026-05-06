@@ -1,13 +1,11 @@
 <?php
 /**
  * Secure Export File Download API
- * 
- * Handles secure download of generated export files with token validation
- * Requirements: 14.4, 15.4, 17.3
  */
-
+ob_start();
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/models/ExportEngine.php';
+ob_end_clean();
 
 // Start session for token validation
 session_start();

@@ -1,8 +1,10 @@
 <?php
+ob_start();
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/functions.php';
 require_once __DIR__ . '/../includes/helpers.php';
+ob_end_clean();
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -34,6 +36,13 @@ if (!$projectId || !$newStatus) {
     exit;
 }
 
+// Whitelist allowed status values
+$allowedStatuses = ['in_progress', 'on_hold', 'completed', 'cancelled', 'not_started'];
+if (!in_array($newStatus, $allowedStatuses, true)) {
+    echo json_encode(['success' => false, 'message' => 'Invalid status value']);
+    exit;
+}
+
 try {
     // Get project details
     $stmt = $db->prepare("SELECT project_lead_id, status, title FROM projects WHERE id = ?");
@@ -45,9 +54,9 @@ try {
         exit;
     }
     
-    // Check permissions: only admin, super_admin, or project lead can update status
+    // Check permissions: only admin, admin, or project lead can update status
     $canUpdate = false;
-    if (in_array($userRole, ['admin', 'super_admin'])) {
+    if (in_array($userRole, ['admin'])) {
         $canUpdate = true;
     } elseif ($userRole === 'project_lead' && $project['project_lead_id'] == $userId) {
         $canUpdate = true;
@@ -105,9 +114,8 @@ try {
     
 } catch (PDOException $e) {
     error_log("Update project status error: " . $e->getMessage());
-    echo json_encode(['success' => false, 'message' => 'Database error: ' . $e->getMessage()]);
+    echo json_encode(['success' => false, 'message' => 'A database error occurred']);
 } catch (Exception $e) {
     error_log("Update project status general error: " . $e->getMessage());
-    echo json_encode(['success' => false, 'message' => 'Error: ' . $e->getMessage()]);
+    echo json_encode(['success' => false, 'message' => 'An error occurred']);
 }
-?>

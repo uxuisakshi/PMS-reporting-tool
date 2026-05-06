@@ -26,6 +26,16 @@
                             WHEN al.action = 'remove_phase' THEN 'Phase removed'
                             WHEN al.action = 'duplicated_project' THEN 'Project duplicated'
                             WHEN al.action = 'archived_project' THEN 'Project archived'
+                            WHEN al.action = 'edit_page_metadata' THEN 'Page metadata updated'
+                            WHEN al.action = 'quick_add_page' THEN 'Page added (Quick)'
+                            WHEN al.action = 'bulk_delete_pages' THEN 'Pages deleted (Bulk)'
+                            WHEN al.action = 'assign_unique' THEN 'Unique pages assigned'
+                            WHEN al.action = 'added_issue' THEN 'Issue created'
+                            WHEN al.action = 'updated_issue' THEN 'Issue updated'
+                            WHEN al.action = 'deleted_issue' THEN 'Issue deleted'
+                            WHEN al.action = 'bulk_delete_issues' THEN 'Issues deleted (Bulk)'
+                            WHEN al.action = 'deleted_page' THEN 'Page deleted'
+                            WHEN al.action = 'update_page_name' THEN 'Page updated'
                             ELSE CONCAT(UPPER(SUBSTRING(REPLACE(al.action, '_', ' '), 1, 1)), SUBSTRING(REPLACE(al.action, '_', ' '), 2))
                         END as action,
                         CASE 
@@ -57,6 +67,31 @@
                                 CONCAT('Project duplicated from \"', JSON_UNQUOTE(JSON_EXTRACT(al.details, '$.original_title')), '\"')
                             WHEN al.action = 'archived_project' THEN 
                                 'Project archived'
+                            WHEN al.action = 'edit_page_metadata' THEN 
+                                CONCAT('Page \"', JSON_UNQUOTE(JSON_EXTRACT(al.details, '$.new.page_name')), '\" metadata updated')
+                            WHEN al.action = 'quick_add_page' THEN 
+                                CONCAT('Quick added page \"', JSON_UNQUOTE(JSON_EXTRACT(al.details, '$.page_name')), '\"')
+                            WHEN al.action = 'bulk_delete_pages' THEN 
+                                CONCAT('Bulk deleted ', JSON_UNQUOTE(JSON_EXTRACT(al.details, '$.count')), ' page(s)')
+                            WHEN al.action = 'assign_unique' THEN 
+                                CONCAT('Assigned unique page ID ', JSON_UNQUOTE(JSON_EXTRACT(al.details, '$.unique_id')), ' (created ', JSON_UNQUOTE(JSON_EXTRACT(al.details, '$.created_pages')), ' sub-pages)')
+                            WHEN al.action = 'added_issue' THEN 
+                                CONCAT('New issue \"', JSON_UNQUOTE(JSON_EXTRACT(al.details, '$.issue_key')), ': ', JSON_UNQUOTE(JSON_EXTRACT(al.details, '$.title')), '\" created')
+                            WHEN al.action = 'updated_issue' THEN 
+                                CONCAT('Issue \"', JSON_UNQUOTE(JSON_EXTRACT(al.details, '$.issue_key')), '\" details updated')
+                            WHEN al.action = 'deleted_issue' THEN 
+                                CONCAT('Issue \"', JSON_UNQUOTE(JSON_EXTRACT(al.details, '$.issue_key')), '\" deleted')
+                            WHEN al.action = 'bulk_delete_issues' THEN 
+                                CONCAT('Bulk deleted ', JSON_UNQUOTE(JSON_EXTRACT(al.details, '$.count')), ' issue(s)')
+                            WHEN al.action = 'deleted_page' THEN 
+                                CONCAT('Page \"', JSON_UNQUOTE(JSON_EXTRACT(al.details, '$.page_name')), '\" deleted')
+                            WHEN al.action = 'update_page_name' THEN 
+                                CONCAT('Page \"', JSON_UNQUOTE(JSON_EXTRACT(al.details, '$.page_name')), '\" updated (', 
+                                    CASE 
+                                        WHEN JSON_UNQUOTE(JSON_EXTRACT(al.details, '$.field')) = 'page_number' THEN 'Page Number changed'
+                                        WHEN JSON_UNQUOTE(JSON_EXTRACT(al.details, '$.page_number')) IS NOT NULL THEN 'Page Number changed'
+                                        ELSE 'Metadata updated'
+                                    END, ')')
                             ELSE CONCAT('Action: ', al.action)
                         END as description,
                         al.created_at as activity_date,
@@ -67,10 +102,13 @@
                        OR (al.entity_type = 'page' AND al.entity_id IN (
                            SELECT id FROM project_pages WHERE project_id = ?
                        ))
+                       OR (al.entity_type = 'issue' AND al.entity_id IN (
+                           SELECT id FROM issues WHERE project_id = ?
+                       ))
                     ORDER BY al.created_at DESC
-                    LIMIT 20
+                    LIMIT 50
                 ");
-                $activity->execute([$projectId, $projectId]);
+                $activity->execute([$projectId, $projectId, $projectId]);
                 
                 if ($activity->rowCount() > 0):
                     while ($log = $activity->fetch()):
@@ -94,9 +132,19 @@
                                     'add_phase' => 'plus',
                                     'remove_phase' => 'minus',
                                     'duplicated_project' => 'copy',
-                                    'archived_project' => 'archive'
+                                    'archived_project' => 'archive',
+                                    'edit_page_metadata' => 'info-circle',
+                                    'quick_add_page' => 'file-medical',
+                                    'bulk_delete_pages' => 'trash-alt',
+                                    'assign_unique' => 'project-diagram',
+                                    'added_issue' => 'exclamation-circle',
+                                    'updated_issue' => 'edit',
+                                    'deleted_issue' => 'trash',
+                                    'bulk_delete_issues' => 'trash-alt',
+                                    'deleted_page' => 'trash',
+                                    'update_page_name' => 'edit'
                                 ];
-                                echo $iconMap[$log['type']] ?? 'info-circle';
+                                echo $iconMap[$log['type']] ?? 'stream';
                             ?> text-<?php 
                                 // Map activity types to colors
                                 $colorMap = [
@@ -113,7 +161,17 @@
                                     'add_phase' => 'success',
                                     'remove_phase' => 'danger',
                                     'duplicated_project' => 'info',
-                                    'archived_project' => 'secondary'
+                                    'archived_project' => 'secondary',
+                                    'edit_page_metadata' => 'info',
+                                    'quick_add_page' => 'success',
+                                    'bulk_delete_pages' => 'danger',
+                                    'assign_unique' => 'primary',
+                                    'added_issue' => 'warning',
+                                    'updated_issue' => 'info',
+                                    'deleted_issue' => 'danger',
+                                    'bulk_delete_issues' => 'danger',
+                                    'deleted_page' => 'danger',
+                                    'update_page_name' => 'primary'
                                 ];
                                 echo $colorMap[$log['type']] ?? 'secondary';
                             ?>"></i>

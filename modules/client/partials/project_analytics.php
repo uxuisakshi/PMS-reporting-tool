@@ -6,6 +6,7 @@
  */
 
 $analyticsWidgets = $projectAnalytics['analytics_widgets'] ?? [];
+$activeReport = (string) ($_GET['report'] ?? '');
 ?>
 
 <div class="row mb-4">
@@ -14,7 +15,7 @@ $analyticsWidgets = $projectAnalytics['analytics_widgets'] ?? [];
             <i class="fas fa-chart-pie text-primary"></i>
             Detailed Analytics
         </h2>
-        <p class="text-muted">Comprehensive analytics for this project</p>
+        <p class="text-muted">Comprehensive analytics for this digital asset</p>
     </div>
 </div>
 
@@ -24,7 +25,7 @@ $analyticsWidgets = $projectAnalytics['analytics_widgets'] ?? [];
 <div class="row mb-4">
     <?php if (isset($analyticsWidgets['user_affected'])): ?>
     <div class="col-lg-6 mb-4">
-        <div class="project-analytics-widget">
+        <div class="project-analytics-widget<?php echo $activeReport === 'user_affected' ? ' is-active' : ''; ?>" id="analytics-report-user_affected">
             <?php echo $dashboardController->visualization->renderDashboardWidget('analytics', $analyticsWidgets['user_affected']); ?>
         </div>
     </div>
@@ -32,7 +33,7 @@ $analyticsWidgets = $projectAnalytics['analytics_widgets'] ?? [];
 
     <?php if (isset($analyticsWidgets['wcag_compliance'])): ?>
     <div class="col-lg-6 mb-4">
-        <div class="project-analytics-widget">
+        <div class="project-analytics-widget<?php echo $activeReport === 'wcag_compliance' ? ' is-active' : ''; ?>" id="analytics-report-wcag_compliance">
             <?php echo $dashboardController->visualization->renderDashboardWidget('analytics', $analyticsWidgets['wcag_compliance']); ?>
         </div>
     </div>
@@ -43,7 +44,7 @@ $analyticsWidgets = $projectAnalytics['analytics_widgets'] ?? [];
 <div class="row mb-4">
     <?php if (isset($analyticsWidgets['severity_analysis'])): ?>
     <div class="col-lg-6 mb-4">
-        <div class="project-analytics-widget">
+        <div class="project-analytics-widget<?php echo $activeReport === 'severity_analysis' ? ' is-active' : ''; ?>" id="analytics-report-severity_analysis">
             <?php echo $dashboardController->visualization->renderDashboardWidget('analytics', $analyticsWidgets['severity_analysis']); ?>
         </div>
     </div>
@@ -51,7 +52,7 @@ $analyticsWidgets = $projectAnalytics['analytics_widgets'] ?? [];
 
     <?php if (isset($analyticsWidgets['common_issues'])): ?>
     <div class="col-lg-6 mb-4">
-        <div class="project-analytics-widget">
+        <div class="project-analytics-widget<?php echo $activeReport === 'common_issues' ? ' is-active' : ''; ?>" id="analytics-report-common_issues">
             <?php echo $dashboardController->visualization->renderDashboardWidget('analytics', $analyticsWidgets['common_issues']); ?>
         </div>
     </div>
@@ -62,7 +63,7 @@ $analyticsWidgets = $projectAnalytics['analytics_widgets'] ?? [];
 <div class="row mb-4">
     <?php if (isset($analyticsWidgets['blocker_issues'])): ?>
     <div class="col-lg-6 mb-4">
-        <div class="project-analytics-widget">
+        <div class="project-analytics-widget<?php echo $activeReport === 'blocker_issues' ? ' is-active' : ''; ?>" id="analytics-report-blocker_issues">
             <?php echo $dashboardController->visualization->renderDashboardWidget('analytics', $analyticsWidgets['blocker_issues']); ?>
         </div>
     </div>
@@ -70,7 +71,7 @@ $analyticsWidgets = $projectAnalytics['analytics_widgets'] ?? [];
 
     <?php if (isset($analyticsWidgets['page_issues'])): ?>
     <div class="col-lg-6 mb-4">
-        <div class="project-analytics-widget">
+        <div class="project-analytics-widget<?php echo $activeReport === 'page_issues' ? ' is-active' : ''; ?>" id="analytics-report-page_issues">
             <?php echo $dashboardController->visualization->renderDashboardWidget('analytics', $analyticsWidgets['page_issues']); ?>
         </div>
     </div>
@@ -81,7 +82,7 @@ $analyticsWidgets = $projectAnalytics['analytics_widgets'] ?? [];
 <div class="row mb-4">
     <?php if (isset($analyticsWidgets['commented_issues'])): ?>
     <div class="col-lg-6 mb-4">
-        <div class="project-analytics-widget">
+        <div class="project-analytics-widget<?php echo $activeReport === 'commented_issues' ? ' is-active' : ''; ?>" id="analytics-report-commented_issues">
             <?php echo $dashboardController->visualization->renderDashboardWidget('analytics', $analyticsWidgets['commented_issues']); ?>
         </div>
     </div>
@@ -123,12 +124,12 @@ $analyticsWidgets = $projectAnalytics['analytics_widgets'] ?? [];
                     $healthScore += $criticalFactor * 100;
                     $factors[] = ['label' => 'Critical Issues', 'score' => 100 - $criticalRate, 'weight' => 20];
                     
-                    // Client readiness factor (10% weight)
+                    // Availability factor (10% weight)
                     $readinessWeight = 0.1;
                     $readinessRate = $totalIssues > 0 ? ($clientReadyIssues / $totalIssues) * 100 : 100;
                     $readinessFactor = ($readinessRate / 100) * $readinessWeight;
                     $healthScore += $readinessFactor * 100;
-                    $factors[] = ['label' => 'Client Readiness', 'score' => $readinessRate, 'weight' => 10];
+                    $factors[] = ['label' => 'Availability', 'score' => $readinessRate, 'weight' => 10];
                     
                     $healthScore = round($healthScore, 1);
                     
@@ -195,7 +196,7 @@ $analyticsWidgets = $projectAnalytics['analytics_widgets'] ?? [];
 <?php if (isset($analyticsWidgets['compliance_trend'])): ?>
 <div class="row mb-4">
     <div class="col-12">
-        <div class="project-analytics-widget">
+        <div class="project-analytics-widget<?php echo $activeReport === 'compliance_trend' ? ' is-active' : ''; ?>" id="analytics-report-compliance_trend">
             <?php echo $dashboardController->visualization->renderDashboardWidget('trend', $analyticsWidgets['compliance_trend']); ?>
         </div>
     </div>
@@ -214,8 +215,8 @@ $analyticsWidgets = $projectAnalytics['analytics_widgets'] ?? [];
             <p class="text-muted mb-4">
                 This project doesn't have any accessibility issues available yet. Analytics will appear once issues are available for review.
             </p>
-            <a href="<?php echo $baseDir; ?>/modules/projects/view.php?id=<?php echo $projectId; ?>" class="btn btn-primary">
-                <i class="fas fa-eye"></i> View Project Details
+            <a href="<?php echo htmlspecialchars(buildClientProjectUrl((int) $projectId, (string) ($project['title'] ?? ''), (string) ($project['project_code'] ?? '')), ENT_QUOTES, 'UTF-8'); ?>" class="btn btn-primary">
+                <i class="fas fa-eye"></i> Return to Asset Analytics
             </a>
         </div>
     </div>
@@ -239,6 +240,12 @@ $analyticsWidgets = $projectAnalytics['analytics_widgets'] ?? [];
     transform: translateY(-2px);
     box-shadow: 0 8px 25px rgba(0,0,0,0.15);
     border-color: #2563eb;
+}
+
+.project-analytics-widget.is-active .dashboard-widget,
+.project-analytics-widget .dashboard-widget.is-active {
+    border-color: #2563eb;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15), 0 12px 30px rgba(37, 99, 235, 0.12);
 }
 
 .health-score-widget .widget-content {
@@ -373,3 +380,5 @@ $analyticsWidgets = $projectAnalytics['analytics_widgets'] ?? [];
     }
 }
 </style>
+
+<script src="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/assets/js/client-dashboard-widgets.js?v=<?php echo urlencode((string) ($assetVersion ?? '20260406v16')); ?>"></script>

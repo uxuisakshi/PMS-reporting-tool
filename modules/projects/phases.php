@@ -1,14 +1,20 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
 require_once __DIR__ . '/../../includes/functions.php';
+require_once __DIR__ . '/../../includes/helpers.php';
 
 $auth = new Auth();
-$auth->requireRole(['admin', 'project_lead', 'super_admin']);
+$auth->requireRole(['admin', 'project_lead', 'admin']);
 
 $db = Database::getInstance();
 $userId = $_SESSION['user_id'] ?? null;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_phases'])) {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error'] = 'Invalid request. Please try again.';
+        $pid = intval($_POST['project_id'] ?? 0);
+        redirect("/modules/projects/view.php?id=$pid");
+    }
     $projectId = $_POST['project_id'];
     
     foreach ($_POST['phase'] as $phaseId => $phaseData) {
@@ -36,6 +42,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_phases'])) {
 
 // Handle Add Phase
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_phase'])) {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error'] = 'Invalid request. Please try again.';
+        $pid = intval($_POST['project_id'] ?? 0);
+        redirect("/modules/projects/view.php?id=$pid");
+    }
     $projectId = $_POST['project_id'];
     $phaseName = sanitizeInput($_POST['phase_name']);
     $startDate = $_POST['start_date'] ?: null;
@@ -70,6 +81,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_phase'])) {
 
 // Handle Update Phase
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_phase'])) {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error'] = 'Invalid request. Please try again.';
+        $pid = intval($_POST['project_id'] ?? 0);
+        redirect("/modules/projects/view.php?id=$pid");
+    }
     $projectId = $_POST['project_id'];
     $phaseId = $_POST['phase_id'];
     $startDate = $_POST['start_date'] ?: null;
@@ -107,6 +123,11 @@ if (($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_phase'])) ||
     ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['delete']))) {
     
     if (isset($_POST['delete_phase'])) {
+        if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+            $_SESSION['error'] = 'Invalid request. Please try again.';
+            $pid = intval($_POST['project_id'] ?? 0);
+            redirect("/modules/projects/view.php?id=$pid");
+        }
         $projectId = $_POST['project_id'];
         $phaseId = $_POST['phase_id'];
     } else {
@@ -125,6 +146,5 @@ if (($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_phase'])) ||
 }
 
 // Redirect if accessed directly
-require_once __DIR__ . '/../../includes/helpers.php';
 header('Location: ' . getBaseDir() . '/modules/admin/projects.php');
 exit;

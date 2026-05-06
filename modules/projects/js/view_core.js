@@ -329,7 +329,7 @@ var ProjectConfig = window.ProjectConfig || {};
         var modalEl = document.getElementById('editPageModal');
         if (!modalEl) {
             // fallback to prompt if modal missing
-            var fallback = prompt(field === 'notes' ? 'Enter notes:' : 'Enter page name:', current);
+            var fallback = prompt(field === 'notes' ? 'Enter notes:' : (field === 'canonical_url' ? 'Enter unique URL:' : 'Enter page name:'), current);
             if (fallback === null) return false;
             return window.handleEditPageNameFallback(btn, fallback);
         }
@@ -337,6 +337,7 @@ var ProjectConfig = window.ProjectConfig || {};
         document.getElementById('editPage_unique_id').value = uniqueId;
         document.getElementById('editPage_page_id').value = pageId;
         document.getElementById('editPage_field').value = field;
+        
         // hide the field selector when opened from an Edit button so user edits only the clicked field
         var fieldWrapper = document.getElementById('editPage_field').closest('.mb-3');
         if (fieldWrapper) {
@@ -344,7 +345,13 @@ var ProjectConfig = window.ProjectConfig || {};
             modalEl._editFieldHidden = true;
         }
         // update modal title to reflect target field
-        try { modalEl.querySelector('.modal-title').textContent = field === 'notes' ? 'Edit Notes' : 'Edit Page Name'; } catch (e) {}
+        try { 
+            var titleText = 'Edit Page Name';
+            if (field === 'notes') titleText = 'Edit Notes';
+            else if (field === 'canonical_url') titleText = 'Edit Unique URL';
+            else if (field === 'page_number') titleText = 'Edit Page Number';
+            modalEl.querySelector('.modal-title').textContent = titleText; 
+        } catch (e) {}
         // toggle input types
         if (field === 'notes') {
             document.getElementById('editPage_input_wrap').classList.add('d-none');
@@ -354,7 +361,11 @@ var ProjectConfig = window.ProjectConfig || {};
             document.getElementById('editPage_input_wrap').classList.remove('d-none');
             document.getElementById('editPage_text_wrap').classList.add('d-none');
             document.getElementById('editPage_value').value = current;
-            document.getElementById('editPage_label').textContent = field === 'page_name' ? 'Page Name' : 'Value';
+            var labelText = 'Value';
+            if (field === 'page_name') labelText = 'Page Name';
+            else if (field === 'canonical_url') labelText = 'Unique URL';
+            else if (field === 'page_number') labelText = 'Page Number';
+            document.getElementById('editPage_label').textContent = labelText;
         }
 
         // show modal
@@ -367,10 +378,26 @@ var ProjectConfig = window.ProjectConfig || {};
             var f = document.getElementById('editPage_field').value;
             var val = f === 'notes' ? document.getElementById('editPage_text').value : document.getElementById('editPage_value').value;
             val = String(val || '').trim();
-            if (val === '') { alert('Value required'); return; }
+            
+            // For page_number field, allow empty values
+            if (val === '' && !['notes', 'page_number'].includes(f)) { 
+                alert('Value required'); 
+                return; 
+            }
 
-            var payload = { project_id: projectId, unique_page_id: parseInt(uniqueId, 10) || 0, page_id: (pageId !== '' ? parseInt(pageId, 10) : 0), field: f };
-            if (f === 'notes') payload['page_name'] = val; else payload['page_name'] = val;
+            var payload = { 
+                project_id: projectId, 
+                unique_page_id: parseInt(uniqueId, 10) || 0, 
+                page_id: (pageId !== '' ? parseInt(pageId, 10) : 0), 
+                field: f 
+            };
+            
+            // Use appropriate parameter name based on field
+            if (f === 'page_number') {
+                payload['page_name'] = val; // API expects page_name parameter for all fields
+            } else {
+                payload['page_name'] = val;
+            }
 
             saveBtn.disabled = true;
             fetch(baseDir + '/api/project_pages.php?action=update_page_name', {
@@ -380,9 +407,13 @@ var ProjectConfig = window.ProjectConfig || {};
                 if (j && j.success) {
                     // update UI: find the related display element in the same row
                     try {
-                        var parentRow = btn.closest('tr') || btn.parentElement;
-                        var targetSelector = f === 'notes' ? '.notes-display' : '.page-name-display';
-                        var target = parentRow ? parentRow.querySelector(targetSelector) : null;
+                    var parentRow = btn.closest('tr') || btn.parentElement;
+                    var targetSelector = '.page-name-display';
+                    if (f === 'notes') targetSelector = '.notes-display';
+                    else if (f === 'canonical_url') targetSelector = '.unique-url-display';
+                    else if (f === 'page_number') targetSelector = '.page-no-display';
+                    
+                    var target = parentRow ? parentRow.querySelector(targetSelector) : null;
                         if (target) target.textContent = val;
                         btn.setAttribute('data-current-name', val);
                         if (f === 'notes' && parentRow) {
@@ -392,12 +423,19 @@ var ProjectConfig = window.ProjectConfig || {};
                                 else deleteBtn.classList.add('d-none');
                             }
                         }
-                    } catch (e) { }
+                    } catch (e) { 
+                        console.error('UI update error:', e);
+                    }
                     bsModal.hide();
                 } else {
-                    alert('Update failed');
+                    console.error('API Error:', j);
+                    alert('Update failed: ' + (j && j.error ? j.error : 'Unknown error'));
                 }
-            }).catch(function () { saveBtn.disabled = false; alert('Request failed'); });
+            }).catch(function (err) { 
+                saveBtn.disabled = false; 
+                console.error('Request error:', err);
+                alert('Request failed: ' + err.message); 
+            });
 
             // cleanup
             saveBtn.removeEventListener('click', handler);
@@ -417,6 +455,8 @@ var ProjectConfig = window.ProjectConfig || {};
                 // clear inputs
                 document.getElementById('editPage_value').value = '';
                 document.getElementById('editPage_text').value = '';
+                // reset field selector to default
+                document.getElementById('editPage_field').value = 'page_name';
             } catch (e) {}
             // remove this listener after run
             modalEl.removeEventListener('hidden.bs.modal', onHidden);
@@ -430,12 +470,33 @@ var ProjectConfig = window.ProjectConfig || {};
         var field = btn.getAttribute('data-field');
         var uniqueId = btn.getAttribute('data-unique-id') || 0;
         var pageId = btn.getAttribute('data-page-id') || 0;
+        
+        // Validate input for non-optional fields
+        if (!val && !['notes', 'page_number'].includes(field)) {
+            alert('Value required');
+            return;
+        }
+        
         fetch(baseDir + '/api/project_pages.php?action=update_page_name', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project_id: projectId, unique_page_id: uniqueId, page_id: pageId, field: field, page_name: val }), credentials: 'same-origin'
+            method: 'POST', 
+            headers: { 'Content-Type': 'application/json' }, 
+            body: JSON.stringify({ 
+                project_id: projectId, 
+                unique_page_id: uniqueId, 
+                page_id: pageId, 
+                field: field, 
+                page_name: val 
+            }), 
+            credentials: 'same-origin'
         }).then(r => r.json()).then(function (j) {
             if (j && j.success) {
-                var parent = btn.parentElement;
-                var target = parent ? parent.querySelector(field === 'notes' ? '.notes-display' : '.page-name-display') : null;
+                var parent = btn.closest('tr') || btn.parentElement;
+                var targetSelector = '.page-name-display';
+                if (field === 'notes') targetSelector = '.notes-display';
+                else if (field === 'canonical_url') targetSelector = '.unique-url-display';
+                else if (field === 'page_number') targetSelector = '.page-no-display';
+                
+                var target = parent ? parent.querySelector(targetSelector) : null;
                 if (target) target.textContent = val;
                 btn.setAttribute('data-current-name', val);
                 if (field === 'notes' && parent) {
@@ -446,9 +507,13 @@ var ProjectConfig = window.ProjectConfig || {};
                     }
                 }
             } else {
-                alert('Update failed');
+                console.error('Fallback API Error:', j);
+                alert('Update failed: ' + (j && j.error ? j.error : 'Unknown error'));
             }
-        }).catch(function () { alert('Request failed'); });
+        }).catch(function (err) { 
+            console.error('Fallback Request error:', err);
+            alert('Request failed: ' + err.message); 
+        });
         return false;
     };
 

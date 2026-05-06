@@ -145,7 +145,7 @@ class ClientExportController {
                     echo json_encode([
                         'success' => true,
                         'request_id' => $requestId,
-                        'download_url' => "/client/download.php?id=$requestId",
+                        'download_url' => "/client/download?id=$requestId",
                         'status' => 'completed'
                     ]);
                 } else {
@@ -299,7 +299,7 @@ class ClientExportController {
                 'progress' => $request['progress'] ?? 0,
                 'created_at' => $request['created_at'],
                 'completed_at' => $request['completed_at'],
-                'download_url' => $request['status'] === 'completed' ? "/client/download.php?id=$requestId" : null,
+                'download_url' => $request['status'] === 'completed' ? "/client/download?id=$requestId" : null,
                 'error_message' => $request['error_message']
             ]);
             
@@ -426,14 +426,16 @@ class ClientExportController {
      * Serve file for download
      */
     private function serveFile($filePath, $exportType, $reportType) {
-        $filename = basename($filePath);
+        $filename = str_replace(["\r", "\n", '"'], '', basename($filePath));
         $mimeType = $exportType === 'pdf' ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
         
         header('Content-Type: ' . $mimeType);
         header('Content-Disposition: attachment; filename="' . $filename . '"');
         header('Content-Length: ' . filesize($filePath));
-        header('Cache-Control: no-cache, must-revalidate');
+        header('Cache-Control: private, no-store, no-cache, must-revalidate, max-age=0');
+        header('Pragma: no-cache');
         header('Expires: 0');
+        header('X-Content-Type-Options: nosniff');
         
         readfile($filePath);
         exit;
@@ -450,7 +452,7 @@ class ClientExportController {
         $stmt = $this->db->prepare("
             SELECT id, username, email, role 
             FROM users 
-            WHERE id = ? AND role = 'client' AND active = 1
+            WHERE id = ? AND role = 'client' AND is_active = 1
         ");
         
         $stmt->execute([$_SESSION['client_user_id']]);
@@ -484,8 +486,7 @@ class ClientExportController {
      * Redirect to login page
      */
     private function redirectToLogin() {
-        header('Location: /client/login.php');
+        header('Location: ' . getBaseDir() . '/modules/auth/login.php');
         exit;
     }
 }
-?>

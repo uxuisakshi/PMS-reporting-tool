@@ -4,7 +4,7 @@ require_once __DIR__ . '/../../includes/functions.php';
 require_once __DIR__ . '/../../includes/helpers.php';
 
 $auth = new Auth();
-$auth->requireRole(['at_tester', 'admin', 'super_admin']);
+$auth->requireRole(['at_tester', 'admin']);
 
 $baseDir = getBaseDir();
 $db = Database::getInstance();
@@ -59,7 +59,25 @@ $recentActivities = $db->prepare($recentActivitiesQuery);
 $recentActivities->execute([$userId]);
 $activities = $recentActivities->fetchAll();
 
-// Get pending tasks: all assigned tasks except on-hold/completed
+// Pagination for Pending Tasks
+$p_perPage = 10;
+$p_page = max(1, (int)($_GET['p_page'] ?? 1));
+$p_offset = ($p_page - 1) * $p_perPage;
+
+$pendingTasksCountQuery = "
+    SELECT COUNT(*)
+    FROM project_pages pp
+    JOIN projects p ON pp.project_id = p.id
+    JOIN page_environments pe ON pp.id = pe.page_id
+    WHERE pe.at_tester_id = ? 
+    AND (pe.status IS NULL OR LOWER(pe.status) NOT IN ('on_hold', 'hold', 'completed', 'tested', 'pass'))
+    AND p.status NOT IN ('completed', 'cancelled')
+";
+$pendingTasksCountStmt = $db->prepare($pendingTasksCountQuery);
+$pendingTasksCountStmt->execute([$userId]);
+$pendingTasksTotalCount = (int)$pendingTasksCountStmt->fetchColumn();
+$pendingTasksTotalPages = ceil($pendingTasksTotalCount / $p_perPage);
+
 $pendingTasksQuery = "
     SELECT pp.id, pp.page_name, p.title as project_title, pe.status, te.name as environment_name,
            p.id as project_id
@@ -81,7 +99,7 @@ $pendingTasksQuery = "
             WHEN '' THEN 4
         END,
         pp.created_at ASC
-    LIMIT 20
+    LIMIT $p_perPage OFFSET $p_offset
 ";
 
 $pendingTasks = $db->prepare($pendingTasksQuery);
@@ -120,7 +138,7 @@ include __DIR__ . '/../../includes/header.php';
             <div class="d-flex justify-content-between align-items-center mb-4">
                 <h2><i class="fas fa-desktop text-primary"></i> AT Tester Dashboard</h2>
                 <div>
-                    <span class="badge bg-info">Accessibility Testing</span>
+                    <span class="badge bg-info" style="background-color:black !important;">Accessibility Testing</span>
                 </div>
             </div>
         </div>
@@ -150,7 +168,7 @@ include __DIR__ . '/../../includes/header.php';
     <!-- Stats Cards -->
     <div class="row mb-4">
         <div class="col-md-3">
-            <div class="card bg-primary text-white">
+            <div class="card bg-info text-white">
                 <div class="card-body">
                     <div class="d-flex justify-content-between">
                         <div>
@@ -350,6 +368,34 @@ include __DIR__ . '/../../includes/header.php';
                             </div>
                             <?php endforeach; ?>
                         </div>
+
+                        <?php if ($pendingTasksTotalPages > 1): ?>
+                        <div class="mt-3">
+                            <nav aria-label="Pending tasks pagination">
+                                <ul class="pagination pagination-sm justify-content-center mb-0">
+                                    <li class="page-item <?php echo $p_page <= 1 ? 'disabled' : ''; ?>">
+                                        <a class="page-link" href="?p_page=<?php echo $p_page - 1; ?>">Previous</a>
+                                    </li>
+                                    <?php 
+                                    $startPage = max(1, $p_page - 2);
+                                    $endPage = min($pendingTasksTotalPages, $p_page + 2);
+                                    for ($i = $startPage; $i <= $endPage; $i++): 
+                                    ?>
+                                    <li class="page-item <?php echo $p_page == $i ? 'active' : ''; ?>">
+                                        <a class="page-link" href="?p_page=<?php echo $i; ?>"><?php echo $i; ?></a>
+                                    </li>
+                                    <?php endfor; ?>
+                                    <li class="page-item <?php echo $p_page >= $pendingTasksTotalPages ? 'disabled' : ''; ?>">
+                                        <a class="page-link" href="?p_page=<?php echo $p_page + 1; ?>">Next</a>
+                                    </li>
+                                </ul>
+                            </nav>
+                            <div class="text-center text-muted small mt-1">
+                                Showing <?php echo $p_offset + 1; ?>-<?php echo min($p_offset + $p_perPage, $pendingTasksTotalCount); ?> of <?php echo $pendingTasksTotalCount; ?> tasks
+                            </div>
+                        </div>
+                        <?php endif; ?>
+
                     <?php endif; ?>
                 </div>
             </div>
@@ -448,33 +494,7 @@ include __DIR__ . '/../../includes/header.php';
     <span>Project Chat</span>
 </button>
 
-<script>
-document.addEventListener('DOMContentLoaded', function () {
-    var launcher = document.getElementById('chatLauncher');
-    var widget = document.getElementById('projectChatWidget');
-    var closeBtn = document.getElementById('chatWidgetClose');
-    var fullscreenBtn = document.getElementById('chatWidgetFullscreen');
-    if (!launcher || !widget || !closeBtn || !fullscreenBtn) return;
-    launcher.addEventListener('click', function () {
-        widget.classList.add('open');
-        launcher.style.display = 'none';
-        setTimeout(function () { try { closeBtn.focus(); } catch (e) {} }, 0);
-    });
-    closeBtn.addEventListener('click', function () {
-        widget.classList.remove('open');
-        launcher.style.display = 'inline-flex';
-        setTimeout(function () { try { launcher.focus(); } catch (e) {} }, 0);
-    });
-    fullscreenBtn.addEventListener('click', function () {
-        window.location.href = <?php echo json_encode($chatFullSrc); ?>;
-    });
-    window.addEventListener('message', function (event) {
-        if (!event || !event.data || event.data.type !== 'pms-chat-close') return;
-        widget.classList.remove('open');
-        launcher.style.display = 'inline-flex';
-        setTimeout(function () { try { launcher.focus(); } catch (e) {} }, 0);
-    });
-});
-</script>
+<script>window._chatConfig = { fullSrc: <?php echo json_encode($chatFullSrc); ?> };</script>
+<script src="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/assets/js/chat-widget.js?v=<?php echo time(); ?>"></script>
 
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<?php include __DIR__ . '/../../includes/footer.php'; 

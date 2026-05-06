@@ -18,10 +18,11 @@ $pdo = Database::getInstance();
 $action = $_POST['action'] ?? $_GET['action'] ?? '';
 $user_id = $_SESSION['user_id'];
 $user_role = $_SESSION['role'];
-$can_manage_devices = in_array($user_role, ['admin', 'super_admin']) || !empty($_SESSION['can_manage_devices']);
+$can_manage_devices = in_array($user_role, ['admin']) || !empty($_SESSION['can_manage_devices']);
 $baseDir = getBaseDir();
 $devicesLink = $baseDir . '/modules/devices.php';
 $adminDevicesLink = $baseDir . '/modules/admin/devices.php';
+$actionHandled = false; // Flag to track if action was handled
 
 function getDeviceAdminRecipientIds($db) {
     try {
@@ -30,7 +31,7 @@ function getDeviceAdminRecipientIds($db) {
             FROM users
             WHERE is_active = 1
               AND (
-                    LOWER(TRIM(role)) IN ('admin', 'super_admin')
+                    LOWER(TRIM(role)) IN ('admin')
                     OR can_manage_devices = 1
               )
         ");
@@ -49,6 +50,28 @@ function notifyAdmins($db, $message, $link) {
         }
     } catch (Exception $e) {
         error_log('notifyAdmins failed: ' . $e->getMessage());
+    }
+}
+
+/**
+ * Create device notification WITHOUT sending email
+ * Only creates in-app notification, no email sent
+ */
+function createDeviceNotification($db, $userId, $message, $link = null) {
+    $userId = (int)$userId;
+    if ($userId <= 0) return false;
+
+    $type = 'system';
+    $message = trim((string)$message);
+    $link = $link ? trim((string)$link) : null;
+    if ($link === '') $link = null;
+
+    try {
+        $stmt = $db->prepare("INSERT INTO notifications (user_id, type, message, link) VALUES (?, ?, ?, ?)");
+        return $stmt->execute([$userId, $type, $message, $link]);
+    } catch (Exception $e) {
+        error_log('createDeviceNotification failed: ' . $e->getMessage());
+        return false;
     }
 }
 
@@ -75,6 +98,10 @@ try {
                     d.version,
                     d.serial_number,
                     d.purchase_date,
+                    d.ownership_type,
+                    d.lease_owner,
+                    d.storage_capacity,
+                    d.charger_wire,
                     CASE
                         WHEN da.user_id IS NOT NULL THEN 'Assigned'
                         WHEN d.status = 'Assigned' AND da.user_id IS NULL THEN 'Available'
@@ -106,18 +133,22 @@ try {
             }
             
             $stmt = $pdo->prepare("
-                INSERT INTO devices (device_name, device_type, model, version, serial_number, purchase_date, status, notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO devices (device_name, device_type, model, version, serial_number, purchase_date, status, ownership_type, lease_owner, storage_capacity, charger_wire, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ");
             $stmt->execute([
                 $_POST['device_name'],
                 $_POST['device_type'],
-                $_POST['model'] ?? null,
-                $_POST['version'] ?? null,
-                $_POST['serial_number'] ?? null,
-                $_POST['purchase_date'] ?? null,
-                $_POST['status'] ?? 'Available',
-                $_POST['notes'] ?? null
+                !empty($_POST['model']) ? $_POST['model'] : null,
+                !empty($_POST['version']) ? $_POST['version'] : null,
+                !empty($_POST['serial_number']) ? $_POST['serial_number'] : null,
+                !empty($_POST['purchase_date']) ? $_POST['purchase_date'] : null,
+                !empty($_POST['status']) ? $_POST['status'] : 'Available',
+                !empty($_POST['ownership_type']) ? $_POST['ownership_type'] : 'Owned',
+                !empty($_POST['lease_owner']) ? $_POST['lease_owner'] : null,
+                !empty($_POST['storage_capacity']) ? (int)$_POST['storage_capacity'] : null,
+                !empty($_POST['charger_wire']) ? $_POST['charger_wire'] : null,
+                !empty($_POST['notes']) ? $_POST['notes'] : null
             ]);
             
             echo json_encode(['success' => true, 'message' => 'Device added successfully', 'device_id' => $pdo->lastInsertId()]);
@@ -149,18 +180,22 @@ try {
             $stmt = $pdo->prepare("
                 UPDATE devices 
                 SET device_name = ?, device_type = ?, model = ?, version = ?, 
-                    serial_number = ?, purchase_date = ?, status = ?, notes = ?
+                    serial_number = ?, purchase_date = ?, status = ?, ownership_type = ?, lease_owner = ?, storage_capacity = ?, charger_wire = ?, notes = ?
                 WHERE id = ?
             ");
             $stmt->execute([
                 $_POST['device_name'],
                 $_POST['device_type'],
-                $_POST['model'] ?? null,
-                $_POST['version'] ?? null,
-                $_POST['serial_number'] ?? null,
-                $_POST['purchase_date'] ?? null,
+                !empty($_POST['model']) ? $_POST['model'] : null,
+                !empty($_POST['version']) ? $_POST['version'] : null,
+                !empty($_POST['serial_number']) ? $_POST['serial_number'] : null,
+                !empty($_POST['purchase_date']) ? $_POST['purchase_date'] : null,
                 $_POST['status'],
-                $_POST['notes'] ?? null,
+                !empty($_POST['ownership_type']) ? $_POST['ownership_type'] : 'Owned',
+                !empty($_POST['lease_owner']) ? $_POST['lease_owner'] : null,
+                !empty($_POST['storage_capacity']) ? (int)$_POST['storage_capacity'] : null,
+                !empty($_POST['charger_wire']) ? $_POST['charger_wire'] : null,
+                !empty($_POST['notes']) ? $_POST['notes'] : null,
                 $deviceId
             ]);
             
@@ -265,23 +300,31 @@ try {
             break;
 
         case 'return_device':
-            if (!$can_manage_devices) {
-                throw new Exception('You do not have permission to process device returns');
+            $device_id = (int)($_POST['device_id'] ?? 0);
+            if (!$device_id) {
+                throw new Exception('Device ID is required');
             }
 
-            // Fetch device and current holder for notifications
+            // Get current assignment
+            $holderStmt = $pdo->prepare("SELECT user_id FROM device_assignments WHERE device_id = ? AND status = 'Active' LIMIT 1");
+            $holderStmt->execute([$device_id]);
+            $holderRow = $holderStmt->fetch(PDO::FETCH_ASSOC);
+            $holderId = $holderRow['user_id'] ?? null;
+
+            // Check permission: either admin/device manager OR the device is assigned to current user
+            if (!$can_manage_devices && $holderId != $user_id) {
+                throw new Exception('You do not have permission to return this device');
+            }
+
+            // Fetch device for notifications
             $deviceStmt = $pdo->prepare("SELECT device_name, device_type FROM devices WHERE id = ? LIMIT 1");
-            $deviceStmt->execute([$_POST['device_id']]);
+            $deviceStmt->execute([$device_id]);
             $deviceRow = $deviceStmt->fetch(PDO::FETCH_ASSOC);
             $deviceLabel = $deviceRow ? ($deviceRow['device_name'] . ' (' . $deviceRow['device_type'] . ')') : 'device';
             $actorStmt = $pdo->prepare("SELECT full_name FROM users WHERE id = ? LIMIT 1");
             $actorStmt->execute([$user_id]);
             $actorRow = $actorStmt->fetch(PDO::FETCH_ASSOC);
-            $actorName = $actorRow['full_name'] ?? 'Admin';
-            $holderStmt = $pdo->prepare("SELECT user_id FROM device_assignments WHERE device_id = ? AND status = 'Active' LIMIT 1");
-            $holderStmt->execute([$_POST['device_id']]);
-            $holderRow = $holderStmt->fetch(PDO::FETCH_ASSOC);
-            $holderId = $holderRow['user_id'] ?? null;
+            $actorName = $actorRow['full_name'] ?? 'User';
             
             $pdo->beginTransaction();
             
@@ -290,14 +333,24 @@ try {
                 SET status = 'Returned', returned_at = NOW()
                 WHERE device_id = ? AND status = 'Active'
             ");
-            $stmt->execute([$_POST['device_id']]);
+            $stmt->execute([$device_id]);
             
             $stmt = $pdo->prepare("UPDATE devices SET status = 'Available' WHERE id = ?");
-            $stmt->execute([$_POST['device_id']]);
+            $stmt->execute([$device_id]);
             
             $pdo->commit();
 
-            if (!empty($holderId)) {
+            // Notify the user who returned it (if not admin doing it)
+            if ($holderId && $holderId == $user_id) {
+                createNotification(
+                    $pdo,
+                    (int)$holderId,
+                    'system',
+                    'You returned ' . $deviceLabel . ' to office. Status is now Available.',
+                    $devicesLink
+                );
+            } elseif ($holderId && $holderId != $user_id) {
+                // Admin returned someone else's device
                 createNotification(
                     $pdo,
                     (int)$holderId,
@@ -306,6 +359,7 @@ try {
                     $devicesLink
                 );
             }
+            
             notifyAdmins(
                 $pdo,
                 'Device returned to office: ' . $deviceLabel . ' (by ' . $actorName . ')',
@@ -584,33 +638,34 @@ try {
             break;
 
         case 'respond_to_request':
-            $request_id = $_POST['request_id'];
-            $response_action = $_POST['response_action'] ?? '';
-            $response = $_POST['response'] ?? '';
-            if ($response_action === 'approve') {
-                $response = 'Approved';
-            } elseif ($response_action === 'reject') {
-                $response = 'Rejected';
-            }
-            if ($response !== 'Approved' && $response !== 'Rejected') {
-                throw new Exception('Invalid response');
-            }
-            
-            // Get request details first
-            $stmt = $pdo->prepare("SELECT * FROM device_switch_requests WHERE id = ? AND status = 'Pending'");
-            $stmt->execute([$request_id]);
-            $request = $stmt->fetch();
-            
-            if (!$request) {
-                throw new Exception('Request not found or already processed');
-            }
-            
-            // Check if user is admin OR the current device holder
-            if (!$can_manage_devices && $request['current_holder'] != $user_id) {
-                throw new Exception('You do not have permission to respond to this request');
-            }
-            
-            $pdo->beginTransaction();
+            try {
+                $request_id = $_POST['request_id'];
+                $response_action = $_POST['response_action'] ?? '';
+                $response = $_POST['response'] ?? '';
+                if ($response_action === 'approve') {
+                    $response = 'Approved';
+                } elseif ($response_action === 'reject') {
+                    $response = 'Rejected';
+                }
+                if ($response !== 'Approved' && $response !== 'Rejected') {
+                    throw new Exception('Invalid response');
+                }
+                
+                // Get request details first
+                $stmt = $pdo->prepare("SELECT * FROM device_switch_requests WHERE id = ? AND status = 'Pending'");
+                $stmt->execute([$request_id]);
+                $request = $stmt->fetch();
+                
+                if (!$request) {
+                    throw new Exception('Request not found or already processed');
+                }
+                
+                // Check if user is admin OR the current device holder
+                if (!$can_manage_devices && $request['current_holder'] != $user_id) {
+                    throw new Exception('You do not have permission to respond to this request');
+                }
+                
+                $pdo->beginTransaction();
             
             if ($response === 'Approved') {
                 // Get device name for notifications
@@ -666,39 +721,38 @@ try {
                 $stmt = $pdo->prepare("UPDATE devices SET status = 'Assigned' WHERE id = ?");
                 $stmt->execute([$request['device_id']]);
                 
-                // Create notification for requester (device request approved)
-                createNotification(
-                    $pdo,
-                    (int)$request['requested_by'],
-                    'system',
-                    'Your device request for ' . $device_name . ' has been approved',
-                    $devicesLink
-                );
-                
-                // Create notification for previous holder (device reassigned) - only if not the one who approved
-                if (!empty($request['current_holder']) && $request['current_holder'] != $user_id) {
-                    createNotification(
+                // Create notification for requester ONLY (device request approved)
+                // No notifications to admins or previous holders
+                // NO EMAIL - only in-app notification
+                try {
+                    createDeviceNotification(
                         $pdo,
-                        (int)$request['current_holder'],
-                        'system',
-                        $device_name . ' has been reassigned to ' . $requester_name,
+                        (int)$request['requested_by'],
+                        'Your device request for ' . $device_name . ' has been approved',
                         $devicesLink
                     );
+                } catch (Exception $notifEx) {
+                    error_log('Failed to create notification for requester: ' . $notifEx->getMessage());
                 }
             } else {
-                // Rejected - notify requester
+                // Rejected - notify requester ONLY
+                // No notifications to admins
+                // NO EMAIL - only in-app notification
                 $stmt = $pdo->prepare("SELECT device_name, device_type FROM devices WHERE id = ?");
                 $stmt->execute([$request['device_id']]);
                 $device = $stmt->fetch();
                 $device_name = $device['device_name'] . ' (' . $device['device_type'] . ')';
                 
-                createNotification(
-                    $pdo,
-                    (int)$request['requested_by'],
-                    'system',
-                    'Your device request for ' . $device_name . ' has been rejected',
-                    $devicesLink
-                );
+                try {
+                    createDeviceNotification(
+                        $pdo,
+                        (int)$request['requested_by'],
+                        'Your device request for ' . $device_name . ' has been rejected',
+                        $devicesLink
+                    );
+                } catch (Exception $notifEx) {
+                    error_log('Failed to create notification for rejected request: ' . $notifEx->getMessage());
+                }
             }
             
             // Update request status
@@ -710,7 +764,30 @@ try {
             $stmt->execute([$response, $user_id, $_POST['response_notes'] ?? null, $request_id]);
             
             $pdo->commit();
+            
+            // Send response and exit immediately to prevent any further code execution
+            http_response_code(200);
+            header('Content-Type: application/json');
             echo json_encode(['success' => true, 'message' => 'Request ' . strtolower($response) . ' successfully']);
+            
+            // Flush output buffers and close connection
+            if (function_exists('fastcgi_finish_request')) {
+                fastcgi_finish_request();
+            } else {
+                if (ob_get_level() > 0) {
+                    ob_end_flush();
+                }
+                flush();
+            }
+            exit(0);
+            
+            } catch (Exception $respondEx) {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+                error_log('respond_to_request error: ' . $respondEx->getMessage() . ' | Trace: ' . $respondEx->getTraceAsString());
+                throw $respondEx; // Re-throw to be caught by global handler
+            }
             break;
 
         case 'get_incoming_requests':
@@ -751,12 +828,26 @@ try {
             break;
 
         default:
-            throw new Exception('Invalid action');
+            if (!$actionHandled) {
+                throw new Exception('Invalid action');
+            }
+    }
+    
+    // If action was handled and response already sent, exit cleanly
+    if ($actionHandled) {
+        exit;
     }
 } catch (Exception $e) {
-    if ($pdo->inTransaction()) {
-        $pdo->rollBack();
+    // Only try to rollback if there's actually an active transaction
+    try {
+        if ($pdo && $pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+    } catch (Exception $rollbackEx) {
+        // Ignore rollback errors - transaction may have already been committed
+        error_log('Rollback error (ignored): ' . $rollbackEx->getMessage());
     }
+    
     error_log('devices.php error: action=' . (string)$action . ' user_id=' . (int)$user_id . ' message=' . $e->getMessage());
     http_response_code(400);
     echo json_encode(['success' => false, 'message' => $e->getMessage()]);

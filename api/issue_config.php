@@ -1,6 +1,8 @@
 <?php
+ob_start();
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/functions.php';
+ob_end_clean();
 
 header('Content-Type: application/json');
 
@@ -11,8 +13,8 @@ $auth = new Auth();
 $baseDir = getBaseDir();
 $db = Database::getInstance();
 $action = $_REQUEST['action'] ?? '';
-$canManageIssueConfig = $auth->checkRole(['admin', 'super_admin']) || !empty($_SESSION['can_manage_issue_config']);
-// Check permissions (admin, super_admin, or explicit permission)
+$canManageIssueConfig = $auth->checkRole(['admin']) || !empty($_SESSION['can_manage_issue_config']);
+// Check permissions (admin, admin, or explicit permission)
 if (!$canManageIssueConfig) {
     http_response_code(403);
     echo json_encode(['error' => 'Unauthorized']);
@@ -289,6 +291,7 @@ try {
     }
 
 } catch (Exception $e) {
+    error_log('issue_config error: ' . $e->getMessage());
     http_response_code(500);
-    echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    echo json_encode(['success' => false, 'error' => 'An internal error occurred']);
 }

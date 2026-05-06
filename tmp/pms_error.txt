@@ -1,0 +1,6 @@
+Error at line 618: TypeError: fetch failed
+    at node:internal/deps/undici/undici:16416:13
+    at async runAIDiscoveryAudit (C:\xampp\htdocs\PMS\scripts\deep_a11y_scan.js:170:22)
+    at async run (C:\xampp\htdocs\PMS\scripts\deep_a11y_scan.js:1327:16)
+#0 C:\xampp\htdocs\PMS\api\accessibility_scan.php(997): runDeepScan('https://www.sam...', 'C:\\xampp\\htdocs...', 'C:\\xampp\\htdocs...', 'pmnh5c8vesn2rsg', 'discovery')
+#1 {main}

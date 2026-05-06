@@ -135,4 +135,3 @@ function getColumnNumber($cellRef) {
     
     return $num;
 }
-?>

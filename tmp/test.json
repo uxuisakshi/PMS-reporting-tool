@@ -1,0 +1,93 @@
+{
+  "success": true,
+  "url": "https://example.com",
+  "summary": {
+    "issues": 2,
+    "critical": 0,
+    "serious": 0,
+    "moderate": 2,
+    "minor": 0
+  },
+  "findings": [
+    {
+      "rule_id": "landmark-one-main",
+      "title": "Document should have one main landmark",
+      "severity": "moderate",
+      "needs_review_severity": "Major",
+      "wcag_sc": [],
+      "wcag_name": "Bypass Blocks",
+      "wcag_level": "",
+      "actual_results": "Ensure the document has a main landmark\n\nURL: https://example.com\n\nDocument does not have a main landmark\n- \"Example Domain This domain is for use in documentation examples without needing\" in Page section\n",
+      "incorrect_code": "<html lang=\"en\">",
+      "screenshots": [
+        "1774286478595_landmark-one-main_1.png"
+      ],
+      "recommendation": "Provide exactly one main landmark to help screen-reader users identify primary page content.\n- Review affected elements and apply semantic HTML updates required by this rule.\n- Retest after fixes and verify no violations remain.",
+      "correct_code": "<header>...</header>\n<main id=\"main-content\">...</main>\n<footer>...</footer>",
+      "help_url": "",
+      "occurrence_count": 1,
+      "raw_nodes": [
+        {
+          "any": [],
+          "all": [
+            {
+              "id": "page-has-main",
+              "data": null,
+              "relatedNodes": [],
+              "impact": "moderate",
+              "message": "Document does not have a main landmark"
+            }
+          ],
+          "none": [],
+          "impact": "moderate",
+          "html": "<html lang=\"en\">",
+          "target": [
+            "html"
+          ],
+          "failureSummary": "Fix all of the following:\n  Document does not have a main landmark"
+        }
+      ]
+    },
+    {
+      "rule_id": "region",
+      "title": "All page content should be contained by landmarks",
+      "severity": "moderate",
+      "needs_review_severity": "Major",
+      "wcag_sc": [],
+      "wcag_name": "All page content should be contained by landmarks",
+      "wcag_level": "",
+      "actual_results": "Ensure all page content is contained by landmarks\n\nURL: https://example.com\n\nSome page content is not contained by landmarks\n- \"Example Domain This domain is for use in documentation examples without needing\" in \"Example Domain\"\n",
+      "incorrect_code": "<div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in operations.</p><p><a href=\"https://iana.org/domains/example\">Learn more</a></p></div>",
+      "screenshots": [
+        "1774286478829_region_2.png"
+      ],
+      "recommendation": "Ensure all significant page content is inside semantic landmarks.\n- Wrap major content in semantic landmarks such as <main>, <header>, and <footer>.\n- Ensure only one primary <main> landmark is present.",
+      "correct_code": "<header>...</header>\n<main id=\"main-content\">...</main>\n<footer>...</footer>",
+      "help_url": "",
+      "occurrence_count": 1,
+      "raw_nodes": [
+        {
+          "any": [
+            {
+              "id": "region",
+              "data": {
+                "isIframe": false
+              },
+              "relatedNodes": [],
+              "impact": "moderate",
+              "message": "Some page content is not contained by landmarks"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "moderate",
+          "html": "<div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in operations.</p><p><a href=\"https://iana.org/domains/example\">Learn more</a></p></div>",
+          "target": [
+            "div"
+          ],
+          "failureSummary": "Fix any of the following:\n  Some page content is not contained by landmarks"
+        }
+      ]
+    }
+  ]
+}

@@ -1,9 +1,11 @@
 <?php
+ob_start();
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../config/constants.php';
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/functions.php';
 require_once __DIR__ . '/../includes/helpers.php';
+ob_end_clean();
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -108,7 +110,7 @@ function handleGetRequest() {
             }
             
             // Check permissions
-            if ($userRole !== 'admin' && $userRole !== 'super_admin') {
+            if ($userRole !== 'admin' && $userRole !== 'admin') {
                 if ($userRole === 'project_lead' && $project['project_lead_id'] != $userId) {
                     jsonError('Permission denied', 403);
                     return;
@@ -146,18 +148,18 @@ function handleGetRequest() {
         }
     } catch (PDOException $e) {
         error_log("Get projects error: " . $e->getMessage());
-        jsonError('Database error occurred: ' . $e->getMessage(), 500);
+        jsonError('Database error occurred', 500);
     } catch (Exception $e) {
         error_log("Get projects general error: " . $e->getMessage());
-        jsonError('An error occurred: ' . $e->getMessage(), 500);
+        jsonError('An error occurred', 500);
     }
 }
 
 function handlePostRequest() {
     global $db;
     
-    // Only admin/super_admin can create projects via API
-    if (!in_array($_SESSION['role'], ['admin', 'super_admin'])) {
+    // Only admin/admin can create projects via API
+    if (!in_array($_SESSION['role'], ['admin'])) {
         jsonError('Permission denied', 403);
         return;
     }
@@ -237,7 +239,7 @@ function handlePutRequest() {
         return;
     }
     
-    if (!in_array($_SESSION['role'], ['admin', 'super_admin']) && 
+    if (!in_array($_SESSION['role'], ['admin']) && 
         $project['project_lead_id'] != $_SESSION['user_id']) {
         jsonError('Permission denied', 403);
         return;
@@ -302,8 +304,8 @@ function handleDeleteRequest() {
         return;
     }
     
-    // Only admin/super_admin can cancel projects
-    if (!in_array($_SESSION['role'], ['admin', 'super_admin'])) {
+    // Only admin/admin can cancel projects
+    if (!in_array($_SESSION['role'], ['admin'])) {
         jsonError('Permission denied', 403);
         return;
     }

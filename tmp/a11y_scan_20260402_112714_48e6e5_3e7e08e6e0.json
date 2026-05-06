@@ -1,0 +1,162 @@
+{
+  "success": true,
+  "url": "https://www.samcomf.com/help-support/",
+  "summary": {
+    "issues": 4,
+    "critical": 1,
+    "serious": 1,
+    "moderate": 2,
+    "minor": 0
+  },
+  "findings": [
+    {
+      "rule_id": "button-name",
+      "title": "Buttons must have discernible text",
+      "severity": "critical",
+      "needs_review_severity": "Blocker",
+      "wcag_sc": [
+        "4.1.2"
+      ],
+      "wcag_name": "Name, Role, Value",
+      "wcag_level": "A",
+      "actual_results": "URL: https://www.samcomf.com/help-support/\n\nThe <button> element is missing an accessible name (visible text, aria-label, aria-labelledby, or title).\n- \"button\" in Form section\n",
+      "incorrect_code": "<button class=\"form-button search-button\" type=\"submit\">",
+      "screenshots": [
+        "1775109441933_button-name_1.png"
+      ],
+      "recommendation": "1. Ensure every <button> has discernible text content.\n2. For icon-based buttons, provide an accessible name using 'aria-label' or a 'visually-hidden' span.\n3. Verify that the button's purpose is clear to screen reader users.\n- Provide clear visible text for each <button> whenever possible.\n- For icon-only buttons, include an in-button hidden text label (e.g., visually-hidden text).\n- Ensure button name describes the action (e.g., \"Close dialog\", \"Open menu\").\n- Reference: https://www.w3.org/WAI/ARIA/apg/patterns/button/",
+      "correct_code": "<button class=\"form-button search-button\" type=\"submit\">Submit</button>",
+      "help_url": "",
+      "occurrence_count": 1,
+      "raw_nodes": [
+        {
+          "selector": "button",
+          "failure_summary": "Fix any of the following: Element does not have inner text that is visible to screen readers aria-label attribute does not exist or is empty aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty Element has no title attribute Element does not have an implicit (wrapped) <label> Element does not have an explicit <label> Element's default semantics were not overridden with role=\"none\" or role=\"presentation\""
+        }
+      ]
+    },
+    {
+      "rule_id": "color-contrast",
+      "title": "Elements must meet minimum color contrast ratio thresholds",
+      "severity": "serious",
+      "needs_review_severity": "Critical",
+      "wcag_sc": [
+        "1.4.3"
+      ],
+      "wcag_name": "Contrast (Minimum)",
+      "wcag_level": "AA",
+      "actual_results": "URL: https://www.samcomf.com/help-support/\n\nElement has insufficient color contrast of 3.25 (foreground color: #1a91f8, background color: #ffffff, font size: 9.0pt (12px), font weight: bold). Expected contrast ratio of 4.5:1\n- \"VIEW ALL\" in \"All About Samco Flexi Cap Fund\"\n- \"VIEW ALL\" in \"Distributor Related Queries\"\n- \"VIEW ALL\" in \"KYC Related Queries\"\n- \"VIEW ALL\" in \"Order and Transaction Related Queries\"\n- \"VIEW ALL\" in \"SamcoMF Investor Dashboard Related Queries\"\n\n\nElement has insufficient color contrast of 2.84 (foreground color: #999999, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1\n- \"2 articles\" in \"KYC Related Queries\"\n- \"5 articles\" in \"Order and Transaction Related Queries\"\n- \"2 articles\" in \"SamcoMF Investor Dashboard Related Queries\"\n\n\nElement has insufficient color contrast of 2.84 (foreground color: #999999, background color: #ffffff, font size: 10.5pt (14px), font weight: normal). Expected contrast ratio of 4.5:1\n- \"Copyright © 2021 Samco Asset Management Private Ltd. | All Rights Reserved\" in Footer section\n",
+      "incorrect_code": "<a class=\"topic-more button-arrow button-arrow-right\" href=\"/help-support/tag/about-samco-flexi-cap-fund/\">View All</a>\n\n<a class=\"topic-more button-arrow button-arrow-right\" href=\"/help-support/tag/distributor-related-queries/\">View All</a>\n\n<div class=\"topic-count\">\n                                        2 articles\n                                    </div>\n\n<a class=\"topic-more button-arrow button-arrow-right\" href=\"/help-support/tag/kyc-related-queries/\">View All</a>\n\n<div class=\"topic-count\">\n                                        5 articles\n                                    </div>\n\n<a class=\"topic-more button-arrow button-arrow-right\" href=\"/help-support/tag/order-and-transaction-related-queries/\">View All</a>\n\n<a class=\"topic-more button-arrow button-arrow-right\" href=\"/help-support/tag/samcomf-investor-dashboard-related-queries/\">View All</a>\n\n<div class=\"copyright\">\n        Copyright © 2021 Samco Asset Management Private Ltd. | All Rights Reserved\n    </div>",
+      "screenshots": [
+        "1775109442296_color-contrast_2.png",
+        "1775109442600_color-contrast_3.png"
+      ],
+      "recommendation": "1. Identify all text elements with low contrast against their background.\n2. Adjust the foreground or background color to achieve a minimum contrast ratio of 4.5:1 for normal text and 3:1 for large text (18pt+ or 14pt+ bold).\n3. Use a contrast checker tool to verify compliance across all states (hover, focus, active).\n- Adjust text/background colors until contrast reaches at least 4.5:1 for normal text and 3:1 for large text.\n- Re-check hover/focus/visited states of links and buttons to keep contrast compliant in all states.",
+      "correct_code": "/* Adjust colors so text contrast meets WCAG AA */\n.text-on-bg {\n  color: #1a1a1a;\n  background-color: #ffffff;\n}\n\n/* Reference failing detail: Element has insufficient color contrast of 3.25 (foreground color: #1a91f8, background color: #ffffff, font size: 9.0pt (12px), font weight: bold). Expected contrast ratio of 4.5:1 */",
+      "help_url": "",
+      "occurrence_count": 9,
+      "raw_nodes": [
+        {
+          "selector": ".col-md-6:nth-child(1) > section > .topic-more.button-arrow.button-arrow-right",
+          "failure_summary": "Fix any of the following: Element has insufficient color contrast of 3.25 (foreground color: #1a91f8, background color: #ffffff, font size: 9.0pt (12px), font weight: bold). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "selector": ".col-md-6:nth-child(2) > section > .topic-more.button-arrow.button-arrow-right",
+          "failure_summary": "Fix any of the following: Element has insufficient color contrast of 3.25 (foreground color: #1a91f8, background color: #ffffff, font size: 9.0pt (12px), font weight: bold). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "selector": ".col-md-6:nth-child(3) > section > .topic-header > .topic-count",
+          "failure_summary": "Fix any of the following: Element has insufficient color contrast of 2.84 (foreground color: #999999, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "selector": ".col-md-6:nth-child(3) > section > .topic-more.button-arrow.button-arrow-right",
+          "failure_summary": "Fix any of the following: Element has insufficient color contrast of 3.25 (foreground color: #1a91f8, background color: #ffffff, font size: 9.0pt (12px), font weight: bold). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "selector": ".col-md-6:nth-child(4) > section > .topic-header > .topic-count",
+          "failure_summary": "Fix any of the following: Element has insufficient color contrast of 2.84 (foreground color: #999999, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "selector": ".col-md-6:nth-child(4) > section > .topic-more.button-arrow.button-arrow-right",
+          "failure_summary": "Fix any of the following: Element has insufficient color contrast of 3.25 (foreground color: #1a91f8, background color: #ffffff, font size: 9.0pt (12px), font weight: bold). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "selector": ".col-md-6:nth-child(5) > section > .topic-header > .topic-count",
+          "failure_summary": "Fix any of the following: Element has insufficient color contrast of 2.84 (foreground color: #999999, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "selector": ".col-md-6:nth-child(5) > section > .topic-more.button-arrow.button-arrow-right",
+          "failure_summary": "Fix any of the following: Element has insufficient color contrast of 3.25 (foreground color: #1a91f8, background color: #ffffff, font size: 9.0pt (12px), font weight: bold). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "selector": ".copyright",
+          "failure_summary": "Fix any of the following: Element has insufficient color contrast of 2.84 (foreground color: #999999, background color: #ffffff, font size: 10.5pt (14px), font weight: normal). Expected contrast ratio of 4.5:1"
+        }
+      ]
+    },
+    {
+      "rule_id": "page-has-heading-one",
+      "title": "Page should contain a level-one heading",
+      "severity": "moderate",
+      "needs_review_severity": "Major",
+      "wcag_sc": [],
+      "wcag_name": "Page should contain a level-one heading",
+      "wcag_level": "",
+      "actual_results": "URL: https://www.samcomf.com/help-support/\n\nPage must have a level-one heading\n- \"Home Learn & Invest with SamcoMF Support Blog Search financial planning and mutu\" in Page section\n",
+      "incorrect_code": "<html lang=\"en\">",
+      "screenshots": [
+        "1775109442901_page-has-heading-one_4.png"
+      ],
+      "recommendation": "Page should contain a level-one heading\n- Inspect all flagged elements and apply semantic HTML fix required by this rule.\n- Validate the fix in keyboard and screen-reader flow.\n- Run scan again to confirm violation is resolved.",
+      "correct_code": "<h1>Page title</h1>\n<h2>Section heading</h2>\n<h3>Sub section heading</h3>",
+      "help_url": "",
+      "occurrence_count": 1,
+      "raw_nodes": [
+        {
+          "selector": "html",
+          "failure_summary": "Fix all of the following: Page must have a level-one heading"
+        }
+      ]
+    },
+    {
+      "rule_id": "region",
+      "title": "All page content should be contained by landmarks",
+      "severity": "moderate",
+      "needs_review_severity": "Major",
+      "wcag_sc": [],
+      "wcag_name": "All page content should be contained by landmarks",
+      "wcag_level": "",
+      "actual_results": "URL: https://www.samcomf.com/help-support/\n\nSome page content is not contained by landmarks\n- \"Learn & Invest with\" in Page section\n- \"SamcoMF Support Blog\" in Page section\n- \"Search financial planning and mutual fund related content\" in Page section\n- \"input\" in Form section\n- \"#jarallax-container-0\" in Page section\n",
+      "incorrect_code": "<p class=\"search_t1\">Learn &amp; Invest with</p>\n\n<div class=\"cover-description\">SamcoMF Support Blog</div>\n\n<p class=\"search_t2\">Search financial planning and mutual fund related content</p>\n\n<input class=\"search-field\" type=\"text\" placeholder=\"Search...\">\n\n<div id=\"jarallax-container-0\" style=\"position: absolute; top: 0px; left: 0px; width: 100%; height: 100%; overflow: hidden; z-index: -100;\">",
+      "screenshots": [
+        "1775109443195_region_5.png"
+      ],
+      "recommendation": "Ensure all significant page content is inside semantic landmarks.\n- Wrap major content in semantic landmarks such as <main>, <header>, and <footer>.\n- Ensure only one primary <main> landmark is present.",
+      "correct_code": "<header>...</header>\n<main id=\"main-content\">...</main>\n<footer>...</footer>",
+      "help_url": "",
+      "occurrence_count": 5,
+      "raw_nodes": [
+        {
+          "selector": ".search_t1",
+          "failure_summary": "Fix any of the following: Some page content is not contained by landmarks"
+        },
+        {
+          "selector": ".cover-description",
+          "failure_summary": "Fix any of the following: Some page content is not contained by landmarks"
+        },
+        {
+          "selector": ".search_t2",
+          "failure_summary": "Fix any of the following: Some page content is not contained by landmarks"
+        },
+        {
+          "selector": "input",
+          "failure_summary": "Fix any of the following: Some page content is not contained by landmarks"
+        },
+        {
+          "selector": "#jarallax-container-0",
+          "failure_summary": "Fix any of the following: Some page content is not contained by landmarks"
+        }
+      ]
+    }
+  ]
+}

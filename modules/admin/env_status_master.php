@@ -9,7 +9,7 @@ require_once __DIR__ . '/../../includes/functions.php';
 require_once __DIR__ . '/../../includes/helpers.php';
 
 $auth = new Auth();
-$auth->requireRole(['admin', 'super_admin']);
+$auth->requireRole(['admin']);
 
 $baseDir = getBaseDir();
 $db = Database::getInstance();
@@ -17,6 +17,11 @@ $userId = $_SESSION['user_id'];
 
 // Handle form submissions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error'] = 'Invalid request. Please try again.';
+        header('Location: ' . $_SERVER['PHP_SELF']);
+        exit;
+    }
     $action = $_POST['action'] ?? '';
     
     if ($action === 'add') {
@@ -239,6 +244,7 @@ include __DIR__ . '/../../includes/header.php';
     <div class="modal-dialog">
         <div class="modal-content">
             <form method="POST">
+                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                 <input type="hidden" name="action" value="add">
                 <div class="modal-header">
                     <h5 class="modal-title">Add Environment Status</h5>
@@ -296,6 +302,7 @@ include __DIR__ . '/../../includes/header.php';
     <div class="modal-dialog">
         <div class="modal-content">
             <form method="POST">
+                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                 <input type="hidden" name="action" value="edit">
                 <input type="hidden" name="id" id="edit_id">
                 <div class="modal-header">
@@ -352,6 +359,7 @@ include __DIR__ . '/../../includes/header.php';
 
 <!-- Delete Confirmation Form -->
 <form method="POST" id="deleteForm" style="display: none;">
+    <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
     <input type="hidden" name="action" value="delete">
     <input type="hidden" name="id" id="delete_id">
 </form>
@@ -376,37 +384,6 @@ include __DIR__ . '/../../includes/header.php';
     </div>
 </div>
 
-<script>
-function editStatus(status) {
-    document.getElementById('edit_id').value = status.id;
-    document.getElementById('edit_status_key').value = status.status_key;
-    document.getElementById('edit_status_label').value = status.status_label;
-    document.getElementById('edit_badge_color').value = status.badge_color;
-    document.getElementById('edit_description').value = status.description || '';
-    document.getElementById('edit_display_order').value = status.display_order;
-    document.getElementById('edit_is_active').checked = status.is_active == 1;
-    
-    var modal = new bootstrap.Modal(document.getElementById('editStatusModal'));
-    modal.show();
-}
+<script src="<?php echo getBaseDir(); ?>/assets/js/env-status-master.js?v=<?php echo time(); ?>"></script>
 
-function deleteStatus(id, label, usageCount) {
-    if (usageCount > 0) {
-        alert('Cannot delete this status: It is currently in use by ' + usageCount + ' environment(s).');
-        return;
-    }
-
-    document.getElementById('delete_id').value = id;
-    document.getElementById('deleteEnvStatusConfirmText').textContent =
-        'Are you sure you want to delete the status "' + label + '"? This action cannot be undone.';
-
-    var confirmBtn = document.getElementById('deleteEnvStatusConfirmBtn');
-    confirmBtn.onclick = function () {
-        document.getElementById('deleteForm').submit();
-    };
-
-    new bootstrap.Modal(document.getElementById('deleteEnvStatusConfirmModal')).show();
-}
-</script>
-
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<?php include __DIR__ . '/../../includes/footer.php'; 

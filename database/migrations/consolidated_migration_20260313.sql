@@ -1,4 +1,4 @@
--- Consolidated Migration Script: Synchronize Live Database with Current Schema
+﻿-- Consolidated Migration Script: Synchronize Live Database with Current Schema
 -- Date: 2026-03-13
 -- Description: Consolidates Reporting, Analytics, and Auditing updates omitted in the live database.
 
@@ -8,7 +8,7 @@ START TRANSACTION;
 
 -- 1. UPDATE USERS TABLE ROLE ENUM
 -- This is critical for ClientAccessControlManager to recognize client users
-ALTER TABLE `users` MODIFY COLUMN `role` ENUM('super_admin', 'admin', 'project_lead', 'qa', 'at_tester', 'ft_tester', 'client') NOT NULL;
+ALTER TABLE `users` MODIFY COLUMN `role` ENUM('admin', 'project_lead', 'qa', 'at_tester', 'ft_tester', 'client') NOT NULL;
 
 -- 2. CREATE NEW TABLES FOR REPORTING & ANALYTICS
 

@@ -2,11 +2,13 @@
 require_once __DIR__ . '/../../includes/auth.php';
 require_once __DIR__ . '/../../includes/functions.php';
 require_once __DIR__ . '/../../includes/client_permissions.php';
+require_once __DIR__ . '/../../config/redis.php';
 
 $auth = new Auth();
 $auth->requireLogin();
 
 $projectManager = new ProjectManager();
+/** @var PDO $db */
 $db = Database::getInstance();
 $userId = $_SESSION['user_id'];
 
@@ -14,7 +16,7 @@ $userId = $_SESSION['user_id'];
 $preselectedClientId = isset($_GET['client_id']) ? intval($_GET['client_id']) : null;
 
 // Check if user has permission to create projects
-$isAdmin = isset($_SESSION['role']) && in_array($_SESSION['role'], ['admin', 'super_admin']);
+$isAdmin = isset($_SESSION['role']) && in_array($_SESSION['role'], ['admin']);
 
 if (!$isAdmin) {
     // Check if user has create_project permission for any client
@@ -53,10 +55,15 @@ if (empty($allowedClients)) {
 }
 
 // Get project leads for dropdown
-$projectLeads = $db->query("SELECT id, full_name FROM users WHERE role IN ('project_lead','admin','super_admin') ORDER BY full_name")->fetchAll();
+$projectLeads = $db->query("SELECT id, full_name FROM users WHERE role IN ('project_lead','admin') ORDER BY full_name")->fetchAll();
 
 // Handle form submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_project'])) {
+    // CSRF protection
+    if (!isset($_POST['csrf_token']) || !verifyCsrfToken($_POST['csrf_token'])) {
+        $_SESSION['error'] = "Invalid security token. Please try again.";
+        redirect("/modules/projects/create.php");
+    }
     $clientId = intval($_POST['client_id']);
     
     // Verify permission again on submission
@@ -79,13 +86,52 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_project'])) {
     ];
     
     if ($projectManager->createProject($projectData)) {
-        $projectId = $db->lastInsertId();
+        $projectId = (int)$db->lastInsertId();
         
         // Add default phases
         $phases = ['po_received', 'scoping_confirmation', 'testing', 'regression'];
         foreach ($phases as $phase) {
             $stmt = $db->prepare("INSERT INTO project_phases (project_id, phase_name) VALUES (?, ?)");
             $stmt->execute([$projectId, $phase]);
+        }
+
+        // If a non-admin user creates a project, auto-grant project-level view/edit access.
+        if (!$isAdmin && $projectId > 0) {
+            $autoPermissions = ['view_project', 'edit_project'];
+            foreach ($autoPermissions as $permissionType) {
+                $checkStmt = $db->prepare("
+                    SELECT id FROM client_permissions
+                    WHERE client_id = ? AND project_id = ? AND user_id = ? AND permission_type = ?
+                    LIMIT 1
+                ");
+                $checkStmt->execute([$clientId, $projectId, $userId, $permissionType]);
+                $existingId = (int)($checkStmt->fetchColumn() ?: 0);
+
+                if ($existingId > 0) {
+                    $updateStmt = $db->prepare("
+                        UPDATE client_permissions
+                        SET is_active = 1, granted_by = ?, expires_at = NULL, updated_at = NOW()
+                        WHERE id = ?
+                    ");
+                    $updateStmt->execute([$userId, $existingId]);
+                } else {
+                    $insertStmt = $db->prepare("
+                        INSERT INTO client_permissions (client_id, project_id, user_id, permission_type, granted_by, expires_at, notes)
+                        VALUES (?, ?, ?, ?, ?, NULL, ?)
+                    ");
+                    $insertStmt->execute([$clientId, $projectId, $userId, $permissionType, $userId, 'Auto-granted on project creation']);
+                }
+            }
+        }
+
+        // Invalidate cached assigned-project list for immediate visibility.
+        try {
+            $redis = RedisConfig::getInstance();
+            if ($redis && $redis->isAvailable()) {
+                $redis->delete('client_projects_' . $userId);
+            }
+        } catch (Throwable $e) {
+            // Non-fatal cache cleanup failure
         }
         
         $_SESSION['success'] = "Project created successfully!";
@@ -111,6 +157,7 @@ include __DIR__ . '/../../includes/header.php';
             <div class="card">
                 <div class="card-body">
                     <form method="POST" id="createProjectForm">
+                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars(generateCsrfToken()); ?>">
                         <div class="row">
                             <div class="col-md-6 mb-3">
                                 <label class="form-label">Project Code (optional)</label>
@@ -196,4 +243,4 @@ include __DIR__ . '/../../includes/header.php';
     </div>
 </div>
 
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<?php include __DIR__ . '/../../includes/footer.php'; 

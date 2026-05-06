@@ -309,6 +309,10 @@ CREATE TABLE `devices` (
   `serial_number` varchar(255) DEFAULT NULL,
   `purchase_date` date DEFAULT NULL,
   `status` enum('Available','Assigned','Maintenance','Retired') DEFAULT 'Available',
+  `ownership_type` enum('Owned','Leased') NOT NULL DEFAULT 'Owned',
+  `lease_owner` varchar(255) DEFAULT NULL,
+  `storage_capacity` int(11) DEFAULT NULL,
+  `charger_wire` varchar(255) DEFAULT NULL,
   `notes` text DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
@@ -702,7 +706,6 @@ CREATE TABLE `issue_status_master` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `status_key` (`status_key`),
   KEY `idx_active` (`is_active`),
-  KEY `idx_order` (`display_order`)
 ) ENGINE=InnoDB AUTO_INCREMENT=9 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- Table: issue_statuses
@@ -714,6 +717,8 @@ CREATE TABLE `issue_statuses` (
   `color` varchar(32) DEFAULT '#6c757d',
   `points` int(11) DEFAULT 0,
   `is_qa` tinyint(1) DEFAULT 0,
+  `visible_to_client` tinyint(1) NOT NULL DEFAULT 1,
+  `visible_to_internal` tinyint(1) NOT NULL DEFAULT 1,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB AUTO_INCREMENT=7 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -822,7 +827,7 @@ DROP TABLE IF EXISTS `page_environments`;
 CREATE TABLE `page_environments` (
   `page_id` int(11) NOT NULL,
   `environment_id` int(11) NOT NULL,
-  `status` enum('not_started','in_progress','pass','fail','on_hold','needs_review') DEFAULT 'not_started',
+  `status` enum('not_started','in_progress','completed','pass','fail','on_hold','needs_review') DEFAULT 'not_started',
   `last_updated_by` int(11) DEFAULT NULL,
   `last_updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
   `qa_status` enum('pending','pass','fail','na','completed') DEFAULT 'pending',
@@ -1129,6 +1134,7 @@ CREATE TABLE `project_time_logs` (
   KEY `fk_ptl_generic_cat` (`generic_category_id`),
   KEY `idx_time_logs_project_hours` (`project_id`,`is_utilized`,`hours_spent`),
   KEY `idx_project_time_logs_issue_id` (`issue_id`),
+  KEY `idx_perf_time_logs_date` (`log_date`),
   CONSTRAINT `fk_project_time_logs_page_id_project` FOREIGN KEY (`page_id`) REFERENCES `project_pages` (`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_ptl_env` FOREIGN KEY (`environment_id`) REFERENCES `testing_environments` (`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_ptl_generic_cat` FOREIGN KEY (`generic_category_id`) REFERENCES `generic_task_categories` (`id`) ON DELETE SET NULL,
@@ -1162,6 +1168,7 @@ CREATE TABLE `projects` (
   KEY `client_id` (`client_id`),
   KEY `project_lead_id` (`project_lead_id`),
   KEY `created_by` (`created_by`),
+  KEY `idx_perf_projects_status` (`status`),
   KEY `fk_projects_parent_project` (`parent_project_id`),
   CONSTRAINT `fk_projects_parent_project` FOREIGN KEY (`parent_project_id`) REFERENCES `projects` (`id`) ON DELETE SET NULL,
   CONSTRAINT `projects_ibfk_1` FOREIGN KEY (`client_id`) REFERENCES `clients` (`id`),
@@ -1430,7 +1437,7 @@ CREATE TABLE `user_edit_requests` (
   `user_id` int(11) NOT NULL,
   `req_date` date NOT NULL,
   `reason` text DEFAULT NULL,
-  `status` enum('pending','approved','rejected') DEFAULT 'pending',
+  `status` enum('pending','approved','rejected','used') DEFAULT 'pending',
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
   PRIMARY KEY (`id`),
@@ -1516,8 +1523,10 @@ CREATE TABLE `users` (
   `username` varchar(50) NOT NULL,
   `email` varchar(100) NOT NULL,
   `password` varchar(255) NOT NULL,
+  `two_factor_secret` varchar(255) DEFAULT NULL COMMENT 'Stores Base32 TOTP secret',
+  `two_factor_enabled` tinyint(1) NOT NULL DEFAULT 0 COMMENT '1 if 2FA is active',
   `full_name` varchar(100) NOT NULL,
-  `role` enum('super_admin','admin','project_lead','qa','at_tester','ft_tester') NOT NULL,
+  `role` enum('admin','project_lead','qa','at_tester','ft_tester') NOT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
   `is_active` tinyint(1) DEFAULT 1,
   `force_password_reset` tinyint(1) DEFAULT 0,
@@ -1527,7 +1536,8 @@ CREATE TABLE `users` (
   `temp_password` varchar(255) DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `username` (`username`),
-  UNIQUE KEY `email` (`email`)
+  UNIQUE KEY `email` (`email`),
+  KEY `idx_perf_users_active` (`is_active`)
 ) ENGINE=InnoDB AUTO_INCREMENT=7 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- Table: wcag_levels

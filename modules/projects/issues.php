@@ -5,7 +5,7 @@ require_once __DIR__ . '/../../includes/helpers.php';
 require_once __DIR__ . '/../../includes/project_permissions.php';
 
 $auth = new Auth();
-$auth->requireRole(['admin', 'project_lead', 'qa', 'at_tester', 'ft_tester', 'super_admin', 'client']);
+$auth->requireRole(['admin', 'project_lead', 'qa', 'at_tester', 'ft_tester', 'admin', 'client']);
 
 $baseDir = getBaseDir();
 $projectId = (int)($_GET['project_id'] ?? 0);
@@ -124,20 +124,20 @@ endif; ?>
             </div>
         </div>
         <?php if ($userRole !== 'client'): ?>
-        <!-- Export Issues Card -->
+        <!-- Import Issues Card -->
         <div class="col-md-6">
-            <div class="card h-100 border-success">
+            <div class="card h-100 border-secondary">
                 <div class="card-body text-center">
                     <div class="mb-3">
-                        <i class="fas fa-file-export fa-4x text-success"></i>
+                        <i class="fas fa-file-import fa-4x text-secondary"></i>
                     </div>
-                    <h4 class="card-title">Export Issues</h4>
+                    <h4 class="card-title">Import Issues</h4>
                     <p class="card-text text-muted">
-                        Export issues to Excel or PDF with customizable columns and filters
+                        Import accessibility issues from Excel/CSV (Final Report, URL Details, All URLs sheets)
                     </p>
-                    <a href="<?php echo $baseDir; ?>/modules/projects/export_issues.php?project_id=<?php echo $projectId; ?>" 
-                       class="btn btn-success btn-lg">
-                        <i class="fas fa-download me-1"></i> Export Issues
+                    <a href="<?php echo $baseDir; ?>/modules/projects/import_issues.php?project_id=<?php echo $projectId; ?>"
+                       class="btn btn-secondary btn-lg">
+                        <i class="fas fa-file-import me-1"></i> Import Issues
                     </a>
                 </div>
             </div>
@@ -158,6 +158,24 @@ endif; ?>
                     <a href="<?php echo $baseDir; ?>/modules/projects/issues_all.php?project_id=<?php echo $projectId; ?>" 
                        class="btn btn-warning btn-lg">
                         <i class="fas fa-list me-1"></i> View All Issues
+                    </a>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-6">
+            <div class="card h-100 border-dark">
+                <div class="card-body text-center">
+                    <div class="mb-3">
+                        <i class="fas fa-sync-alt fa-4x text-dark"></i>
+                    </div>
+                    <h4 class="card-title">Regression Testing</h4>
+                    <p class="card-text text-muted">
+                        Track regression coverage, manage rounds, and review regression activity across issues
+                    </p>
+                    <a href="<?php echo $baseDir; ?>/modules/projects/issues_all.php?project_id=<?php echo $projectId; ?>"
+                       class="btn btn-dark btn-lg">
+                        <i class="fas fa-sync-alt me-1"></i> Open Regression View
                     </a>
                 </div>
             </div>
@@ -197,7 +215,7 @@ endif; ?>
             </button>
         </div>
     </div>
-    <iframe src="<?php echo $baseDir; ?>/modules/chat/project_chat.php?project_id=<?php echo $projectId; ?>&embed=1" title="Project Chat"></iframe>
+    <iframe src="" data-src="<?php echo $baseDir; ?>/modules/chat/project_chat.php?project_id=<?php echo $projectId; ?>&embed=1" title="Project Chat"></iframe>
 </div>
 
 <button type="button" class="btn btn-primary chat-launcher" id="chatLauncher">
@@ -206,36 +224,11 @@ endif; ?>
 </button>
 
 <script>
-document.addEventListener('DOMContentLoaded', function () {
-    var launcher = document.getElementById('chatLauncher');
-    var widget = document.getElementById('projectChatWidget');
-    var closeBtn = document.getElementById('chatWidgetClose');
-    var fullscreenBtn = document.getElementById('chatWidgetFullscreen');
-    if (!launcher || !widget || !closeBtn || !fullscreenBtn) return;
-
-    function openChatWidget() {
-        widget.classList.add('open');
-        launcher.style.display = 'none';
-        setTimeout(function () { try { closeBtn.focus(); } catch (e) {} }, 0);
-    }
-    function closeChatWidget() {
-        widget.classList.remove('open');
-        launcher.style.display = 'inline-flex';
-        setTimeout(function () { try { launcher.focus(); } catch (e) {} }, 0);
-    }
-
-    launcher.addEventListener('click', openChatWidget);
-    closeBtn.addEventListener('click', closeChatWidget);
-    fullscreenBtn.addEventListener('click', function () {
-        window.location.href = '<?php echo $baseDir; ?>/modules/chat/project_chat.php?project_id=<?php echo $projectId; ?>';
-    });
-    window.addEventListener('message', function (event) {
-        if (!event || !event.data || event.data.type !== 'pms-chat-close') return;
-        closeChatWidget();
-    });
-});
+window._csrfToken = window._csrfToken || <?php echo json_encode(generateCsrfToken()); ?>;
+window.ProjectConfig = window.ProjectConfig || { projectId: <?php echo json_encode($projectId); ?>, baseDir: <?php echo json_encode($baseDir); ?> };
 </script>
+<script src="<?php echo $baseDir; ?>/assets/js/chat-widget.js?v=<?php echo time(); ?>"></script>
 <?php
 endif; ?>
 
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<?php include __DIR__ . '/../../includes/footer.php'; 

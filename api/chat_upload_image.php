@@ -1,10 +1,10 @@
 <?php
-if (session_status() !== PHP_SESSION_ACTIVE) {
-    session_start();
-}
+// DO NOT call session_start() here - let auth.php handle it with correct session name (PMS_SESSION)
+ob_start();
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/functions.php';
 require_once __DIR__ . '/../includes/helpers.php';
+ob_end_clean();
 
 header('Content-Type: application/json');
 
@@ -14,8 +14,19 @@ if (!isset($_SESSION['user_id'])) {
     exit;
 }
 
+$viewerRole = strtolower(trim((string)($_SESSION['role'] ?? '')));
+$viewerRole = preg_replace('/[^a-z0-9]+/', '_', $viewerRole);
+$viewerRole = trim($viewerRole, '_');
+if ($viewerRole === 'client') {
+    http_response_code(403);
+    echo json_encode(['error' => 'Project chat is not available for client accounts.']);
+    exit;
+}
+
 // CSRF protection for file uploads
 enforceApiCsrf();
+
+// Removed rate limiting as per user request to allow unlimited uploads.
 
 if (!isset($_FILES['image'])) {
     http_response_code(400);
@@ -29,8 +40,6 @@ if ($file['error'] !== UPLOAD_ERR_OK) {
     echo json_encode(['error' => 'Upload failed']);
     exit;
 }
-
-// Basic validations (robust on shared hosting with limited PHP extensions)
 $allowedMimeTypes = [
     'image/jpeg' => '.jpg',
     'image/jpg' => '.jpg',
@@ -127,6 +136,13 @@ if (!isset($baseDir)) {
     require_once __DIR__ . '/../includes/helpers.php';
     $baseDir = getBaseDir();
 }
+
+// Register in session for temporary preview access (before message is sent)
+if (!isset($_SESSION['temporary_chat_upload_paths']) || !is_array($_SESSION['temporary_chat_upload_paths'])) {
+    $_SESSION['temporary_chat_upload_paths'] = [];
+}
+$_SESSION['temporary_chat_upload_paths'][$relativePath] = time();
+
 $url = rtrim($baseDir, '/') . '/api/secure_file.php?path=' . rawurlencode($relativePath);
 
 echo json_encode(['success' => true, 'url' => $url]);

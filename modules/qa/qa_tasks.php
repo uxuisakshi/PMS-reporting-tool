@@ -4,7 +4,7 @@ require_once __DIR__ . '/../../includes/functions.php';
 require_once __DIR__ . '/../../includes/helpers.php';
 
 $auth = new Auth();
-$auth->requireRole(['qa', 'admin', 'super_admin']);
+$auth->requireRole(['qa', 'admin']);
 
 $baseDir = getBaseDir();
 $db = Database::getInstance();
@@ -65,6 +65,11 @@ function mapComputedToPageStatus(string $status): string {
 
 // Handle QA env status update from this page.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_env_status'])) {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error'] = 'Invalid request. Please try again.';
+        header('Location: ' . $tasksRedirectUrl);
+        exit;
+    }
     $pageId = (int)($_POST['page_id'] ?? 0);
     $environmentId = (int)($_POST['environment_id'] ?? 0);
     $status = trim((string)($_POST['status'] ?? ''));
@@ -88,10 +93,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_env_status']))
         }
 
         $canUpdate = false;
-        if (in_array($userRole, ['admin', 'super_admin'], true)) {
+        if (in_array($userRole, ['admin'], true)) {
             $canUpdate = true;
         } else {
-            $teamStmt = $db->prepare("\n                SELECT 1\n                FROM user_assignments\n                WHERE project_id = ? AND user_id = ? AND role = 'qa'\n                  AND (is_removed IS NULL OR is_removed = 0)\n                LIMIT 1\n            ");
+            $teamStmt = $db->prepare("\n                SELECT 1\n                FROM user_assignments\n                WHERE project_id = ? AND user_id = ?\n                  AND (is_removed IS NULL OR is_removed = 0)\n                LIMIT 1\n            ");
             $teamStmt->execute([$projectId, $userId]);
             $isProjectQa = (bool)$teamStmt->fetchColumn();
 
@@ -138,7 +143,7 @@ $where = ['pp.project_id = ?'];
 $params = [$projectId];
 
 if ($userRole === 'qa') {
-    $where[] = "(\n        pe.qa_id = ?\n        OR pp.qa_id = ?\n        OR EXISTS (\n            SELECT 1 FROM user_assignments ua\n            WHERE ua.project_id = pp.project_id\n              AND ua.user_id = ?\n              AND ua.role = 'qa'\n              AND (ua.is_removed IS NULL OR ua.is_removed = 0)\n        )\n    )";
+    $where[] = "(\n        pe.qa_id = ?\n        OR pp.qa_id = ?\n        OR EXISTS (\n            SELECT 1 FROM user_assignments ua\n            WHERE ua.project_id = pp.project_id\n              AND ua.user_id = ?\n              AND (ua.is_removed IS NULL OR ua.is_removed = 0)\n        )\n    )";
     $params[] = $userId;
     $params[] = $userId;
     $params[] = $userId;
@@ -241,14 +246,14 @@ include __DIR__ . '/../../includes/header.php';
 
     <?php if (isset($_SESSION['success'])): ?>
         <div class="alert alert-success alert-dismissible fade show">
-            <?php echo $_SESSION['success']; unset($_SESSION['success']); ?>
+            <?php echo e($_SESSION['success']); unset($_SESSION['success']); ?>
             <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
         </div>
     <?php endif; ?>
 
     <?php if (isset($_SESSION['error'])): ?>
         <div class="alert alert-danger alert-dismissible fade show">
-            <?php echo $_SESSION['error']; unset($_SESSION['error']); ?>
+            <?php echo e($_SESSION['error']); unset($_SESSION['error']); ?>
             <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
         </div>
     <?php endif; ?>
@@ -370,6 +375,7 @@ include __DIR__ . '/../../includes/header.php';
                                 </td>
                                 <td>
                                     <form method="POST" class="d-inline-flex align-items-center gap-2">
+                                        <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                                         <input type="hidden" name="page_id" value="<?php echo (int)$page['id']; ?>">
                                         <input type="hidden" name="environment_id" value="<?php echo (int)$page['environment_id']; ?>">
                                         <input type="hidden" name="filter_qa" value="<?php echo (int)$filterQaId; ?>">
@@ -398,4 +404,4 @@ include __DIR__ . '/../../includes/header.php';
     </div>
 </div>
 
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<?php include __DIR__ . '/../../includes/footer.php'; 

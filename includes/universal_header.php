@@ -13,6 +13,30 @@ if (!isset($baseDir)) {
 // Get current page for active navigation
 $currentPage = basename($_SERVER['PHP_SELF']);
 $currentPath = $_SERVER['REQUEST_URI'];
+$clientHeaderProjects = [];
+$clientAccessibilityProjectId = 0;
+$clientAccessibilityReportLink = $baseDir . '/modules/client/issues_overview.php';
+
+if (($_SESSION['role'] ?? '') === 'client') {
+    try {
+        require_once __DIR__ . '/models/ClientAccessControlManager.php';
+        $clientHeaderAccessControl = new ClientAccessControlManager();
+        $clientHeaderProjects = $clientHeaderAccessControl->getAssignedProjects((int)($_SESSION['user_id'] ?? 0));
+    } catch (Exception $e) {
+        error_log('Universal header client projects load failed: ' . $e->getMessage());
+        $clientHeaderProjects = [];
+    }
+
+    $clientAccessibilityProjectId = (int) ($_GET['project_id'] ?? ($_GET['id'] ?? 0));
+    if ($clientAccessibilityProjectId <= 0 && !empty($clientHeaderProjects)) {
+        $clientAccessibilityProjectId = (int) ($clientHeaderProjects[0]['id'] ?? 0);
+    }
+    if ($clientAccessibilityProjectId > 0) {
+        $clientAccessibilityReportLink = $baseDir . '/modules/projects/issues.php?project_id=' . $clientAccessibilityProjectId;
+    }
+}
+
+$isClientProjectDetailPage = strpos($currentPath, '/modules/projects/view.php') !== false;
 ?>
 
 <!-- Universal Header Styles -->
@@ -263,29 +287,68 @@ $currentPath = $_SERVER['REQUEST_URI'];
                     <!-- Dashboard -->
                     <li class="nav-item">
                         <a class="nav-link pms-nav-link <?php echo (strpos($currentPath, 'dashboard') !== false) ? 'active' : ''; ?>" 
-                           href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/client/dashboard_unified.php">
+                           href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/client/dashboard">
                             <i class="fas fa-home"></i>
                             <span>Dashboard</span>
                         </a>
                     </li>
 
-                    <!-- Projects -->
+                    <!-- Digital Assets -->
                     <li class="nav-item">
                         <a class="nav-link pms-nav-link <?php echo (strpos($currentPath, 'projects') !== false) ? 'active' : ''; ?>" 
                            href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/client/projects.php">
                             <i class="fas fa-folder-open"></i>
-                            <span>Projects</span>
+                            <span>My Digital Assets</span>
                         </a>
                     </li>
 
-                    <!-- Analytics -->
+                    <li class="nav-item">
+                        <a class="nav-link pms-nav-link <?php echo (strpos($currentPath, 'issues_overview') !== false) ? 'active' : ''; ?>" 
+                           href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/client/issues_overview.php">
+                            <i class="fas fa-list-ul"></i>
+                            <span>Issue Overview</span>
+                        </a>
+                    </li>
+
                     <li class="nav-item">
                         <a class="nav-link pms-nav-link <?php echo (strpos($currentPath, 'analytics') !== false || strpos($currentPath, 'view=analytics') !== false) ? 'active' : ''; ?>" 
-                           href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/client/dashboard_unified.php?view=analytics">
+                           href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/client/dashboard">
                             <i class="fas fa-chart-line"></i>
                             <span>Analytics</span>
                         </a>
                     </li>
+
+                    <li class="nav-item">
+                        <a class="nav-link pms-nav-link <?php echo (strpos($currentPath, 'preferences') !== false) ? 'active' : ''; ?>" 
+                           href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/client/preferences.php">
+                            <i class="fas fa-sliders-h"></i>
+                            <span>Preferences</span>
+                        </a>
+                    </li>
+
+                    <?php if (!empty($clientHeaderProjects)): ?>
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle pms-nav-link <?php echo ($isClientProjectDetailPage || strpos($currentPath, 'project_dashboard.php') !== false) ? 'active' : ''; ?>" href="#" id="clientAssetDetailsDropdown" data-bs-toggle="dropdown" aria-expanded="false">
+                            <i class="fas fa-eye"></i>
+                            <span>Asset Analytics</span>
+                        </a>
+                        <ul class="dropdown-menu shadow-sm" aria-labelledby="clientAssetDetailsDropdown">
+                            <li>
+                                <a class="dropdown-item" href="<?php echo htmlspecialchars($clientAccessibilityReportLink, ENT_QUOTES, 'UTF-8'); ?>">
+                                    Accessibility Report
+                                </a>
+                            </li>
+                            <li><hr class="dropdown-divider"></li>
+                            <?php foreach ($clientHeaderProjects as $clientHeaderProject): ?>
+                            <li>
+                                <a class="dropdown-item" href="<?php echo htmlspecialchars(buildClientProjectUrl((int) $clientHeaderProject['id'], (string) ($clientHeaderProject['title'] ?? ''), (string) ($clientHeaderProject['project_code'] ?? '')), ENT_QUOTES, 'UTF-8'); ?>">
+                                    <?php echo htmlspecialchars($clientHeaderProject['title'] ?? ('Asset #' . (int) $clientHeaderProject['id']), ENT_QUOTES, 'UTF-8'); ?>
+                                </a>
+                            </li>
+                            <?php endforeach; ?>
+                        </ul>
+                    </li>
+                    <?php endif; ?>
                 </ul>
 
                 <!-- Right Side Items -->
@@ -313,7 +376,7 @@ $currentPath = $_SERVER['REQUEST_URI'];
                             </li>
                             <li><hr class="dropdown-divider pms-dropdown-divider"></li>
                             <li>
-                                <a class="dropdown-item pms-dropdown-item text-danger" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/auth/logout.php">
+                                <a class="dropdown-item pms-dropdown-item text-danger" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/auth/logout.php?csrf_token=<?php echo urlencode(generateCsrfToken()); ?>">
                                     <i class="fas fa-sign-out-alt"></i>
                                     <span>Logout</span>
                                 </a>
@@ -326,49 +389,4 @@ $currentPath = $_SERVER['REQUEST_URI'];
     </nav>
 </header>
 
-<script>
-// Universal Header JavaScript - Runs Once
-(function() {
-    let universalHeaderInitialized = false;
-    
-    function initializeUniversalHeader() {
-        if (universalHeaderInitialized) return;
-        
-        // Ensure all navbar elements have proper styling
-        const navbar = document.querySelector('.pms-universal-header');
-        if (!navbar) return;
-        
-        // Force navbar background
-        navbar.style.setProperty('background-color', '#0755C6', 'important');
-        navbar.style.setProperty('background', '#0755C6', 'important');
-        
-        // Ensure brand text is white
-        const brandElements = navbar.querySelectorAll('.pms-brand, .pms-brand-text, .pms-nav-link, .pms-user-name');
-        brandElements.forEach(el => {
-            el.style.setProperty('color', 'white', 'important');
-        });
-        
-        // Ensure icons are white
-        const icons = navbar.querySelectorAll('.pms-nav-link i');
-        icons.forEach(icon => {
-            icon.style.setProperty('color', 'white', 'important');
-        });
-        
-        universalHeaderInitialized = true;
-    }
-    
-    // Initialize when DOM is ready
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', initializeUniversalHeader);
-    } else {
-        initializeUniversalHeader();
-    }
-    
-    // Fallback for window load
-    window.addEventListener('load', function() {
-        if (!universalHeaderInitialized) {
-            initializeUniversalHeader();
-        }
-    });
-})();
-</script>
+<script src="<?php echo htmlspecialchars(getBaseDir(), ENT_QUOTES, 'UTF-8'); ?>/assets/js/universal-header.js"></script>

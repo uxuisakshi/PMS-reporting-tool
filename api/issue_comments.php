@@ -1,10 +1,13 @@
-﻿<?php
+<?php
+ob_start();
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../config/constants.php';
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/functions.php';
 require_once __DIR__ . '/../includes/helpers.php';
 require_once __DIR__ . '/../includes/project_permissions.php';
+require_once __DIR__ . '/../includes/client_issue_snapshots.php';
+ob_end_clean();
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -101,7 +104,7 @@ function ensureIssueCommentAuditSchema($db) {
 $db = Database::getInstance();
 $userId = $_SESSION['user_id'] ?? 0;
 $role = (string)($_SESSION['role'] ?? '');
-$isAdmin = in_array($role, ['admin', 'super_admin'], true);
+$isAdmin = in_array($role, ['admin'], true);
 $method = $_SERVER['REQUEST_METHOD'];
 $action = $_GET['action'] ?? $_POST['action'] ?? 'list';
 $projectId = (int)($_GET['project_id'] ?? $_POST['project_id'] ?? 0);
@@ -111,9 +114,18 @@ if (!$projectId) jsonError('project_id required', 400);
 if (!$issueId) jsonError('issue_id required', 400);
 if (!hasProjectAccess($db, $userId, $projectId)) jsonError('Permission denied', 403);
 
-$chk = $db->prepare("SELECT COUNT(*) FROM issues WHERE id = ? AND project_id = ?");
+$chk = $db->prepare("SELECT client_ready FROM issues WHERE id = ? AND project_id = ? LIMIT 1");
 $chk->execute([$issueId, $projectId]);
-if ($chk->fetchColumn() == 0) jsonError('Invalid issue for project', 404);
+$issueRow = $chk->fetch(PDO::FETCH_ASSOC);
+if (!$issueRow) jsonError('Invalid issue for project', 404);
+$isClientLiveVisible = (int)($issueRow['client_ready'] ?? 0) === 1;
+$clientSnapshot = null;
+if ($role === 'client' && !$isClientLiveVisible) {
+    $clientSnapshot = getIssueClientSnapshot($db, $issueId);
+    if (!$clientSnapshot || (int)($clientSnapshot['project_id'] ?? 0) !== $projectId) {
+        jsonError('Permission denied', 403);
+    }
+}
 
 try {
     if ($method === 'GET' && $action === 'list') {
@@ -135,11 +147,17 @@ try {
                 JOIN users u ON ic.user_id = u.id
                 LEFT JOIN users r ON ic.recipient_id = r.id
                 LEFT JOIN issue_statuses s ON ic.qa_status_id = s.id
-                WHERE ic.issue_id = ?
-                ORDER BY ic.created_at DESC";
+            WHERE ic.issue_id = ?";
+
+        $params = [$issueId];
+        if ($role === 'client' && !$isClientLiveVisible && !empty($clientSnapshot['published_at'])) {
+            $sql .= " AND ic.created_at <= ?";
+            $params[] = (string) $clientSnapshot['published_at'];
+        }
+        $sql .= " ORDER BY ic.created_at DESC";
 
         $stmt = $db->prepare($sql);
-        $stmt->execute([$issueId]);
+        $stmt->execute($params);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
         foreach ($rows as &$row) {
@@ -149,6 +167,10 @@ try {
             $row['can_delete'] = (!$isDeleted && ($isOwn || $isAdmin));
             $row['can_view_history'] = $isAdmin;
 
+            if ($role === 'client' && function_exists('rewrite_html_public_image_urls')) {
+                $row['comment_html'] = rewrite_html_public_image_urls((string)($row['comment_html'] ?? ''));
+            }
+
             if (!empty($row['reply_to'])) {
                 $replyStmt = $db->prepare("SELECT ic.id, ic.comment_html, u.full_name AS user_name
                                           FROM issue_comments ic
@@ -157,19 +179,30 @@ try {
                 $replyStmt->execute([$row['reply_to']]);
                 $replyData = $replyStmt->fetch(PDO::FETCH_ASSOC);
                 if ($replyData) {
+                    $replyPreviewHtml = (string)($replyData['comment_html'] ?? '');
+                    if ($role === 'client' && function_exists('rewrite_html_public_image_urls')) {
+                        $replyPreviewHtml = rewrite_html_public_image_urls($replyPreviewHtml);
+                    }
                     $row['reply_preview'] = [
                         'id' => $replyData['id'],
                         'user_name' => $replyData['user_name'],
-                        'text' => $replyData['comment_html']
+                        'text' => $replyPreviewHtml
                     ];
                 }
             }
+        }
+
+        if ($role === 'client') {
+            $rows = array_values(array_filter($rows, static function ($row) {
+                return (string)($row['comment_type'] ?? 'normal') === 'regression';
+            }));
         }
 
         jsonResponse(['success' => true, 'comments' => $rows]);
     }
 
     if ($method === 'POST' && $action === 'create') {
+        if ($role === 'client' && !$isClientLiveVisible) jsonError('Issue is under internal review. Client comments are temporarily read-only until the updated issue is approved.', 403);
         ensureIssueCommentAuditSchema($db);
 
         $commentHtml = $_POST['comment_html'] ?? '';
@@ -181,11 +214,19 @@ try {
         $qaStatusId = is_numeric($qaStatusRaw) ? (int)$qaStatusRaw : (int)(getStatusId($db, $qaStatusRaw) ?: 0);
         if (!$commentHtml) jsonError('comment_html required', 400);
 
+        if ($role === 'client') {
+            $commentType = 'regression';
+            $qaStatusId = 0;
+        }
+
         if (!in_array($commentType, ['normal', 'regression'], true)) {
             $commentType = 'normal';
         }
 
-        $clean = function_exists('sanitize_chat_html') ? sanitize_chat_html($commentHtml) : $commentHtml;
+        if (!function_exists('sanitize_chat_html')) {
+            jsonError('Server configuration error: sanitizer unavailable', 500);
+        }
+        $clean = sanitize_chat_html($commentHtml);
 
         try {
             $stmt = $db->prepare("INSERT INTO issue_comments (issue_id, user_id, recipient_id, qa_status_id, comment_html, comment_type, reply_to) VALUES (?, ?, ?, ?, ?, ?, ?)");
@@ -265,6 +306,7 @@ try {
     }
 
     if ($method === 'POST' && $action === 'edit') {
+        if ($role === 'client' && !$isClientLiveVisible) jsonError('Issue is under internal review. Client comments are temporarily read-only until the updated issue is approved.', 403);
         ensureIssueCommentAuditSchema($db);
 
         $commentId = (int)($_POST['comment_id'] ?? 0);
@@ -281,7 +323,10 @@ try {
         if (!$isOwn && !$isAdmin) jsonError('Permission denied', 403);
         if (!empty($row['deleted_at'])) jsonError('Deleted comment cannot be edited', 400);
 
-        $clean = function_exists('sanitize_chat_html') ? sanitize_chat_html($commentHtml) : $commentHtml;
+        if (!function_exists('sanitize_chat_html')) {
+            jsonError('Server configuration error: sanitizer unavailable', 500);
+        }
+        $clean = sanitize_chat_html($commentHtml);
         $upd = $db->prepare("UPDATE issue_comments SET comment_html = ?, edited_at = NOW() WHERE id = ?");
         if (!$upd->execute([$clean, $commentId])) jsonError('Failed to edit comment', 500);
 
@@ -310,6 +355,7 @@ try {
     }
 
     if ($method === 'POST' && $action === 'delete') {
+        if ($role === 'client' && !$isClientLiveVisible) jsonError('Issue is under internal review. Client comments are temporarily read-only until the updated issue is approved.', 403);
         ensureIssueCommentAuditSchema($db);
 
         $commentId = (int)($_POST['comment_id'] ?? 0);
@@ -381,5 +427,6 @@ try {
 
     jsonError('Unsupported action', 400);
 } catch (Exception $e) {
-    jsonError($e->getMessage(), 500);
+    error_log('issue_comments error: ' . $e->getMessage());
+    jsonError('An internal error occurred', 500);
 }

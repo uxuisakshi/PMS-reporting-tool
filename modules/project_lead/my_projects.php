@@ -4,14 +4,32 @@ require_once __DIR__ . '/../../includes/functions.php';
 require_once __DIR__ . '/../../includes/helpers.php';
 
 $auth = new Auth();
-$auth->requireRole(['project_lead', 'admin', 'super_admin']);
+$auth->requireRole(['project_lead', 'admin']);
 
 $baseDir = getBaseDir();
 $db = Database::getInstance();
 $userId = $_SESSION['user_id'];
 $userRole = $_SESSION['role'];
 
-// Get ALL projects for this project lead (including completed)
+// Pagination
+$page = isset($_GET['page']) ? max(1, intval($_GET['page'])) : 1;
+$perPage = 15;
+$offset = ($page - 1) * $perPage;
+
+// Get total count first
+$countQuery = "
+    SELECT COUNT(DISTINCT p.id) as total
+    FROM projects p
+    WHERE (p.project_lead_id = ? OR p.created_by = ?)
+       OR p.id IN (SELECT project_id FROM user_assignments WHERE user_id = ? AND (is_removed IS NULL OR is_removed = 0))
+";
+
+$countStmt = $db->prepare($countQuery);
+$countStmt->execute([$userId, $userId, $userId]);
+$totalProjects = $countStmt->fetch()['total'];
+$totalPages = ceil($totalProjects / $perPage);
+
+// Get projects for this project lead with pagination
 $assignedProjectsQuery = "
     SELECT DISTINCT p.id, p.title, p.po_number, p.project_code, p.status, p.project_type, p.priority,
            c.name as client_name,
@@ -21,13 +39,15 @@ $assignedProjectsQuery = "
     FROM projects p
     LEFT JOIN clients c ON p.client_id = c.id
     LEFT JOIN project_pages pp ON p.id = pp.project_id
-    WHERE p.project_lead_id = ? OR p.created_by = ?
+    WHERE (p.project_lead_id = ? OR p.created_by = ?)
+       OR p.id IN (SELECT project_id FROM user_assignments WHERE user_id = ? AND (is_removed IS NULL OR is_removed = 0))
     GROUP BY p.id, p.title, p.po_number, p.project_code, p.status, p.project_type, p.priority, c.name
     ORDER BY p.created_at DESC
+    LIMIT ? OFFSET ?
 ";
 
 $assignedProjects = $db->prepare($assignedProjectsQuery);
-$assignedProjects->execute([$userId, $userId]);
+$assignedProjects->execute([$userId, $userId, $userId, $perPage, $offset]);
 $projects = $assignedProjects->fetchAll();
 
 include __DIR__ . '/../../includes/header.php';
@@ -48,7 +68,10 @@ include __DIR__ . '/../../includes/header.php';
     <!-- All Projects Table with Filters -->
     <div class="card">
         <div class="card-header d-flex justify-content-between align-items-center">
-            <h5 class="mb-0"><i class="fas fa-list"></i> All My Projects</h5>
+            <div>
+                <h5 class="mb-0"><i class="fas fa-list"></i> All My Projects</h5>
+                <small class="text-muted">Total: <?php echo $totalProjects; ?> projects</small>
+            </div>
             <div class="d-flex gap-2">
                 <select id="statusFilter" class="form-select form-select-sm" style="width: auto;">
                     <option value="">All Status</option>
@@ -176,41 +199,68 @@ include __DIR__ . '/../../includes/header.php';
                         </tbody>
                     </table>
                 </div>
+                
+                <!-- Pagination -->
+                <?php if ($totalPages > 1): ?>
+                <nav aria-label="Projects pagination" class="mt-3">
+                    <ul class="pagination justify-content-center mb-0">
+                        <!-- Previous Button -->
+                        <li class="page-item <?php echo $page <= 1 ? 'disabled' : ''; ?>">
+                            <a class="page-link" href="?page=<?php echo $page - 1; ?>" aria-label="Previous">
+                                <span aria-hidden="true">&laquo;</span>
+                            </a>
+                        </li>
+                        
+                        <?php
+                        // Show page numbers with ellipsis
+                        $startPage = max(1, $page - 2);
+                        $endPage = min($totalPages, $page + 2);
+                        
+                        if ($startPage > 1): ?>
+                            <li class="page-item">
+                                <a class="page-link" href="?page=1">1</a>
+                            </li>
+                            <?php if ($startPage > 2): ?>
+                                <li class="page-item disabled"><span class="page-link">...</span></li>
+                            <?php endif; ?>
+                        <?php endif; ?>
+                        
+                        <?php for ($i = $startPage; $i <= $endPage; $i++): ?>
+                            <li class="page-item <?php echo $i == $page ? 'active' : ''; ?>">
+                                <a class="page-link" href="?page=<?php echo $i; ?>">
+                                    <?php echo $i; ?>
+                                </a>
+                            </li>
+                        <?php endfor; ?>
+                        
+                        <?php if ($endPage < $totalPages): ?>
+                            <?php if ($endPage < $totalPages - 1): ?>
+                                <li class="page-item disabled"><span class="page-link">...</span></li>
+                            <?php endif; ?>
+                            <li class="page-item">
+                                <a class="page-link" href="?page=<?php echo $totalPages; ?>"><?php echo $totalPages; ?></a>
+                            </li>
+                        <?php endif; ?>
+                        
+                        <!-- Next Button -->
+                        <li class="page-item <?php echo $page >= $totalPages ? 'disabled' : ''; ?>">
+                            <a class="page-link" href="?page=<?php echo $page + 1; ?>" aria-label="Next">
+                                <span aria-hidden="true">&raquo;</span>
+                            </a>
+                        </li>
+                    </ul>
+                </nav>
+                <div class="text-center mt-2">
+                    <small class="text-muted">
+                        Showing <?php echo $offset + 1; ?> to <?php echo min($offset + $perPage, $totalProjects); ?> of <?php echo $totalProjects; ?> projects
+                    </small>
+                </div>
+                <?php endif; ?>
             <?php endif; ?>
         </div>
     </div>
 </div>
 
-<script>
-// Project table filtering
-$(document).ready(function() {
-    function filterProjects() {
-        const statusFilter = $('#statusFilter').val().toLowerCase();
-        const typeFilter = $('#typeFilter').val().toLowerCase();
-        const priorityFilter = $('#priorityFilter').val().toLowerCase();
-        const searchText = $('#searchProject').val().toLowerCase();
-        
-        $('#projectsTable tbody tr').each(function() {
-            const row = $(this);
-            const status = row.data('status');
-            const type = row.data('type');
-            const priority = row.data('priority');
-            const title = row.data('title');
-            
-            let showRow = true;
-            
-            if (statusFilter && status !== statusFilter) showRow = false;
-            if (typeFilter && type !== typeFilter) showRow = false;
-            if (priorityFilter && priority !== priorityFilter) showRow = false;
-            if (searchText && title.indexOf(searchText) === -1) showRow = false;
-            
-            row.toggle(showRow);
-        });
-    }
-    
-    $('#statusFilter, #typeFilter, #priorityFilter').on('change', filterProjects);
-    $('#searchProject').on('keyup', filterProjects);
-});
-</script>
+<script src="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/assets/js/my-projects-filter.js"></script>
 
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<?php include __DIR__ . '/../../includes/footer.php'; 

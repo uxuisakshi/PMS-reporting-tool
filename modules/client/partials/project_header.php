@@ -1,6 +1,6 @@
 <?php
 /**
- * Project Header Partial
+ * Digital Asset Header Partial
  * 
  * Project title, metadata, and action buttons
  */
@@ -71,25 +71,25 @@ $projectStats = $projectAnalytics['project_statistics'] ?? [];
                 <div class="col-lg-4">
                     <div class="project-actions text-lg-end">
                         <div class="btn-group-vertical btn-group-sm d-lg-none mb-3">
-                            <button type="button" class="btn btn-success" onclick="exportProject('pdf')">
+                            <button type="button" class="btn btn-success" data-project-export="pdf">
                                 <i class="fas fa-file-pdf"></i> Export PDF
                             </button>
-                            <button type="button" class="btn btn-primary" onclick="exportProject('excel')">
+                            <button type="button" class="btn btn-primary" data-project-export="excel">
                                 <i class="fas fa-file-excel"></i> Export Excel
                             </button>
                         </div>
                         
                         <div class="btn-group d-none d-lg-flex" role="group">
-                            <button type="button" class="btn btn-success btn-sm" onclick="exportProject('pdf')">
+                            <button type="button" class="btn btn-success btn-sm" data-project-export="pdf">
                                 <i class="fas fa-file-pdf"></i> PDF
                             </button>
-                            <button type="button" class="btn btn-primary btn-sm" onclick="exportProject('excel')">
+                            <button type="button" class="btn btn-primary btn-sm" data-project-export="excel">
                                 <i class="fas fa-file-excel"></i> Excel
                             </button>
                         </div>
                         
                         <div class="mt-2">
-                            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="refreshProject()">
+                            <button type="button" class="btn btn-outline-secondary btn-sm" data-project-refresh="1">
                                 <i class="fas fa-sync-alt"></i> Refresh
                             </button>
                         </div>
@@ -228,42 +228,11 @@ $projectStats = $projectAnalytics['project_statistics'] ?? [];
 }
 </style>
 
-<script>
-function exportProject(format) {
-    const projectId = <?php echo $projectId; ?>;
-    const exportUrl = `<?php echo $baseDir; ?>/modules/client/export.php?type=project&format=${format}&project_id=${projectId}`;
-    
-    // Show loading state
-    const button = event.target.closest('button');
-    const originalText = button.innerHTML;
-    button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating...';
-    button.disabled = true;
-    
-    // Create hidden form for export
-    const form = document.createElement('form');
-    form.method = 'POST';
-    form.action = exportUrl;
-    form.style.display = 'none';
-    document.body.appendChild(form);
-    form.submit();
-    
-    // Reset button after delay
-    setTimeout(() => {
-        button.innerHTML = originalText;
-        button.disabled = false;
-        document.body.removeChild(form);
-    }, 3000);
-}
-
-function refreshProject() {
-    const button = event.target.closest('button');
-    const originalText = button.innerHTML;
-    button.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
-    button.disabled = true;
-    
-    // Reload the page with refresh parameter
-    const url = new URL(window.location);
-    url.searchParams.set('refresh', '1');
-    window.location.href = url.toString();
-}
+<script nonce="<?php echo $cspNonce ?? ''; ?>">
+window._projectHeaderConfig = {
+    projectId: <?php echo json_encode((int)$projectId); ?>,
+    clientId: <?php echo json_encode((int)($project['client_id'] ?? 0)); ?>,
+    baseDir: <?php echo json_encode($baseDir, JSON_HEX_TAG | JSON_HEX_AMP); ?>
+};
 </script>
+<script src="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/assets/js/client-project-header.js"></script>

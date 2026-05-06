@@ -1,7 +1,9 @@
 <?php
+ob_start();
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/functions.php';
 require_once __DIR__ . '/../includes/helpers.php';
+ob_end_clean();
 
 header('Content-Type: application/json');
 
@@ -53,6 +55,9 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     echo json_encode(['success' => false, 'message' => 'Method not allowed']);
     exit;
 }
+
+// CSRF protection for all state-changing POST requests
+enforceApiCsrf();
 
 $action = $_POST['action'] ?? '';
 $pageId = $_POST['page_id'] ?? 0;
@@ -141,13 +146,13 @@ try {
             exit;
         }
         
-        // Permission check: only allow AT/FT assigned testers or admin/project_lead/super_admin
+        // Permission check: only allow AT/FT assigned testers or admin/project_lead/admin
         $pe = $db->prepare("SELECT at_tester_id, ft_tester_id, qa_id, project_id FROM page_environments WHERE page_id = ? AND environment_id = ?");
         $pe->execute([$pageId, $envId]);
         $peRow = $pe->fetch(PDO::FETCH_ASSOC);
         $allowed = false;
         if ($peRow) {
-            if (in_array($userRole, ['admin', 'super_admin', 'project_lead', 'qa'])) {
+            if (in_array($userRole, ['admin', 'project_lead', 'qa'])) {
                 $allowed = true;
             }
             if ($userId && $peRow['at_tester_id'] && intval($peRow['at_tester_id']) === intval($userId)) {
@@ -209,13 +214,13 @@ try {
             exit;
         }
         
-        // Permission check: only allow assigned QA or admin/project_lead/super_admin
+        // Permission check: only allow assigned QA or admin/project_lead/admin
         $pe = $db->prepare("SELECT qa_id FROM page_environments WHERE page_id = ? AND environment_id = ?");
         $pe->execute([$pageId, $envId]);
         $peRow = $pe->fetch(PDO::FETCH_ASSOC);
         $allowed = false;
         if ($peRow) {
-            if (in_array($userRole, ['admin', 'super_admin', 'project_lead'])) {
+            if (in_array($userRole, ['admin', 'project_lead'])) {
                 $allowed = true;
             }
             if ($userId && $peRow['qa_id'] && intval($peRow['qa_id']) === intval($userId)) {
@@ -267,4 +272,3 @@ try {
     error_log("Status API Error: " . $e->getMessage());
     echo json_encode(['success' => false, 'message' => 'Database error']);
 }
-?>

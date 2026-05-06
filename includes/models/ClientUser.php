@@ -50,11 +50,11 @@ class ClientUser {
      * Authenticate client user with credentials
      */
     public static function authenticate($username, $password) {
-        $db = Database::getInstance();
+        $pdo = Database::getInstance();
         
         try {
             // Find user with client role
-            $stmt = $db->prepare("
+            $stmt = $pdo->prepare("
                 SELECT id, username, email, password, full_name, is_active, 
                        account_setup_completed, force_password_reset
                 FROM users 
@@ -66,6 +66,8 @@ class ClientUser {
             $user = $stmt->fetch(PDO::FETCH_ASSOC);
             
             if (!$user) {
+                // Log failed attempt for unknown user (best practice to detect enumeration/brute-force)
+                self::logAuthAttempt(0, 'login_failed_unknown', 'Login attempted with unknown user: ' . $username);
                 return ['success' => false, 'error' => 'Invalid credentials or access denied'];
             }
             
@@ -115,10 +117,10 @@ class ClientUser {
      * Validate if user has client role
      */
     public static function isClientUser($userId) {
-        $db = Database::getInstance();
+        $pdo = Database::getInstance();
         
         try {
-            $stmt = $db->prepare("
+            $stmt = $pdo->prepare("
                 SELECT id FROM users 
                 WHERE id = ? AND role = 'client' AND is_active = 1
             ");
@@ -157,6 +159,7 @@ class ClientUser {
         $_SESSION['is_client'] = true;
         $_SESSION['login_time'] = time();
         $_SESSION['last_activity'] = time();
+        $_SESSION['last_reauth'] = time(); // Track reauth separately from activity
         $_SESSION['session_token'] = bin2hex(random_bytes(32));
         
         // Set session timeout (4 hours for clients)
@@ -252,27 +255,29 @@ class ClientUser {
     
     /**
      * Check if current session requires re-authentication
+     * Uses last_reauth timestamp (set on login or successful reauth), not last_activity
+     * so that normal page activity doesn't reset the reauth clock.
      */
     public static function requiresReauth() {
-        if (!self::validateSession()) {
+        if (!isset($_SESSION['user_id']) || !isset($_SESSION['is_client']) || !$_SESSION['is_client']) {
             return true;
         }
-        
-        // Require re-auth for sensitive operations after 1 hour
+
         $reauthTimeout = 3600; // 1 hour
-        $lastActivity = $_SESSION['last_activity'] ?? 0;
-        
-        return (time() - $lastActivity) > $reauthTimeout;
+        // Use dedicated reauth timestamp; fall back to login_time if not set
+        $lastReauth = $_SESSION['last_reauth'] ?? $_SESSION['login_time'] ?? 0;
+
+        return (time() - $lastReauth) > $reauthTimeout;
     }
     
     /**
      * Log authentication attempts and activities
      */
     private static function logAuthAttempt($userId, $actionType, $details) {
-        $db = Database::getInstance();
+        $pdo = Database::getInstance();
         
         try {
-            $stmt = $db->prepare("
+            $stmt = $pdo->prepare("
                 INSERT INTO client_audit_log 
                 (client_user_id, action_type, action_details, ip_address, user_agent, success, created_at)
                 VALUES (?, ?, ?, ?, ?, 1, NOW())

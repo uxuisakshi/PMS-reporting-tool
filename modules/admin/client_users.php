@@ -111,6 +111,11 @@ try {
 
 // Handle Create Client User
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_client_user'])) {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error'] = 'Invalid request. Please try again.';
+        header('Location: client_users.php');
+        exit;
+    }
     $username = sanitizeInput($_POST['username']);
     $fullName = sanitizeInput($_POST['full_name']);
     $email = sanitizeInput($_POST['email']);
@@ -128,10 +133,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_client_user'])
             // Create user
             $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
             $stmt = $db->prepare("
-                INSERT INTO users (username, full_name, email, password, role, client_id, created_at) 
-                VALUES (?, ?, ?, ?, 'client', ?, NOW())
+                INSERT INTO users (username, full_name, email, password, role, client_id, force_password_reset, temp_password, account_setup_completed, created_at) 
+                VALUES (?, ?, ?, ?, 'client', ?, 1, ?, 0, NOW())
             ");
-            $stmt->execute([$username, $fullName, $email, $hashedPassword, $clientId]);
+            $stmt->execute([$username, $fullName, $email, $hashedPassword, $clientId, $password]);
             $userId = $db->lastInsertId();
             
             // Grant view_project permission if checked
@@ -192,6 +197,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_client_user'])
 
 // Handle Update Client User
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_client_user'])) {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error'] = 'Invalid request. Please try again.';
+        header('Location: client_users.php');
+        exit;
+    }
     $userId = intval($_POST['user_id']);
     $username = sanitizeInput($_POST['username']);
     $fullName = sanitizeInput($_POST['full_name']);
@@ -216,6 +226,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_client_user'])
 
 // Handle Reset Password
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['reset_password'])) {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error'] = 'Invalid request. Please try again.';
+        header('Location: client_users.php');
+        exit;
+    }
     $userId = intval($_POST['user_id']);
     $newPassword = $_POST['new_password'];
     
@@ -229,6 +244,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['reset_password'])) {
     } catch (Exception $e) {
         $_SESSION['error'] = "Error resetting password: " . $e->getMessage();
     }
+}
+
+// Handle Delete Client User
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_client_user'])) {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error'] = 'Invalid request. Please try again.';
+        header('Location: client_users.php');
+        exit;
+    }
+    $userId = intval($_POST['user_id']);
+    try {
+        // Verify it's a client user
+        $check = $db->prepare("SELECT id, full_name, email FROM users WHERE id = ? AND role = 'client' LIMIT 1");
+        $check->execute([$userId]);
+        $clientUser = $check->fetch(PDO::FETCH_ASSOC);
+
+        if (!$clientUser) {
+            $_SESSION['error'] = 'Client user not found.';
+            header('Location: client_users.php');
+            exit;
+        }
+
+        // Delete related records first
+        $db->prepare("DELETE FROM client_permissions WHERE user_id = ?")->execute([$userId]);
+        $db->prepare("DELETE FROM user_sessions WHERE user_id = ?")->execute([$userId]);
+
+        // Delete the user
+        $db->prepare("DELETE FROM users WHERE id = ? AND role = 'client'")->execute([$userId]);
+
+        // Log activity
+        try {
+            logActivity($db, (int)$_SESSION['user_id'], 'delete_client_user', 'users', $userId, [
+                'deleted_email' => $clientUser['email'],
+                'deleted_name'  => $clientUser['full_name'],
+            ]);
+        } catch (Throwable $_) {}
+
+        $_SESSION['success'] = "Client user '{$clientUser['full_name']}' deleted successfully.";
+    } catch (Exception $e) {
+        $_SESSION['error'] = "Error deleting client user: " . $e->getMessage();
+    }
+    header('Location: client_users.php');
+    exit;
 }
 
 // Get all clients
@@ -371,6 +429,9 @@ include __DIR__ . '/../../includes/header.php';
                                     <a href="<?php echo $baseDir; ?>/modules/admin/client_permissions.php?user_id=<?php echo $user['id']; ?>" class="btn btn-outline-info">
                                         <i class="fas fa-shield-alt"></i>
                                     </a>
+                                    <button class="btn btn-outline-danger" onclick="deleteClientUser(<?php echo $user['id']; ?>, '<?php echo htmlspecialchars(addslashes($user['full_name']), ENT_QUOTES); ?>')">
+                                        <i class="fas fa-trash"></i>
+                                    </button>
                                 </div>
                             </td>
                         </tr>
@@ -387,6 +448,7 @@ include __DIR__ . '/../../includes/header.php';
     <div class="modal-dialog">
         <div class="modal-content">
             <form method="POST">
+                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                 <div class="modal-header">
                     <h5 class="modal-title">Create Client User</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
@@ -441,6 +503,7 @@ include __DIR__ . '/../../includes/header.php';
     <div class="modal-dialog">
         <div class="modal-content">
             <form method="POST">
+                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                 <input type="hidden" name="user_id" id="edit_user_id">
                 <div class="modal-header">
                     <h5 class="modal-title">Edit Client User</h5>
@@ -491,6 +554,7 @@ include __DIR__ . '/../../includes/header.php';
     <div class="modal-dialog">
         <div class="modal-content">
             <form method="POST">
+                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                 <input type="hidden" name="user_id" id="reset_user_id">
                 <div class="modal-header">
                     <h5 class="modal-title">Reset Password</h5>
@@ -513,31 +577,35 @@ include __DIR__ . '/../../includes/header.php';
     </div>
 </div>
 
-<script>
-$(document).ready(function() {
-    $('#clientUsersTable').DataTable({
-        order: [[6, 'desc']],
-        pageLength: 25
-    });
-});
+<!-- Delete Client User Modal -->
+<div class="modal fade" id="deleteClientUserModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <form method="POST" id="deleteClientUserForm">
+                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
+                <input type="hidden" name="delete_client_user" value="1">
+                <input type="hidden" name="user_id" id="delete_user_id">
+                <div class="modal-header">
+                    <h5 class="modal-title text-danger"><i class="fas fa-trash me-2"></i>Delete Client User</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="alert alert-danger">
+                        <i class="fas fa-exclamation-triangle me-2"></i>
+                        <strong>This action cannot be undone.</strong>
+                    </div>
+                    <p>Are you sure you want to permanently delete client user: <strong id="delete_user_name"></strong>?</p>
+                    <p class="text-muted small mb-0">This will also remove their permissions and session records.</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-danger"><i class="fas fa-trash me-1"></i>Yes, Delete</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
 
-function editUser(user) {
-    document.getElementById('edit_user_id').value = user.id;
-    document.getElementById('edit_username').value = user.username || '';
-    document.getElementById('edit_full_name').value = user.full_name;
-    document.getElementById('edit_email').value = user.email;
-    document.getElementById('edit_client_id').value = user.client_id || '';
-    document.getElementById('edit_is_active').checked = user.is_active == 1;
-    
-    new bootstrap.Modal(document.getElementById('editUserModal')).show();
-}
+<script src="<?php echo $baseDir; ?>/assets/js/client-users.js?v=<?php echo time(); ?>"></script>
 
-function resetPassword(userId, userName) {
-    document.getElementById('reset_user_id').value = userId;
-    document.getElementById('reset_user_name').textContent = userName;
-    
-    new bootstrap.Modal(document.getElementById('resetPasswordModal')).show();
-}
-</script>
-
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<?php include __DIR__ . '/../../includes/footer.php'; 

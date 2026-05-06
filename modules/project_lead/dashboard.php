@@ -9,7 +9,7 @@ require_once __DIR__ . '/../../includes/functions.php';
 require_once __DIR__ . '/../../includes/project_permissions.php';
 
 $auth = new Auth();
-$auth->requireRole(['project_lead', 'admin', 'super_admin']);
+$auth->requireRole(['project_lead', 'admin']);
 
 $userId = $_SESSION['user_id'];
 $db = Database::getInstance();
@@ -27,9 +27,9 @@ $myDevices = $myDevicesStmt->fetchAll(PDO::FETCH_ASSOC);
 // Check if user has resource workload access
 $hasResourceWorkloadAccess = hasResourceWorkloadAccess($db, $userId);
 
-// Get project lead's projects
+// Get project lead's projects (both as actual lead AND as assigned team member)
 $projectsQuery = "
-    SELECT p.*, c.name as client_name,
+    SELECT DISTINCT p.*, c.name as client_name,
            (SELECT phase_name FROM project_phases ph WHERE ph.project_id = p.id AND ph.status = 'in_progress' ORDER BY ph.start_date DESC LIMIT 1) as current_phase,
            COUNT(DISTINCT pp.id) as total_pages,
            SUM(CASE WHEN pp.status = 'completed' THEN 1 ELSE 0 END) as completed_pages,
@@ -37,12 +37,16 @@ $projectsQuery = "
     FROM projects p
     LEFT JOIN clients c ON p.client_id = c.id
     LEFT JOIN project_pages pp ON p.id = pp.project_id
-    WHERE p.project_lead_id = ? AND p.status NOT IN ('completed', 'cancelled')
+    WHERE p.status NOT IN ('completed', 'cancelled')
+      AND (
+          p.project_lead_id = ?
+          OR p.id IN (SELECT project_id FROM user_assignments WHERE user_id = ? AND (is_removed IS NULL OR is_removed = 0))
+      )
     GROUP BY p.id, p.title, p.description, p.project_type, p.client_id, p.priority, p.status, p.total_hours, p.project_lead_id, p.created_by, p.created_at, p.completed_at, c.name
     ORDER BY p.priority DESC, p.created_at DESC
 ";
 $stmt = $db->prepare($projectsQuery);
-$stmt->execute([$userId]);
+$stmt->execute([$userId, $userId]);
 $projects = $stmt->fetchAll();
 
 // Get team members - simplified query
@@ -298,4 +302,4 @@ include __DIR__ . '/../../includes/header.php';
     </div>
 </div>
 
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<?php include __DIR__ . '/../../includes/footer.php'; 

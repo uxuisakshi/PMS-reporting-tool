@@ -1,5 +1,7 @@
 <?php
 
+require_once __DIR__ . '/../client_issue_snapshots.php';
+
 abstract class AnalyticsEngine {
     
     // Cache TTL in seconds (1 hour)
@@ -47,13 +49,50 @@ abstract class AnalyticsEngine {
             if (!$this->pdo) {
                 return $this->getMockIssues();
             }
+
+            if ($clientId !== null) {
+                $records = getClientVisibleIssueRecords($this->pdo, $projectId, [
+                    'order_by' => 'i.created_at DESC, i.id DESC',
+                ]);
+
+                $issues = [];
+                foreach ($records as $record) {
+                    $issue = $record['issue'] ?? [];
+                    if (empty($issue)) {
+                        continue;
+                    }
+
+                    $meta = $record['meta'] ?? [];
+                    $pages = $record['pages'] ?? [];
+                    foreach ($meta as $metaKey => $metaValues) {
+                        if (!array_key_exists($metaKey, $issue)) {
+                            $issue[$metaKey] = $metaValues;
+                        }
+                    }
+
+                    if (!isset($issue['page_url'])) {
+                        $issue['page_url'] = (string) (($pages[0]['url'] ?? '') ?: '');
+                    }
+                    if (!isset($issue['page_name'])) {
+                        $issue['page_name'] = (string) (($pages[0]['page_name'] ?? '') ?: '');
+                    }
+                    if (!isset($issue['page_number'])) {
+                        $issue['page_number'] = (string) (($pages[0]['page_number'] ?? '') ?: '');
+                    }
+                    if (!isset($issue['status'])) {
+                        $issue['status'] = (string) ($issue['status_name'] ?? '');
+                    }
+                    $issue['client_ready'] = 1;
+                    $issue['client_visible_source'] = (string) ($record['source'] ?? 'live');
+                    $issue['client_visible_published_at'] = (string) ($record['published_at'] ?? '');
+                    $issues[] = $issue;
+                }
+
+                return $issues;
+            }
             
             $sql = "SELECT * FROM issues WHERE 1=1";
             $params = [];
-            
-            if ($clientId !== null) {
-                $sql .= " AND client_ready = 1";
-            }
             
             if ($projectId !== null) {
                 if (is_array($projectId)) {
@@ -186,6 +225,33 @@ abstract class AnalyticsEngine {
     protected function calculateImpactScore($frequency, $spread) {
         $impactScore = ($frequency * 0.7) + ($spread * 0.3);
         return round($impactScore, 1);
+    }
+
+    protected function normalizeTextValue($value) {
+        if (is_array($value)) {
+            $parts = [];
+            array_walk_recursive($value, function ($item) use (&$parts) {
+                if ($item === null) {
+                    return;
+                }
+                $text = trim((string) $item);
+                if ($text !== '') {
+                    $parts[] = $text;
+                }
+            });
+
+            return implode(' ', $parts);
+        }
+
+        if ($value === null) {
+            return '';
+        }
+
+        return trim((string) $value);
+    }
+
+    protected function normalizeLowerText($value) {
+        return strtolower($this->normalizeTextValue($value));
     }
 
     protected function validateProjectAccess($clientId, $projectId) {

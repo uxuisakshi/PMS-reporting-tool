@@ -10,7 +10,7 @@ require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/helpers.php';
 
 $auth = new Auth();
-$auth->requireRole(['admin', 'super_admin']);
+$auth->requireRole(['admin']);
 
 $db = Database::getInstance();
 
@@ -20,6 +20,14 @@ $input = json_decode(file_get_contents('php://input'), true);
 if (!$input || empty($input['session_id'])) {
     http_response_code(400);
     echo json_encode(['success' => false, 'error' => 'Session ID is required']);
+    exit;
+}
+
+// CSRF protection
+$csrfToken = $input['csrf_token'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+if (!verifyCsrfToken($csrfToken)) {
+    http_response_code(403);
+    echo json_encode(['success' => false, 'error' => 'Invalid or missing CSRF token']);
     exit;
 }
 
@@ -61,7 +69,17 @@ try {
             // Non-fatal
         }
         
-        echo json_encode(['success' => true, 'message' => 'Session terminated successfully']);
+        $resultStmt = $db->prepare("SELECT logout_at, logout_type, active FROM user_sessions WHERE session_id = ? LIMIT 1");
+        $resultStmt->execute([$sessionId]);
+        $updatedSession = $resultStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+
+        echo json_encode([
+            'success' => true,
+            'message' => 'Session terminated successfully',
+            'logout_at' => $updatedSession['logout_at'] ?? null,
+            'logout_type' => $updatedSession['logout_type'] ?? 'forced_by_admin',
+            'active' => isset($updatedSession['active']) ? (int)$updatedSession['active'] : 0
+        ]);
     } else {
         http_response_code(500);
         echo json_encode(['success' => false, 'error' => 'Failed to terminate session']);
@@ -72,4 +90,3 @@ try {
     http_response_code(500);
     echo json_encode(['success' => false, 'error' => 'Database error occurred']);
 }
-?>

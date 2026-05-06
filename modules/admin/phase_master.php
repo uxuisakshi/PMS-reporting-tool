@@ -4,13 +4,18 @@ require_once __DIR__ . '/../../includes/functions.php';
 require_once __DIR__ . '/../../includes/helpers.php';
 
 $auth = new Auth();
-$auth->requireRole(['admin', 'super_admin']);
+$auth->requireRole(['admin']);
 
 $db = Database::getInstance();
 $userId = $_SESSION['user_id'];
 
 // Handle Add Phase
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_phase'])) {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error'] = 'Invalid request. Please try again.';
+        header('Location: phase_master.php');
+        exit;
+    }
     $phaseName = trim($_POST['phase_name']);
     $description = trim($_POST['phase_description']);
     $duration = !empty($_POST['typical_duration_days']) ? (int)$_POST['typical_duration_days'] : null;
@@ -34,6 +39,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_phase'])) {
 
 // Handle Update Phase
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_phase'])) {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error'] = 'Invalid request. Please try again.';
+        header('Location: phase_master.php');
+        exit;
+    }
     $phaseId = (int)$_POST['phase_id'];
     $phaseName = trim($_POST['phase_name']);
     $description = trim($_POST['phase_description']);
@@ -98,6 +108,11 @@ foreach ($phases as $phase) {
     $stmt->execute([$phase['id']]);
     $usageStats[$phase['id']] = $stmt->fetchColumn();
 }
+
+// Add cache-busting headers
+header("Cache-Control: no-cache, no-store, must-revalidate");
+header("Pragma: no-cache");
+header("Expires: 0");
 
 include __DIR__ . '/../../includes/header.php';
 ?>
@@ -178,19 +193,22 @@ include __DIR__ . '/../../includes/header.php';
                                         title="Edit">
                                     <i class="fas fa-edit"></i>
                                 </button>
-                                <a href="?toggle=<?php echo $phase['id']; ?>" 
-                                   class="btn btn-sm btn-outline-warning"
+                                <button type="button" 
+                                   class="btn btn-sm btn-outline-warning toggle-phase-btn"
                                    title="Toggle Status"
-                                   onclick="return confirm('Toggle active status?')">
+                                   data-phase-id="<?php echo $phase['id']; ?>"
+                                   data-phase-name="<?php echo htmlspecialchars($phase['phase_name']); ?>"
+                                   data-is-active="<?php echo $phase['is_active'] ? '1' : '0'; ?>">
                                     <i class="fas fa-toggle-on"></i>
-                                </a>
+                                </button>
                                 <?php if (($usageStats[$phase['id']] ?? 0) == 0): ?>
-                                <a href="?delete=<?php echo $phase['id']; ?>" 
-                                   class="btn btn-sm btn-outline-danger"
+                                <button type="button" 
+                                   class="btn btn-sm btn-outline-danger delete-phase-btn"
                                    title="Delete"
-                                   onclick="return confirm('Are you sure you want to delete this phase?')">
+                                   data-phase-id="<?php echo $phase['id']; ?>"
+                                   data-phase-name="<?php echo htmlspecialchars($phase['phase_name']); ?>">
                                     <i class="fas fa-trash"></i>
-                                </a>
+                                </button>
                                 <?php else: ?>
                                 <button class="btn btn-sm btn-outline-secondary" disabled title="Cannot delete - in use">
                                     <i class="fas fa-trash"></i>
@@ -211,6 +229,7 @@ include __DIR__ . '/../../includes/header.php';
     <div class="modal-dialog">
         <div class="modal-content">
             <form method="POST">
+                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                 <div class="modal-header">
                     <h5 class="modal-title">Add New Phase</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
@@ -254,6 +273,7 @@ include __DIR__ . '/../../includes/header.php';
     <div class="modal-dialog">
         <div class="modal-content">
             <form method="POST">
+                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                 <input type="hidden" name="phase_id" value="<?php echo $phase['id']; ?>">
                 <div class="modal-header">
                     <h5 class="modal-title">Edit Phase</h5>
@@ -301,4 +321,84 @@ include __DIR__ . '/../../includes/header.php';
 </div>
 <?php endforeach; ?>
 
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<!-- Delete Confirmation Modal -->
+<div class="modal fade" id="deletePhaseModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header bg-danger text-white">
+                <h5 class="modal-title"><i class="fas fa-exclamation-triangle"></i> Confirm Delete</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="mb-0">Are you sure you want to delete the phase <strong id="deletePhaseNameDisplay"></strong>?</p>
+                <p class="text-muted small mt-2 mb-0">This action cannot be undone.</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <a href="#" id="confirmDeleteBtn" class="btn btn-danger">
+                    <i class="fas fa-trash"></i> Delete Phase
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Toggle Status Confirmation Modal -->
+<div class="modal fade" id="togglePhaseModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header bg-warning">
+                <h5 class="modal-title"><i class="fas fa-toggle-on"></i> Confirm Status Change</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="mb-0">Are you sure you want to <strong id="toggleActionText"></strong> the phase <strong id="togglePhaseNameDisplay"></strong>?</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <a href="#" id="confirmToggleBtn" class="btn btn-warning">
+                    <i class="fas fa-toggle-on"></i> Change Status
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// Delete phase button click handler
+document.addEventListener('DOMContentLoaded', function() {
+    // Delete buttons
+    document.querySelectorAll('.delete-phase-btn').forEach(function(btn) {
+        btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            const phaseId = this.getAttribute('data-phase-id');
+            const phaseName = this.getAttribute('data-phase-name');
+            
+            document.getElementById('deletePhaseNameDisplay').textContent = phaseName;
+            document.getElementById('confirmDeleteBtn').href = '?delete=' + phaseId;
+            
+            var deleteModal = new bootstrap.Modal(document.getElementById('deletePhaseModal'));
+            deleteModal.show();
+        });
+    });
+    
+    // Toggle buttons
+    document.querySelectorAll('.toggle-phase-btn').forEach(function(btn) {
+        btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            const phaseId = this.getAttribute('data-phase-id');
+            const phaseName = this.getAttribute('data-phase-name');
+            const isActive = this.getAttribute('data-is-active') === '1';
+            
+            document.getElementById('togglePhaseNameDisplay').textContent = phaseName;
+            document.getElementById('toggleActionText').textContent = isActive ? 'deactivate' : 'activate';
+            document.getElementById('confirmToggleBtn').href = '?toggle=' + phaseId;
+            
+            var toggleModal = new bootstrap.Modal(document.getElementById('togglePhaseModal'));
+            toggleModal.show();
+        });
+    });
+});
+</script>
+
+<?php include __DIR__ . '/../../includes/footer.php'; 

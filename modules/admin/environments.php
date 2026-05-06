@@ -9,6 +9,11 @@ $db = Database::getInstance();
 
 // Handle create
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_env'])) {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error'] = 'Invalid request. Please try again.';
+        header('Location: environments.php');
+        exit;
+    }
     $name = trim($_POST['name']);
     $type = $_POST['type'];
     $browser = trim($_POST['browser'] ?: null);
@@ -31,6 +36,11 @@ if (isset($_GET['delete'])) {
 
 // Handle edit save
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_env'])) {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error'] = 'Invalid request. Please try again.';
+        header('Location: environments.php');
+        exit;
+    }
     $id = (int)($_POST['env_id'] ?? 0);
     $name = trim($_POST['name']);
     $type = $_POST['type'];
@@ -64,6 +74,7 @@ include __DIR__ . '/../../includes/header.php';
                 <div class="card-header">Create Environment</div>
                 <div class="card-body">
                     <form method="POST">
+                        <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                         <div class="mb-3">
                             <label class="form-label">Name</label>
                             <input name="name" class="form-control" required value="<?php echo $editing ? htmlspecialchars($editing['name']) : ''; ?>" />
@@ -120,4 +131,4 @@ include __DIR__ . '/../../includes/header.php';
         </div>
     </div>
 </div>
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<?php include __DIR__ . '/../../includes/footer.php'; 

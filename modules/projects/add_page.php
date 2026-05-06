@@ -4,7 +4,7 @@ require_once __DIR__ . '/../../includes/functions.php';
 require_once __DIR__ . '/../../includes/helpers.php';
 
 $auth = new Auth();
-$auth->requireRole(['admin', 'super_admin', 'project_lead', 'qa']);
+$auth->requireRole(['admin', 'project_lead', 'qa']);
 
 $projectId = isset($_GET['project_id']) && is_numeric($_GET['project_id']) ? (int)$_GET['project_id'] : null;
 $db = Database::getInstance();
@@ -49,11 +49,16 @@ if ($projectId) {
 $projects = $db->query("SELECT id, title FROM projects ORDER BY title")->fetchAll(PDO::FETCH_ASSOC);
 
 // Fetch testers and environments for the form
-$atTesters = $db->query("SELECT id, full_name FROM users WHERE role = 'at_tester'")->fetchAll(PDO::FETCH_ASSOC);
-$ftTesters = $db->query("SELECT id, full_name FROM users WHERE role = 'ft_tester'")->fetchAll(PDO::FETCH_ASSOC);
+$atTesters = $db->query("SELECT id, full_name FROM users WHERE role IN ('at_tester', 'project_lead')")->fetchAll(PDO::FETCH_ASSOC);
+$ftTesters = $db->query("SELECT id, full_name FROM users WHERE role IN ('ft_tester', 'project_lead')")->fetchAll(PDO::FETCH_ASSOC);
 $environments = $db->query("SELECT id, name FROM testing_environments ORDER BY name")->fetchAll(PDO::FETCH_ASSOC);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error'] = 'Invalid request. Please try again.';
+        header('Location: add_page.php' . ($projectId ? '?project_id=' . $projectId : ''));
+        exit;
+    }
     // Determine selected project for insertion (POST overrides GET)
     $selectedProjectId = null;
     if (!empty($_POST['project_id']) && is_numeric($_POST['project_id'])) {
@@ -193,6 +198,7 @@ include __DIR__ . '/../../includes/header.php';
                     <?php endif; ?>
 
                     <form method="POST" enctype="multipart/form-data">
+                        <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                         <?php if (empty($projectId)): ?>
                             <div class="mb-3">
                                 <label class="form-label">Project (optional)</label>
@@ -275,4 +281,4 @@ include __DIR__ . '/../../includes/header.php';
     </div>
 </div>
 
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<?php include __DIR__ . '/../../includes/footer.php'; 

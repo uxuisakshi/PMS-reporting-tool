@@ -12,6 +12,47 @@ require_once __DIR__ . '/../config/database.php';
 
 $logFile = __DIR__ . '/../logs/hours_compliance.log';
 
+function ensureHoursReminderSettingsSchema(PDO $pdo) {
+    static $ensured = false;
+    if ($ensured) {
+        return;
+    }
+
+    $columns = [
+        "ADD COLUMN login_cutoff_time TIME DEFAULT '10:30:00' AFTER minimum_hours",
+        "ADD COLUMN status_cutoff_time TIME DEFAULT '11:00:00' AFTER login_cutoff_time",
+        "ADD COLUMN exclude_weekends TINYINT(1) DEFAULT 1 AFTER status_cutoff_time",
+        "ADD COLUMN exclude_leave_days TINYINT(1) DEFAULT 1 AFTER exclude_weekends",
+    ];
+
+    foreach ($columns as $definition) {
+        try {
+            $pdo->exec("ALTER TABLE hours_reminder_settings {$definition}");
+        } catch (Exception $e) {
+        }
+    }
+
+    $ensured = true;
+}
+
+function isExcludedComplianceDay(PDO $pdo, $userId, $date, array $settings) {
+    $weekday = (int) date('N', strtotime($date));
+    if (!empty($settings['exclude_weekends']) && $weekday >= 6) {
+        return true;
+    }
+
+    if (!empty($settings['exclude_leave_days'])) {
+        $stmt = $pdo->prepare("SELECT status FROM user_daily_status WHERE user_id = ? AND status_date = ? LIMIT 1");
+        $stmt->execute([$userId, $date]);
+        $statusKey = $stmt->fetchColumn() ?: null;
+        if (in_array((string) $statusKey, ['on_leave', 'sick_leave'], true)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 function logMessage($message) {
     global $logFile;
     $timestamp = date('Y-m-d H:i:s');
@@ -25,6 +66,7 @@ function logMessage($message) {
 
 try {
     $pdo = Database::getInstance();
+    ensureHoursReminderSettingsSchema($pdo);
     
     logMessage("Starting daily hours compliance check...");
     
@@ -57,11 +99,11 @@ try {
     
     $today = date('Y-m-d');
     
-    // Get all active users (excluding admins)
+    // Get all active users who are expected to log daily production hours.
     $stmt = $pdo->query("
         SELECT id, username, full_name, email, role
         FROM users
-        WHERE is_active = TRUE AND role NOT IN ('super_admin', 'admin')
+        WHERE is_active = TRUE AND role NOT IN ('admin', 'client')
     ");
     $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
     
@@ -72,6 +114,11 @@ try {
     $remindersCreated = 0;
     
     foreach ($users as $user) {
+        if (isExcludedComplianceDay($pdo, $user['id'], $today, $settings)) {
+            logMessage("↷ {$user['username']}: Excluded from compliance check (weekend/leave)");
+            continue;
+        }
+
         // Get today's hours for this user
         $stmt = $pdo->prepare("
             SELECT COALESCE(SUM(hours_spent), 0) as total_hours

@@ -27,7 +27,7 @@ $projectLeadId = (int)($projectLeadIdStmt->fetchColumn() ?? 0);
 $assignedStmt = $db->prepare("SELECT id FROM user_assignments WHERE project_id = ? AND user_id = ? AND (is_removed IS NULL OR is_removed = 0) LIMIT 1");
 $assignedStmt->execute([$projectId, $userId]);
 $isAssigned = (bool)$assignedStmt->fetch();
-$canManageAssets = in_array($userRole, ['admin', 'super_admin'], true)
+$canManageAssets = in_array($userRole, ['admin'], true)
     || ($userRole === 'project_lead' && $projectLeadId === (int)$userId)
     || $isAssigned
     || hasAnyProjectPermission($db, $userId, $projectId, ['assets_edit', 'assets_delete']);
@@ -79,6 +79,7 @@ if ($stmt->rowCount() > 0) {
         if ($canManageAssets) {
             $formId = "deleteAssetForm_" . $asset['id'];
             echo '<form id="' . $formId . '" method="POST" action="' . $baseDir . '/modules/projects/handle_asset.php" onsubmit="confirmModal(\'Are you sure you want to delete this asset?\', function(){ document.getElementById(\'' . $formId . '\').submit(); }); return false;" class="d-inline">';
+            echo '<input type="hidden" name="csrf_token" value="' . generateCsrfToken() . '">';
             echo '<input type="hidden" name="project_id" value="' . $projectId . '">';
             echo '<input type="hidden" name="asset_id" value="' . $asset['id'] . '">';
             echo '<input type="hidden" name="delete_asset" value="1">';

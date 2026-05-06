@@ -3,7 +3,7 @@ require_once __DIR__ . '/../../includes/auth.php';
 require_once __DIR__ . '/../../includes/functions.php';
 
 $auth = new Auth();
-$auth->requireRole(['admin', 'super_admin']);
+$auth->requireRole(['admin']);
 
 $baseDir = getBaseDir();
 
@@ -13,4 +13,3 @@ $query = $_SERVER['QUERY_STRING'] ?? '';
 $target = $baseDir . '/modules/admin/performance.php' . ($query ? ('?' . $query) : '');
 header('Location: ' . $target);
 exit;
-?>

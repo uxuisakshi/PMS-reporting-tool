@@ -125,19 +125,26 @@ class ClientAuthenticationController {
      */
     private function isRateLimited($username) {
         $cacheKey = 'client_login_attempts_' . md5($username . $_SERVER['REMOTE_ADDR']);
-        
-        // Use Redis if available, otherwise use session
+
+        // Use Redis if available
         $redis = RedisConfig::getInstance();
         if ($redis->isAvailable()) {
             $attempts = $redis->get($cacheKey) ?? 0;
-            return $attempts >= 5; // Max 5 attempts
-        } else {
-            // Fallback to session-based rate limiting
-            if (session_status() === PHP_SESSION_NONE) {
-                session_start();
-            }
-            $attempts = $_SESSION['login_attempts'][$username] ?? 0;
             return $attempts >= 5;
+        }
+
+        // Fallback: DB-based rate limiting (session-based is bypassable)
+        try {
+            $stmt = $this->db->prepare("
+                SELECT COUNT(*) FROM login_attempts
+                WHERE ip_address = ?
+                  AND attempted_at > DATE_SUB(NOW(), INTERVAL 15 MINUTE)
+            ");
+            $stmt->execute([$_SERVER['REMOTE_ADDR'] ?? 'unknown']);
+            return (int)$stmt->fetchColumn() >= 5;
+        } catch (Exception $e) {
+            // Fail-closed: deny on DB error
+            return true;
         }
     }
     
@@ -146,15 +153,19 @@ class ClientAuthenticationController {
      */
     private function clearRateLimit($username) {
         $cacheKey = 'client_login_attempts_' . md5($username . $_SERVER['REMOTE_ADDR']);
-        
+
         $redis = RedisConfig::getInstance();
         if ($redis->isAvailable()) {
             $redis->delete($cacheKey);
-        } else {
-            if (session_status() === PHP_SESSION_NONE) {
-                session_start();
-            }
-            unset($_SESSION['login_attempts'][$username]);
+            return;
+        }
+
+        // DB-based: clear login_attempts for this IP
+        try {
+            $stmt = $this->db->prepare("DELETE FROM login_attempts WHERE ip_address = ?");
+            $stmt->execute([$_SERVER['REMOTE_ADDR'] ?? 'unknown']);
+        } catch (Exception $e) {
+            // non-fatal
         }
     }
     
@@ -162,21 +173,17 @@ class ClientAuthenticationController {
      * Log failed login attempt
      */
     private function logFailedAttempt($username, $error) {
-        // Increment rate limiting counter
-        $cacheKey = 'client_login_attempts_' . md5($username . $_SERVER['REMOTE_ADDR']);
-        
-        $redis = RedisConfig::getInstance();
-        if ($redis->isAvailable()) {
-            $attempts = $redis->get($cacheKey) ?? 0;
-            $redis->set($cacheKey, $attempts + 1, 900); // 15 minutes
-        } else {
-            if (session_status() === PHP_SESSION_NONE) {
-                session_start();
-            }
-            $_SESSION['login_attempts'][$username] = ($_SESSION['login_attempts'][$username] ?? 0) + 1;
+        // Log to audit table and DB-based rate limit counter
+        try {
+            // Increment DB rate limit counter (shared with main login_attempts table)
+            $ipAddr = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+            $usernameHash = md5(strtolower($username));
+            $incrStmt = $this->db->prepare("INSERT INTO login_attempts (ip_address, username_hash) VALUES (?, ?)");
+            $incrStmt->execute([$ipAddr, $usernameHash]);
+        } catch (Exception $e) {
+            // non-fatal
         }
-        
-        // Log to audit table
+
         try {
             $stmt = $this->db->prepare("
                 INSERT INTO client_audit_log 

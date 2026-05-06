@@ -4,7 +4,7 @@ require_once __DIR__ . '/../../includes/functions.php';
 require_once __DIR__ . '/../../includes/helpers.php';
 
 $auth = new Auth();
-$auth->requireRole(['at_tester', 'admin', 'super_admin']);
+$auth->requireRole(['at_tester', 'admin']);
 
 $baseDir = getBaseDir();
 $db = Database::getInstance();
@@ -30,6 +30,11 @@ if (!$project) {
 
 // Handle test result submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_env_status'])) {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Invalid request.']);
+        exit;
+    }
     $pageId = (int)($_POST['page_id'] ?? 0);
     $environmentId = (int)($_POST['environment_id'] ?? 0);
     $status = trim((string)($_POST['status'] ?? ''));
@@ -237,6 +242,7 @@ include __DIR__ . '/../../includes/header.php';
                                 </td>
                                 <td>
                                     <form method="POST" class="d-inline-flex align-items-center gap-2">
+                                        <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                                         <input type="hidden" name="page_id" value="<?php echo (int)$page['id']; ?>">
                                         <input type="hidden" name="environment_id" value="<?php echo (int)$page['environment_id']; ?>">
                                         <select name="status" class="form-select form-select-sm" style="min-width: 150px;" aria-label="Update environment status">
@@ -268,4 +274,4 @@ include __DIR__ . '/../../includes/header.php';
     </div>
 </div>
 
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<?php include __DIR__ . '/../../includes/footer.php'; 

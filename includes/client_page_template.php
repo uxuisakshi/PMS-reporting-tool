@@ -72,7 +72,7 @@ if ($globalFlashSuccess !== '' || $globalFlashError !== '') {
     
     <!-- Add any additional scripts here -->
 
-    <script>
+    <script nonce="<?php echo htmlspecialchars($cspNonce ?? '', ENT_QUOTES, 'UTF-8'); ?>">
     // Flash message handler - ALWAYS INCLUDE THIS
     <?php if ($globalFlashSuccess): ?>
         setTimeout(() => {

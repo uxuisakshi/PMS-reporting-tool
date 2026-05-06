@@ -5,6 +5,7 @@ require_once __DIR__ . '/../../includes/helpers.php';
 $auth = new Auth();
 $auth->requireRole('admin');
 $db = Database::getInstance();
+try { $db->exec("ALTER TABLE user_edit_requests MODIFY COLUMN status ENUM('pending','approved','rejected','used') DEFAULT 'pending'"); } catch (Exception $e) {}
 try { $db->exec("ALTER TABLE user_daily_status MODIFY COLUMN status VARCHAR(50) NOT NULL DEFAULT 'not_updated'"); } catch (Exception $e) {}
 try { $db->exec("ALTER TABLE user_pending_changes MODIFY COLUMN status VARCHAR(50) NOT NULL DEFAULT 'not_updated'"); } catch (Exception $e) {}
 
@@ -242,16 +243,135 @@ function clearPendingChangesOnReject($db, $userId, $date) {
     }
 }
 
+function processEditRequestDecision($db, array $reqData, $decision, $adminName) {
+    $requestId = (int)($reqData['id'] ?? 0);
+    $userId = (int)($reqData['user_id'] ?? 0);
+    $reqDate = (string)($reqData['req_date'] ?? '');
+    $requestType = (string)($reqData['request_type'] ?? 'edit');
+    $lockedAt = (string)($reqData['locked_at'] ?? '');
+    $hasSubmittedPayload = ($lockedAt !== '');
+
+    if ($decision === 'rejected') {
+        $db->prepare("UPDATE user_edit_requests SET status = 'rejected', updated_at = NOW() WHERE id = ?")->execute([$requestId]);
+        clearPendingChangesOnReject($db, $userId, $reqDate);
+        return [
+            'action_label' => 'rejected',
+            'message' => "Your edit request for {$reqDate} has been rejected by {$adminName}",
+            'status_message' => 'Edit request rejected successfully'
+        ];
+    }
+
+    if ($requestType === 'edit' && !$hasSubmittedPayload) {
+        $db->prepare("UPDATE user_edit_requests SET status = 'approved', updated_at = NOW() WHERE id = ?")->execute([$requestId]);
+        return [
+            'action_label' => 'approved',
+            'message' => "Your edit access request for {$reqDate} has been approved by {$adminName}. You can now add multiple entries and submit them for final review.",
+            'status_message' => 'Edit access approved successfully'
+        ];
+    }
+
+    $finalStatus = ($requestType === 'edit') ? 'used' : 'approved';
+    $db->prepare("UPDATE user_edit_requests SET status = ?, updated_at = NOW() WHERE id = ?")->execute([$finalStatus, $requestId]);
+    applyPendingChanges($db, $userId, $reqDate);
+
+    return [
+        'action_label' => 'approved',
+        'message' => "Your submitted changes for {$reqDate} have been approved by {$adminName}",
+        'status_message' => 'Submitted changes approved successfully'
+    ];
+}
+
 // Handle approve/reject actions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $isAjaxRequest = (
         (isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower((string)$_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest') ||
         (isset($_SERVER['HTTP_ACCEPT']) && stripos((string)$_SERVER['HTTP_ACCEPT'], 'application/json') !== false)
     );
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        if ($isAjaxRequest) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'error' => 'Invalid request token.']);
+        } else {
+            $_SESSION['error'] = 'Invalid request. Please try again.';
+            header('Location: edit_requests.php');
+        }
+        exit;
+    }
     $requestId = $_POST['request_id'] ?? null;
     $action = $_POST['action'] ?? null;
     $userId = $_POST['user_id'] ?? null;
     $date = $_POST['date'] ?? null;
+
+    // Handle log edit approve/reject
+    if ($action === 'approve_log_edit' || $action === 'reject_log_edit') {
+        $logEditId = (int)($_POST['log_edit_id'] ?? 0);
+        $leUserId = (int)($_POST['user_id'] ?? 0);
+        $leDate = $_POST['req_date'] ?? '';
+        try {
+            if ($action === 'approve_log_edit') {
+                // Apply the edit
+                $leStmt = $db->prepare("SELECT * FROM user_pending_log_edits WHERE id = ? AND status = 'pending'");
+                $leStmt->execute([$logEditId]);
+                $pe = $leStmt->fetch(PDO::FETCH_ASSOC);
+                if ($pe) {
+                    $colRows = $db->query("SHOW COLUMNS FROM project_time_logs")->fetchAll(PDO::FETCH_ASSOC);
+                    $columns = array_column($colRows, 'Field');
+                    $set = []; $params = [];
+                    if (in_array('hours_spent', $columns)) { $set[] = "hours_spent = ?"; $params[] = (float)$pe['new_hours']; }
+                    if (in_array('description', $columns)) { $set[] = "description = ?"; $params[] = $pe['new_description']; }
+                    if (in_array('project_id', $columns) && $pe['new_project_id']) { $set[] = "project_id = ?"; $params[] = (int)$pe['new_project_id']; }
+                    if (!empty($set)) {
+                        // Only add updated_at if column exists
+                        if (in_array('updated_at', $columns)) {
+                            $set[] = "updated_at = NOW()";
+                        }
+                        $sql = "UPDATE project_time_logs SET " . implode(', ', $set) . " WHERE id = ? AND user_id = ?";
+                        $params[] = (int)$pe['log_id']; $params[] = $leUserId;
+                        $db->prepare($sql)->execute($params);
+                    }
+                    $db->prepare("UPDATE user_pending_log_edits SET status = 'approved', updated_at = NOW() WHERE id = ?")->execute([$logEditId]);
+                    $_SESSION['success'] = 'Log edit approved and applied successfully.';
+                }
+            } else {
+                $db->prepare("UPDATE user_pending_log_edits SET status = 'rejected', updated_at = NOW() WHERE id = ?")->execute([$logEditId]);
+                $_SESSION['success'] = 'Log edit rejected.';
+            }
+        } catch (Exception $e) {
+            $_SESSION['error'] = 'Failed: ' . $e->getMessage();
+        }
+        header('Location: edit_requests.php');
+        exit;
+    }
+
+    // Handle log deletion approve/reject
+    if ($action === 'approve_log_deletion' || $action === 'reject_log_deletion') {
+        $logDeletionId = (int)($_POST['log_deletion_id'] ?? 0);
+        $delUserId = (int)($_POST['user_id'] ?? 0);
+        $delDate = $_POST['req_date'] ?? '';
+        try {
+            if ($action === 'approve_log_deletion') {
+                // Apply the deletion
+                $delStmt = $db->prepare("SELECT * FROM user_pending_log_deletions WHERE id = ? AND status = 'pending'");
+                $delStmt->execute([$logDeletionId]);
+                $pd = $delStmt->fetch(PDO::FETCH_ASSOC);
+                if ($pd) {
+                    $logId = (int)($pd['log_id'] ?? 0);
+                    if ($logId > 0) {
+                        $db->prepare("DELETE FROM project_time_logs WHERE id = ? AND user_id = ?")->execute([$logId, $delUserId]);
+                    }
+                    $db->prepare("UPDATE user_pending_log_deletions SET status = 'approved', updated_at = NOW() WHERE id = ?")->execute([$logDeletionId]);
+                    $_SESSION['success'] = 'Log deletion approved and applied successfully.';
+                }
+            } else {
+                $db->prepare("UPDATE user_pending_log_deletions SET status = 'rejected', updated_at = NOW() WHERE id = ?")->execute([$logDeletionId]);
+                $_SESSION['success'] = 'Log deletion rejected.';
+            }
+        } catch (Exception $e) {
+            $_SESSION['error'] = 'Failed: ' . $e->getMessage();
+        }
+        header('Location: edit_requests.php');
+        exit;
+    }
     
     // Handle bulk actions
     if (isset($_POST['bulk_action']) && isset($_POST['request_ids']) && is_array($_POST['request_ids'])) {
@@ -265,28 +385,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 
                 foreach ($requestIds as $reqId) {
                     // Get request details
-                    $reqStmt = $db->prepare("SELECT user_id, req_date FROM user_edit_requests WHERE id = ?");
+                    $reqStmt = $db->prepare("SELECT id, user_id, req_date, request_type, locked_at FROM user_edit_requests WHERE id = ?");
                     $reqStmt->execute([$reqId]);
                     $reqData = $reqStmt->fetch(PDO::FETCH_ASSOC);
                     
                     if ($reqData) {
-                        $finalRequestStatus = ($bulkAction === 'approved') ? 'approved' : 'rejected';
-                        $stmt = $db->prepare("UPDATE user_edit_requests SET status = ?, updated_at = NOW() WHERE id = ?");
-                        $stmt->execute([$finalRequestStatus, $reqId]);
-                        
-                        // If approved, apply pending changes
-                        if ($bulkAction === 'approved') {
-                            applyPendingChanges($db, $reqData['user_id'], $reqData['req_date']);
-                        } else {
-                            clearPendingChangesOnReject($db, $reqData['user_id'], $reqData['req_date']);
-                        }
-                        
-                        // Send notification back to user
-                        $actionLabel = $bulkAction === 'approved' ? 'approved' : 'rejected';
-                        $message = "Your edit request for {$reqData['req_date']} has been {$actionLabel} by {$adminName}";
+                        $result = processEditRequestDecision($db, $reqData, $bulkAction, $adminName);
                         $link = "/modules/calendar.php?date={$reqData['req_date']}";
                         
-                        createNotification($db, (int)$reqData['user_id'], 'edit_request_response', $message, $link);
+                        createNotification($db, (int)$reqData['user_id'], 'edit_request_response', $result['message'], $link);
                         
                         $successCount++;
                     }
@@ -302,26 +409,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Handle single actions
     elseif ($requestId && $action && in_array($action, ['approved', 'rejected'])) {
         try {
-            $finalRequestStatus = ($action === 'approved') ? 'approved' : 'rejected';
-            $stmt = $db->prepare("UPDATE user_edit_requests SET status = ?, updated_at = NOW() WHERE id = ?");
-            $stmt->execute([$finalRequestStatus, $requestId]);
-            
-            // If approved, apply pending changes
-            if ($action === 'approved') {
-                applyPendingChanges($db, $userId, $date);
-            } else {
-                clearPendingChangesOnReject($db, $userId, $date);
-            }
-            
-            // Send notification back to user
             $adminName = $_SESSION['full_name'] ?? 'Admin';
-            $actionLabel = $action === 'approved' ? 'approved' : 'rejected';
-            $message = "Your edit request for {$date} has been {$actionLabel} by {$adminName}";
+            $reqStmt = $db->prepare("SELECT id, user_id, req_date, request_type, locked_at FROM user_edit_requests WHERE id = ? LIMIT 1");
+            $reqStmt->execute([$requestId]);
+            $reqData = $reqStmt->fetch(PDO::FETCH_ASSOC);
+            if (!$reqData) {
+                throw new Exception('Edit request not found.');
+            }
+
+            $result = processEditRequestDecision($db, $reqData, $action, $adminName);
             $link = "/modules/calendar.php?date={$date}";
             
-            createNotification($db, (int)$userId, 'edit_request_response', $message, $link);
+            createNotification($db, (int)$reqData['user_id'], 'edit_request_response', $result['message'], $link);
             
-            $_SESSION['success'] = "Edit request {$actionLabel} successfully";
+            $_SESSION['success'] = $result['status_message'];
             
         } catch (Exception $e) {
             $_SESSION['error'] = "Failed to update request: " . $e->getMessage();
@@ -366,18 +467,113 @@ $stmt = $db->prepare("
 $stmt->execute();
 $pendingRequests = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Fetch recent processed requests (last 30 days)
+// Fetch pending log edits (from user_pending_log_edits table)
+$pendingLogEdits = [];
+try {
+    $leStmt = $db->prepare("
+        SELECT ple.*, u.full_name, u.username,
+               ptl.hours_spent as old_hours, ptl.description as old_description,
+               p.title as project_title
+        FROM user_pending_log_edits ple
+        JOIN users u ON ple.user_id = u.id
+        LEFT JOIN project_time_logs ptl ON ple.log_id = ptl.id
+        LEFT JOIN projects p ON ple.new_project_id = p.id
+        WHERE ple.status = 'pending'
+        ORDER BY ple.created_at DESC
+    ");
+    $leStmt->execute();
+    $pendingLogEdits = $leStmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (Exception $e) {
+    error_log('Failed loading pending log edits: ' . $e->getMessage());
+}
+
+// Fetch pending log deletions
+$pendingLogDeletions = [];
+try {
+    $delStmt = $db->prepare("
+        SELECT pld.*, u.full_name, u.username,
+               ptl.hours_spent, ptl.description, p.title as project_title
+        FROM user_pending_log_deletions pld
+        JOIN users u ON pld.user_id = u.id
+        LEFT JOIN project_time_logs ptl ON pld.log_id = ptl.id
+        LEFT JOIN projects p ON ptl.project_id = p.id
+        WHERE pld.status = 'pending'
+        ORDER BY pld.created_at DESC
+    ");
+    $delStmt->execute();
+    $pendingLogDeletions = $delStmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (Exception $e) {
+    error_log('Failed loading pending log deletions: ' . $e->getMessage());
+}
+
+// Calculate total pending count
+$totalPendingCount = count($pendingRequests) + count($pendingLogEdits) + count($pendingLogDeletions);
+
+// Recent Processed Requests - Pagination and Filters
+$recentUserFilter = $_GET['recent_user_filter'] ?? 'all';
+$recentStatusFilter = $_GET['recent_status_filter'] ?? 'all';
+$recentSearchUser = $_GET['recent_search_user'] ?? '';
+$recentPage = isset($_GET['recent_page']) ? max(1, (int)$_GET['recent_page']) : 1;
+$recentPerPage = isset($_GET['recent_per_page']) ? (int)$_GET['recent_per_page'] : 25;
+$allowedRecentPerPage = [10, 25, 50, 100];
+if (!in_array($recentPerPage, $allowedRecentPerPage, true)) {
+    $recentPerPage = 25;
+}
+
+// Build query for recent processed requests
+$recentWhere = "uer.status IN ('approved', 'rejected', 'used') AND uer.updated_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)";
+$recentParams = [];
+
+if ($recentUserFilter !== 'all') {
+    $recentWhere .= " AND uer.user_id = ?";
+    $recentParams[] = $recentUserFilter;
+}
+
+if ($recentStatusFilter !== 'all') {
+    $recentWhere .= " AND uer.status = ?";
+    $recentParams[] = $recentStatusFilter;
+}
+
+if (!empty($recentSearchUser)) {
+    $recentWhere .= " AND (u.full_name LIKE ? OR u.username LIKE ?)";
+    $searchTerm = '%' . $recentSearchUser . '%';
+    $recentParams[] = $searchTerm;
+    $recentParams[] = $searchTerm;
+}
+
+// Count total records
+$countRecentSql = "SELECT COUNT(*) FROM user_edit_requests uer JOIN users u ON uer.user_id = u.id WHERE " . $recentWhere;
+$countRecentStmt = $db->prepare($countRecentSql);
+$countRecentStmt->execute($recentParams);
+$recentTotalRecords = (int)$countRecentStmt->fetchColumn();
+$recentTotalPages = max(1, (int)ceil($recentTotalRecords / $recentPerPage));
+if ($recentPage > $recentTotalPages) {
+    $recentPage = $recentTotalPages;
+}
+$recentOffset = ($recentPage - 1) * $recentPerPage;
+
+// Fetch recent processed requests with pagination
 $stmt = $db->prepare("
     SELECT uer.*, u.full_name, u.username 
     FROM user_edit_requests uer 
     JOIN users u ON uer.user_id = u.id 
-    WHERE uer.status IN ('approved', 'rejected') 
-    AND uer.updated_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+    WHERE " . $recentWhere . "
     ORDER BY uer.updated_at DESC
-    LIMIT 50
+    LIMIT ? OFFSET ?
 ");
-$stmt->execute();
+$recentQueryParams = array_merge($recentParams, [$recentPerPage, $recentOffset]);
+$stmt->execute($recentQueryParams);
 $recentRequests = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Fetch users list for recent filter dropdown
+$recentUsersStmt = $db->query("
+    SELECT DISTINCT u.id, u.full_name 
+    FROM users u 
+    JOIN user_edit_requests uer ON u.id = uer.user_id 
+    WHERE uer.status IN ('approved', 'rejected', 'used')
+    ORDER BY u.full_name
+");
+$recentUsersList = $recentUsersStmt->fetchAll(PDO::FETCH_ASSOC);
 
 // Debug: Check all processed requests (remove after debugging)
 $debugStmt = $db->prepare("
@@ -415,6 +611,36 @@ include __DIR__ . '/../../includes/header.php';
             <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
         </div>
     <?php endif; ?>
+
+    <!-- Summary Card -->
+    <div class="card mb-4 border-warning">
+        <div class="card-header bg-warning text-dark d-flex justify-content-between align-items-center">
+            <h5 class="mb-0"><i class="fas fa-inbox"></i> All Pending Requests</h5>
+            <span class="badge bg-dark fs-6"><?php echo $totalPendingCount; ?> Total</span>
+        </div>
+        <div class="card-body">
+            <div class="row g-3">
+                <div class="col-md-4">
+                    <div class="border rounded p-3 h-100 <?php echo count($pendingRequests) > 0 ? 'border-warning' : ''; ?>">
+                        <div class="text-muted small">Edit Access Requests</div>
+                        <div class="h4 mb-0"><?php echo count($pendingRequests); ?></div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="border rounded p-3 h-100 <?php echo count($pendingLogEdits) > 0 ? 'border-info' : ''; ?>">
+                        <div class="text-muted small">Pending Log Edits</div>
+                        <div class="h4 mb-0"><?php echo count($pendingLogEdits); ?></div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="border rounded p-3 h-100 <?php echo count($pendingLogDeletions) > 0 ? 'border-danger' : ''; ?>">
+                        <div class="text-muted small">Pending Log Deletions</div>
+                        <div class="h4 mb-0"><?php echo count($pendingLogDeletions); ?></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <!-- Pending Requests -->
     <div class="card mb-4">
@@ -528,16 +754,200 @@ include __DIR__ . '/../../includes/header.php';
         </div>
     </div>
 
+    <!-- Pending Log Edit Items -->
+    <?php if (!empty($pendingLogEdits)): ?>
+    <div class="card mb-4">
+        <div class="card-header bg-info text-white">
+            <h5 class="mb-0">
+                <i class="fas fa-edit"></i> Pending Log Edit Items
+                <span class="badge bg-dark"><?php echo count($pendingLogEdits); ?></span>
+            </h5>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-striped mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th style="min-width: 150px;">User</th>
+                            <th style="min-width: 100px;">Date</th>
+                            <th style="min-width: 150px;">Project</th>
+                            <th style="min-width: 80px;">Old Hours</th>
+                            <th style="min-width: 80px;">New Hours</th>
+                            <th style="min-width: 200px;">New Description</th>
+                            <th style="min-width: 150px;">Reason</th>
+                            <th style="min-width: 200px; white-space: nowrap;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($pendingLogEdits as $le): ?>
+                        <tr>
+                            <td>
+                                <strong><?php echo htmlspecialchars($le['full_name'], ENT_QUOTES, 'UTF-8'); ?></strong><br>
+                                <small class="text-muted">@<?php echo htmlspecialchars($le['username'], ENT_QUOTES, 'UTF-8'); ?></small>
+                            </td>
+                            <td><?php echo date('M d, Y', strtotime($le['req_date'])); ?></td>
+                            <td><?php echo htmlspecialchars($le['project_title'] ?? 'N/A', ENT_QUOTES, 'UTF-8'); ?></td>
+                            <td><?php echo number_format((float)($le['old_hours'] ?? 0), 2); ?>h</td>
+                            <td><strong><?php echo number_format((float)$le['new_hours'], 2); ?>h</strong></td>
+                            <td><small><?php echo htmlspecialchars(substr($le['new_description'] ?? '', 0, 80), ENT_QUOTES, 'UTF-8'); ?><?php if (strlen($le['new_description'] ?? '') > 80): ?>...<?php endif; ?></small></td>
+                            <td><small class="text-muted"><?php echo htmlspecialchars($le['reason'] ?? '', ENT_QUOTES, 'UTF-8'); ?></small></td>
+                            <td style="white-space: nowrap;">
+                                <form method="POST" class="d-inline">
+                                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars(generateCsrfToken(), ENT_QUOTES, 'UTF-8'); ?>">
+                                    <input type="hidden" name="action" value="approve_log_edit">
+                                    <input type="hidden" name="log_edit_id" value="<?php echo (int)$le['id']; ?>">
+                                    <input type="hidden" name="user_id" value="<?php echo (int)$le['user_id']; ?>">
+                                    <input type="hidden" name="req_date" value="<?php echo htmlspecialchars($le['req_date'], ENT_QUOTES, 'UTF-8'); ?>">
+                                    <button type="submit" class="btn btn-sm btn-success me-1" onclick="return confirm('Approve this log edit?')">
+                                        <i class="fas fa-check"></i> Approve
+                                    </button>
+                                </form>
+                                <form method="POST" class="d-inline">
+                                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars(generateCsrfToken(), ENT_QUOTES, 'UTF-8'); ?>">
+                                    <input type="hidden" name="action" value="reject_log_edit">
+                                    <input type="hidden" name="log_edit_id" value="<?php echo (int)$le['id']; ?>">
+                                    <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Reject this log edit?')">
+                                        <i class="fas fa-times"></i> Reject
+                                    </button>
+                                </form>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
+
+    <!-- Pending Log Deletion Items -->
+    <?php if (!empty($pendingLogDeletions)): ?>
+    <div class="card mb-4">
+        <div class="card-header bg-danger text-white">
+            <h5 class="mb-0">
+                <i class="fas fa-trash"></i> Pending Log Deletion Items
+                <span class="badge bg-dark"><?php echo count($pendingLogDeletions); ?></span>
+            </h5>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-striped mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>User</th>
+                            <th>Date</th>
+                            <th>Project</th>
+                            <th>Hours</th>
+                            <th>Description</th>
+                            <th>Reason</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($pendingLogDeletions as $del): ?>
+                        <tr>
+                            <td>
+                                <strong><?php echo htmlspecialchars($del['full_name'], ENT_QUOTES, 'UTF-8'); ?></strong><br>
+                                <small class="text-muted">@<?php echo htmlspecialchars($del['username'], ENT_QUOTES, 'UTF-8'); ?></small>
+                            </td>
+                            <td><?php echo date('M d, Y', strtotime($del['req_date'])); ?></td>
+                            <td><?php echo htmlspecialchars($del['project_title'] ?? 'N/A', ENT_QUOTES, 'UTF-8'); ?></td>
+                            <td><?php echo number_format((float)($del['hours_spent'] ?? 0), 2); ?>h</td>
+                            <td><small><?php echo htmlspecialchars(substr($del['description'] ?? '', 0, 80), ENT_QUOTES, 'UTF-8'); ?><?php if (strlen($del['description'] ?? '') > 80): ?>...<?php endif; ?></small></td>
+                            <td><small class="text-muted"><?php echo htmlspecialchars($del['reason'] ?? '', ENT_QUOTES, 'UTF-8'); ?></small></td>
+                            <td>
+                                <form method="POST" class="d-inline">
+                                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars(generateCsrfToken(), ENT_QUOTES, 'UTF-8'); ?>">
+                                    <input type="hidden" name="action" value="approve_log_deletion">
+                                    <input type="hidden" name="log_deletion_id" value="<?php echo (int)$del['id']; ?>">
+                                    <input type="hidden" name="user_id" value="<?php echo (int)$del['user_id']; ?>">
+                                    <input type="hidden" name="req_date" value="<?php echo htmlspecialchars($del['req_date'], ENT_QUOTES, 'UTF-8'); ?>">
+                                    <button type="submit" class="btn btn-sm btn-success me-1" onclick="return confirm('Approve this log deletion?')">
+                                        <i class="fas fa-check"></i> Approve
+                                    </button>
+                                </form>
+                                <form method="POST" class="d-inline">
+                                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars(generateCsrfToken(), ENT_QUOTES, 'UTF-8'); ?>">
+                                    <input type="hidden" name="action" value="reject_log_deletion">
+                                    <input type="hidden" name="log_deletion_id" value="<?php echo (int)$del['id']; ?>">
+                                    <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Reject this log deletion?')">
+                                        <i class="fas fa-times"></i> Reject
+                                    </button>
+                                </form>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
+
     <!-- Recent Processed Requests -->
     <div class="card">
-        <div class="card-header bg-secondary text-white">
+        <div class="card-header bg-secondary text-white d-flex justify-content-between align-items-center">
             <h5 class="mb-0">
                 <i class="fas fa-history"></i> Recent Processed Requests (Last 30 days)
             </h5>
+            <span class="badge bg-dark"><?php echo (int)$recentTotalRecords; ?> records</span>
         </div>
         <div class="card-body">
+            <!-- Filters -->
+            <form method="GET" class="row g-3 mb-4 p-3 bg-light rounded">
+                <div class="col-md-3">
+                    <label class="form-label"><i class="fas fa-search"></i> Search User</label>
+                    <input type="text" name="recent_search_user" class="form-control" 
+                           placeholder="Search by name or username..." 
+                           value="<?php echo htmlspecialchars($recentSearchUser ?? ''); ?>">
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label"><i class="fas fa-user"></i> User</label>
+                    <select name="recent_user_filter" class="form-select">
+                        <option value="all">All Users</option>
+                        <?php foreach ($recentUsersList as $u): ?>
+                            <option value="<?php echo $u['id']; ?>" <?php echo $recentUserFilter == $u['id'] ? 'selected' : ''; ?>>
+                                <?php echo htmlspecialchars($u['full_name']); ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label"><i class="fas fa-filter"></i> Status</label>
+                    <select name="recent_status_filter" class="form-select">
+                        <option value="all" <?php echo ($recentStatusFilter ?? 'all') === 'all' ? 'selected' : ''; ?>>All Status</option>
+                        <option value="approved" <?php echo ($recentStatusFilter ?? '') === 'approved' ? 'selected' : ''; ?>>Approved</option>
+                        <option value="used" <?php echo ($recentStatusFilter ?? '') === 'used' ? 'selected' : ''; ?>>Approved & Applied</option>
+                        <option value="rejected" <?php echo ($recentStatusFilter ?? '') === 'rejected' ? 'selected' : ''; ?>>Rejected</option>
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label"><i class="fas fa-list"></i> Per Page</label>
+                    <select name="recent_per_page" class="form-select">
+                        <?php foreach ([10, 25, 50, 100] as $rpp): ?>
+                            <option value="<?php echo $rpp; ?>" <?php echo $recentPerPage === $rpp ? 'selected' : ''; ?>>
+                                <?php echo $rpp; ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="col-md-2 d-flex align-items-end">
+                    <div class="d-flex gap-2 w-100">
+                        <button type="submit" class="btn btn-primary flex-fill">
+                            <i class="fas fa-filter"></i> Apply
+                        </button>
+                        <a href="<?php echo htmlspecialchars($_SERVER['PHP_SELF'], ENT_QUOTES, 'UTF-8'); ?>" class="btn btn-outline-secondary" title="Clear Filters">
+                            <i class="fas fa-times"></i>
+                        </a>
+                    </div>
+                </div>
+            </form>
+
             <?php if (empty($recentRequests)): ?>
-                <p class="text-muted">No recent processed requests.</p>
+                <div class="text-muted text-center py-3">
+                    <i class="fas fa-info-circle fa-2x mb-2"></i>
+                    <p>No recent processed requests found.</p>
+                </div>
             <?php else: ?>
                 <div class="table-responsive">
                     <table class="table table-striped">
@@ -565,6 +975,8 @@ include __DIR__ . '/../../includes/header.php';
                                     <td>
                                         <?php if ($req['status'] === 'approved'): ?>
                                             <span class="badge bg-success">Approved</span>
+                                        <?php elseif ($req['status'] === 'used'): ?>
+                                            <span class="badge bg-success">Approved & Applied</span>
                                         <?php else: ?>
                                             <span class="badge bg-danger">Rejected</span>
                                         <?php endif; ?>
@@ -575,9 +987,63 @@ include __DIR__ . '/../../includes/header.php';
                         </tbody>
                     </table>
                 </div>
+
+                <!-- Pagination -->
+                <?php if ($recentTotalPages > 1): ?>
+                    <?php
+                        $recentBaseParams = $_GET;
+                        unset($recentBaseParams['recent_page']);
+                        $buildRecentPageUrl = function($p) use ($recentBaseParams) {
+                            $params = $recentBaseParams;
+                            $params['recent_page'] = $p;
+                            return $_SERVER['PHP_SELF'] . '?' . http_build_query($params);
+                        };
+                        $recentStartPage = max(1, $recentPage - 2);
+                        $recentEndPage = min($recentTotalPages, $recentPage + 2);
+                    ?>
+                    <div class="d-flex justify-content-between align-items-center mt-3 pt-3 border-top">
+                        <small class="text-muted">
+                            Showing <?php echo (int)($recentOffset + 1); ?> 
+                            to <?php echo (int)min($recentOffset + $recentPerPage, $recentTotalRecords); ?> 
+                            of <?php echo (int)$recentTotalRecords; ?> records
+                        </small>
+                        <nav aria-label="Recent requests pagination">
+                            <ul class="pagination pagination-sm mb-0">
+                                <li class="page-item <?php echo $recentPage <= 1 ? 'disabled' : ''; ?>">
+                                    <a class="page-link" href="<?php echo $recentPage <= 1 ? '#' : htmlspecialchars($buildRecentPageUrl($recentPage - 1)); ?>">Previous</a>
+                                </li>
+                                <?php if ($recentStartPage > 1): ?>
+                                    <li class="page-item">
+                                        <a class="page-link" href="<?php echo htmlspecialchars($buildRecentPageUrl(1)); ?>">1</a>
+                                    </li>
+                                    <?php if ($recentStartPage > 2): ?>
+                                        <li class="page-item disabled"><span class="page-link">...</span></li>
+                                    <?php endif; ?>
+                                <?php endif; ?>
+                                <?php for ($p = $recentStartPage; $p <= $recentEndPage; $p++): ?>
+                                    <li class="page-item <?php echo $p === $recentPage ? 'active' : ''; ?>">
+                                        <a class="page-link" href="<?php echo htmlspecialchars($buildRecentPageUrl($p)); ?>"><?php echo $p; ?></a>
+                                    </li>
+                                <?php endfor; ?>
+                                <?php if ($recentEndPage < $recentTotalPages): ?>
+                                    <?php if ($recentEndPage < $recentTotalPages - 1): ?>
+                                        <li class="page-item disabled"><span class="page-link">...</span></li>
+                                    <?php endif; ?>
+                                    <li class="page-item">
+                                        <a class="page-link" href="<?php echo htmlspecialchars($buildRecentPageUrl($recentTotalPages)); ?>"><?php echo $recentTotalPages; ?></a>
+                                    </li>
+                                <?php endif; ?>
+                                <li class="page-item <?php echo $recentPage >= $recentTotalPages ? 'disabled' : ''; ?>">
+                                    <a class="page-link" href="<?php echo $recentPage >= $recentTotalPages ? '#' : htmlspecialchars($buildRecentPageUrl($recentPage + 1)); ?>">Next</a>
+                                </li>
+                            </ul>
+                        </nav>
+                    </div>
+                <?php endif; ?>
             <?php endif; ?>
         </div>
     </div>
+
 </div>
 
 <!-- Admin View Modal (same as calendar modal but with admin actions) -->
@@ -699,427 +1165,5 @@ include __DIR__ . '/../../includes/header.php';
 
 <?php include __DIR__ . '/../../includes/footer.php'; ?>
 
-<script>
-function openAdminViewModal(date, userId, requestId) {
-    
-    document.getElementById('adminRequestId').value = requestId;
-    document.getElementById('adminUserId').value = userId;
-    document.getElementById('adminDate').value = date;
-    
-    // Load request details first
-    loadRequestDetails(requestId);
-    
-    // Load production hours
-    loadAdminProductionHours(userId, date);
-    
-    // Load current data first, then pending data
-    loadCurrentData(userId, date).then(() => {
-        // After current data is loaded, load pending data
-        loadPendingData(userId, date);
-    });
-    
-    var modal = new bootstrap.Modal(document.getElementById('adminViewModal'));
-    modal.show();
-}
-
-function loadCurrentData(userId, date) {
-    return fetch('<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/api/get_original_data.php?user_id=' + userId + '&date=' + encodeURIComponent(date))
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                document.getElementById('currentStatus').value = data.status ? data.status.charAt(0).toUpperCase() + data.status.slice(1) : 'Not Updated';
-                document.getElementById('currentNotes').value = data.notes || '';
-                document.getElementById('currentPersonalNote').value = data.personal_note || '';
-            } else {
-                document.getElementById('currentStatus').value = 'Not Updated';
-                document.getElementById('currentNotes').value = '';
-                document.getElementById('currentPersonalNote').value = '';
-            }
-        })
-        .catch(error => {
-            console.error('Failed to load current data:', error);
-            document.getElementById('currentStatus').value = 'Error loading data';
-            document.getElementById('currentNotes').value = 'Error loading data';
-            document.getElementById('currentPersonalNote').value = 'Error loading data';
-        });
-}
-
-function loadPendingData(userId, date) {
-    fetch('<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/api/get_pending_changes.php?user_id=' + userId + '&date=' + encodeURIComponent(date))
-        .then(response => response.json())
-        .then(data => {
-            var logDiffCard = document.getElementById('adminLogDiffCard');
-            var logDiffContent = document.getElementById('adminLogDiffContent');
-            if (logDiffCard) logDiffCard.style.display = 'none';
-            if (logDiffContent) logDiffContent.innerHTML = '';
-
-            if (data.success && data.pending) {
-                document.getElementById('requestedStatus').value = data.pending.status ? data.pending.status.charAt(0).toUpperCase() + data.pending.status.slice(1) : 'Not Updated';
-                document.getElementById('requestedNotes').value = data.pending.notes || '';
-                document.getElementById('requestedPersonalNote').value = data.pending.personal_note || '';
-                // Show pending time logs if present
-                var pendingLogs = data.pending.pending_time_logs_decoded || [];
-                var hoursContainer = document.getElementById('adminHoursEntries');
-                if (pendingLogs.length > 0) {
-                    var html = '<div class="mb-2"><strong>Requested Time Log Changes:</strong></div>';
-                    html += '<div class="list-group list-group-flush">';
-                    pendingLogs.forEach(function(pl){
-                        html += '<div class="list-group-item py-2">';
-                        html += '<div><strong>Project:</strong> ' + (pl.project_id || 'N/A') + '</div>';
-                        if (pl.page_ids && pl.page_ids.length) html += '<div><strong>Pages:</strong> ' + pl.page_ids.join(', ') + '</div>';
-                        if (pl.environment_ids && pl.environment_ids.length) html += '<div><strong>Envs:</strong> ' + pl.environment_ids.join(', ') + '</div>';
-                        html += '<div><strong>Testing Type:</strong> ' + (pl.testing_type || '') + '</div>';
-                        html += '<div><strong>Hours:</strong> ' + (pl.hours || '') + '</div>';
-                        html += '<div><strong>Description:</strong> ' + (pl.description || '') + '</div>';
-                        html += '</div>';
-                    });
-                    html += '</div>';
-                    // prepend to existing hours container
-                    hoursContainer.innerHTML = html + hoursContainer.innerHTML;
-                }
-            } else {
-                // If no pending changes, show "No changes requested"
-                document.getElementById('requestedStatus').value = 'No changes requested';
-                document.getElementById('requestedNotes').value = 'No changes requested';
-                document.getElementById('requestedPersonalNote').value = 'No changes requested';
-            }
-
-            // Render pending time-log edit/delete diffs for clear before/after review
-            var editDiffs = Array.isArray(data.pending_log_edit_diffs) ? data.pending_log_edit_diffs : [];
-            var deleteDiffs = Array.isArray(data.pending_log_delete_diffs) ? data.pending_log_delete_diffs : [];
-            if (logDiffCard && logDiffContent && (editDiffs.length > 0 || deleteDiffs.length > 0)) {
-                var html = '';
-                editDiffs.forEach(function(diff) {
-                    html += renderLogDiffBlock(diff, false);
-                });
-                deleteDiffs.forEach(function(diff) {
-                    html += renderLogDiffBlock(diff, true);
-                });
-                logDiffContent.innerHTML = html;
-                logDiffCard.style.display = 'block';
-            }
-        })
-        .catch(error => {
-            console.error('Failed to load pending data:', error);
-            // On error, show "No changes requested"
-            document.getElementById('requestedStatus').value = 'No changes requested';
-            document.getElementById('requestedNotes').value = 'No changes requested';
-            document.getElementById('requestedPersonalNote').value = 'No changes requested';
-            var logDiffCard = document.getElementById('adminLogDiffCard');
-            var logDiffContent = document.getElementById('adminLogDiffContent');
-            if (logDiffCard) logDiffCard.style.display = 'none';
-            if (logDiffContent) logDiffContent.innerHTML = '';
-        });
-}
-
-function formatTaskTypeLabel(taskType) {
-    var t = String(taskType || '').trim();
-    if (!t) return 'N/A';
-    return t.replace(/_/g, ' ').replace(/\b\w/g, function(ch){ return ch.toUpperCase(); });
-}
-
-function renderLogSide(title, d, isDeleteSide) {
-    d = d || {};
-    var project = d.project_title || (d.project_id ? ('Project #' + d.project_id) : 'N/A');
-    var page = d.page_name || (d.page_id ? ('Page #' + d.page_id) : 'N/A');
-    var env = d.environment_name || (d.environment_id ? ('Environment #' + d.environment_id) : 'N/A');
-    var issue = d.issue_id ? ('Issue #' + d.issue_id) : 'N/A';
-    var taskType = formatTaskTypeLabel(d.task_type);
-    var testingType = d.testing_type ? String(d.testing_type) : 'N/A';
-    var hours = (d.hours_spent !== null && d.hours_spent !== undefined && d.hours_spent !== '') ? d.hours_spent : (isDeleteSide ? 'Will be deleted' : 'N/A');
-    var desc = d.description || (isDeleteSide ? 'This log will be deleted' : '');
-    var mode = (d.is_utilized === 0 || String(d.is_utilized) === '0') ? 'Off-Production/Bench' : 'Production';
-
-    var html = '';
-    html += '<div class="col-md-6">';
-    html += '  <div class="border rounded p-2 h-100">';
-    html += '    <h6 class="mb-2">' + escapeHtml(title) + '</h6>';
-    html += '    <div class="small"><strong>Project:</strong> ' + escapeHtml(project) + '</div>';
-    html += '    <div class="small"><strong>Task Type:</strong> ' + escapeHtml(taskType) + '</div>';
-    html += '    <div class="small"><strong>Page/Task:</strong> ' + escapeHtml(page) + '</div>';
-    html += '    <div class="small"><strong>Environment:</strong> ' + escapeHtml(env) + '</div>';
-    html += '    <div class="small"><strong>Issue:</strong> ' + escapeHtml(issue) + '</div>';
-    html += '    <div class="small"><strong>Testing Type:</strong> ' + escapeHtml(testingType) + '</div>';
-    html += '    <div class="small"><strong>Mode:</strong> ' + escapeHtml(mode) + '</div>';
-    html += '    <div class="small"><strong>Hours:</strong> ' + escapeHtml(String(hours)) + '</div>';
-    html += '    <div class="small"><strong>Description:</strong> ' + escapeHtml(desc || 'N/A') + '</div>';
-    html += '  </div>';
-    html += '</div>';
-    return html;
-}
-
-function renderLogDiffBlock(diff, isDelete) {
-    var current = diff && diff.current ? diff.current : {};
-    var requested = diff && diff.requested ? diff.requested : {};
-    var titleBadge = isDelete
-        ? '<span class="badge bg-danger ms-2">Delete Request</span>'
-        : '<span class="badge bg-warning text-dark ms-2">Edit Request</span>';
-    var html = '';
-    html += '<div class="mb-3">';
-    html += '  <div class="d-flex align-items-center mb-2"><strong>Time Log ID #' + escapeHtml(diff.log_id || '') + '</strong>' + titleBadge + '</div>';
-    html += '  <div class="row g-2">';
-    html += renderLogSide('Current', current, false);
-    html += renderLogSide(isDelete ? 'Requested Action' : 'Requested', requested, isDelete);
-    html += '  </div>';
-    html += '</div>';
-    return html;
-}
-
-function loadAdminProductionHours(userId, date) {
-    document.getElementById('adminHoursDate').textContent = '(' + date + ')';
-    
-    var url = '<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/api/user_hours.php?user_id=' + userId + '&date=' + encodeURIComponent(date);
-    
-    fetch(url)
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                var totalHours = parseFloat(data.total_hours || 0);
-                var utilizedHours = 0;
-                var benchHours = 0;
-                
-                document.getElementById('adminTotalHours').textContent = totalHours.toFixed(2) + ' hrs';
-                
-                if (data.entries && data.entries.length > 0) {
-                    var html = '<div class="list-group list-group-flush">';
-                    data.entries.forEach(function(entry) {
-                        var hours = parseFloat(entry.hours_spent || 0);
-                        var isUtilized = entry.is_utilized == 1 || entry.po_number !== 'OFF-PROD-001';
-                        
-                        if (isUtilized) {
-                            utilizedHours += hours;
-                        } else {
-                            benchHours += hours;
-                        }
-                        
-                        html += '<div class="list-group-item py-2">';
-                        html += '<div class="d-flex justify-content-between align-items-start">';
-                        html += '<div class="flex-grow-1">';
-                        html += '<h6 class="mb-1">' + escapeHtml(entry.project_title || 'Unknown Project') + '</h6>';
-                        if (entry.page_name) {
-                            html += '<p class="mb-1 text-muted small">Page: ' + escapeHtml(entry.page_name) + '</p>';
-                        }
-                        if (entry.comments) {
-                            html += '<p class="mb-0 small">' + escapeHtml(entry.comments) + '</p>';
-                        }
-                        html += '</div>';
-                        html += '<div class="text-end">';
-                        html += '<span class="badge ' + (isUtilized ? 'bg-success' : 'bg-secondary') + '">' + hours.toFixed(2) + 'h</span>';
-                        html += '</div>';
-                        html += '</div>';
-                        html += '</div>';
-                    });
-                    html += '</div>';
-                    document.getElementById('adminHoursEntries').innerHTML = html;
-                } else {
-                    document.getElementById('adminHoursEntries').innerHTML = '<p class="text-muted text-center">No time logged for this date</p>';
-                }
-                
-                document.getElementById('adminUtilizedHours').textContent = utilizedHours.toFixed(2);
-                document.getElementById('adminBenchHours').textContent = benchHours.toFixed(2);
-                
-                if (totalHours > 0) {
-                    var utilizedPercent = (utilizedHours / totalHours) * 100;
-                    var benchPercent = (benchHours / totalHours) * 100;
-                    document.getElementById('adminUtilizedProgress').style.width = utilizedPercent + '%';
-                    document.getElementById('adminBenchProgress').style.width = benchPercent + '%';
-                }
-            } else {
-                document.getElementById('adminHoursEntries').innerHTML = '<p class="text-danger text-center">Failed to load production hours</p>';
-            }
-        })
-        .catch(error => {
-            document.getElementById('adminHoursEntries').innerHTML = '<p class="text-danger text-center">Error loading production hours</p>';
-        });
-}
-
-function loadRequestDetails(requestId) {
-    // This would load the request details like user name, reason, etc.
-    // For now, we'll get this from the table row
-    var row = document.querySelector('input[value="' + requestId + '"]').closest('tr');
-    var cells = row.querySelectorAll('td');
-    
-    document.getElementById('adminUserName').textContent = cells[1].querySelector('strong').textContent;
-    document.getElementById('adminRequestDate').textContent = cells[3].querySelector('strong').textContent;
-    document.getElementById('adminRequestReason').textContent = cells[4].textContent.trim() || 'No reason provided';
-}
-
-function adminApproveRequest() {
-    confirmModal('Are you sure you want to approve this edit request?', function() {
-        var requestId = document.getElementById('adminRequestId').value;
-        var userId = document.getElementById('adminUserId').value;
-        var date = document.getElementById('adminDate').value;
-        
-        var formData = new FormData();
-        formData.append('request_id', requestId);
-        formData.append('user_id', userId);
-        formData.append('date', date);
-        formData.append('action', 'approved');
-        
-        fetch(window.location.href, {
-            method: 'POST',
-            body: formData
-        })
-        .then(response => response.text())
-        .then(data => {
-            var modalElement = document.getElementById('adminViewModal');
-            var modal = bootstrap.Modal.getInstance(modalElement);
-            if (modal) modal.hide();
-            location.reload();
-        })
-        .catch(error => {
-            showToast('Failed to approve request. Please try again.', 'danger');
-        });
-    });
-}
-
-function adminRejectRequest() {
-    confirmModal('Are you sure you want to reject this edit request?', function() {
-        var requestId = document.getElementById('adminRequestId').value;
-        var userId = document.getElementById('adminUserId').value;
-        var date = document.getElementById('adminDate').value;
-        
-        var formData = new FormData();
-        formData.append('request_id', requestId);
-        formData.append('user_id', userId);
-        formData.append('date', date);
-        formData.append('action', 'rejected');
-        
-        fetch(window.location.href, {
-            method: 'POST',
-            body: formData
-        })
-        .then(response => response.text())
-        .then(data => {
-            var modalElement = document.getElementById('adminViewModal');
-            var modal = bootstrap.Modal.getInstance(modalElement);
-            if (modal) modal.hide();
-            location.reload();
-        })
-        .catch(error => {
-            showToast('Failed to reject request. Please try again.', 'danger');
-        });
-    });
-}
-
-function escapeHtml(str) {
-    if (!str) return '';
-    return String(str).replace(/[&"'<>]/g, function (s) {
-        return ({'&':'&amp;','"':'&quot;',"'":'&#39;','<':'&lt;','>':'&gt;'})[s];
-    });
-}
-
-// Bulk actions functionality
-document.addEventListener('DOMContentLoaded', function() {
-    const selectAllCheckbox = document.getElementById('selectAll');
-    const requestCheckboxes = document.querySelectorAll('.request-checkbox');
-    const selectedCountSpan = document.getElementById('selectedCount');
-    const bulkApproveBtn = document.getElementById('bulkApprove');
-    const bulkRejectBtn = document.getElementById('bulkReject');
-    
-    // Handle select all checkbox
-    if (selectAllCheckbox) {
-        selectAllCheckbox.addEventListener('change', function() {
-            requestCheckboxes.forEach(checkbox => {
-                checkbox.checked = this.checked;
-            });
-            updateBulkActions();
-        });
-    }
-    
-    // Handle individual checkboxes
-    requestCheckboxes.forEach(checkbox => {
-        checkbox.addEventListener('change', function() {
-            updateSelectAllState();
-            updateBulkActions();
-        });
-    });
-    
-    // Update select all checkbox state
-    function updateSelectAllState() {
-        if (!selectAllCheckbox) return;
-        
-        const checkedCount = document.querySelectorAll('.request-checkbox:checked').length;
-        const totalCount = requestCheckboxes.length;
-        
-        if (checkedCount === 0) {
-            selectAllCheckbox.indeterminate = false;
-            selectAllCheckbox.checked = false;
-        } else if (checkedCount === totalCount) {
-            selectAllCheckbox.indeterminate = false;
-            selectAllCheckbox.checked = true;
-        } else {
-            selectAllCheckbox.indeterminate = true;
-            selectAllCheckbox.checked = false;
-        }
-    }
-    
-    // Update bulk action buttons
-    function updateBulkActions() {
-        const checkedCount = document.querySelectorAll('.request-checkbox:checked').length;
-        
-        if (selectedCountSpan) {
-            selectedCountSpan.textContent = checkedCount;
-        }
-        
-        if (bulkApproveBtn && bulkRejectBtn) {
-            const disabled = checkedCount === 0;
-            bulkApproveBtn.disabled = disabled;
-            bulkRejectBtn.disabled = disabled;
-        }
-    }
-    
-    // Handle bulk approve
-    if (bulkApproveBtn) {
-        bulkApproveBtn.addEventListener('click', function() {
-            const checkedBoxes = document.querySelectorAll('.request-checkbox:checked');
-            if (checkedBoxes.length === 0) return;
-            
-            confirmModal(`Are you sure you want to approve ${checkedBoxes.length} edit request(s)?`, function() {
-                performBulkAction('approved', checkedBoxes);
-            });
-        });
-    }
-    
-    // Handle bulk reject
-    if (bulkRejectBtn) {
-        bulkRejectBtn.addEventListener('click', function() {
-            const checkedBoxes = document.querySelectorAll('.request-checkbox:checked');
-            if (checkedBoxes.length === 0) return;
-            
-            confirmModal(`Are you sure you want to reject ${checkedBoxes.length} edit request(s)?`, function() {
-                performBulkAction('rejected', checkedBoxes);
-            });
-        });
-    }
-    
-    // Perform bulk action
-    function performBulkAction(action, checkedBoxes) {
-        const form = document.createElement('form');
-        form.method = 'POST';
-        form.style.display = 'none';
-        
-        // Add bulk action input
-        const actionInput = document.createElement('input');
-        actionInput.type = 'hidden';
-        actionInput.name = 'bulk_action';
-        actionInput.value = action;
-        form.appendChild(actionInput);
-        
-        // Add request IDs
-        checkedBoxes.forEach(checkbox => {
-            const idInput = document.createElement('input');
-            idInput.type = 'hidden';
-            idInput.name = 'request_ids[]';
-            idInput.value = checkbox.value;
-            form.appendChild(idInput);
-        });
-        
-        document.body.appendChild(form);
-        form.submit();
-    }
-    
-    // Initialize
-    updateBulkActions();
-});
-</script>
+<script>window._editRequestsConfig = { baseDir: '<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>' };</script>
+<script src="<?php echo $baseDir; ?>/assets/js/admin-edit-requests.js"></script>

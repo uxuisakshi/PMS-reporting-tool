@@ -69,6 +69,18 @@ class WCAGComplianceAnalytics extends AnalyticsEngine {
      */
     private function calculateWCAGCompliance($projectId = null, $clientId = null) {
         $issues = $this->getFilteredIssues($projectId, $clientId);
+        $totalVisibleIssues = count($issues);
+        $resolvedIssueCount = 0;
+
+        if ($clientId !== null) {
+            $issues = array_values(array_filter($issues, function ($issue) use (&$resolvedIssueCount) {
+                $isResolved = $this->isResolvedIssue($issue);
+                if ($isResolved) {
+                    $resolvedIssueCount++;
+                }
+                return !$isResolved;
+            }));
+        }
         
         $levelCounts = [
             'A' => 0,
@@ -121,7 +133,8 @@ class WCAGComplianceAnalytics extends AnalyticsEngine {
         }
         
         // Calculate compliance scores
-        $totalIssues = array_sum($levelCounts);
+        $activeIssueCount = array_sum($levelCounts);
+        $totalIssues = $clientId !== null ? $totalVisibleIssues : $activeIssueCount;
         $complianceScores = $this->calculateComplianceScores($levelCounts, $totalIssues);
         
         // Process common violations
@@ -135,6 +148,8 @@ class WCAGComplianceAnalytics extends AnalyticsEngine {
         return [
             'summary' => [
                 'total_issues' => $totalIssues,
+                'resolved_issues' => $resolvedIssueCount,
+                'active_issues' => $activeIssueCount,
                 'overall_compliance_score' => $complianceScores['overall'],
                 'level_a_compliance' => $complianceScores['level_a'],
                 'level_aa_compliance' => $complianceScores['level_aa'],
@@ -166,8 +181,8 @@ class WCAGComplianceAnalytics extends AnalyticsEngine {
      * @return string
      */
     private function extractWCAGLevel($issue) {
-        $title = strtolower($issue['title'] ?? '');
-        $description = strtolower($issue['description'] ?? '');
+        $title = $this->normalizeLowerText($issue['title'] ?? '');
+        $description = $this->normalizeLowerText($issue['description'] ?? '');
         $content = $title . ' ' . $description;
         
         // Check for explicit WCAG level mentions
@@ -200,8 +215,9 @@ class WCAGComplianceAnalytics extends AnalyticsEngine {
         
         // Level AA criteria
         $levelAA = [
-            '1.2.4', '1.2.5', '1.4.3', '1.4.4', '1.4.5', '2.4.5', '2.4.6', '2.4.7',
-            '3.1.2', '3.2.3', '3.2.4', '3.3.3', '3.3.4'
+            '1.2.4', '1.2.5', '1.3.4', '1.3.5', '1.4.3', '1.4.4', '1.4.5', '1.4.10', '1.4.11',
+            '1.4.12', '1.4.13', '2.4.5', '2.4.6', '2.4.7', '2.4.11', '2.4.12', '2.4.13',
+            '2.5.3', '2.5.7', '2.5.8', '3.1.2', '3.2.3', '3.2.4', '3.2.6', '3.3.3', '3.3.4'
         ];
         
         if (in_array($criteria, $levelA)) {
@@ -223,6 +239,7 @@ class WCAGComplianceAnalytics extends AnalyticsEngine {
         // Level A issues (basic accessibility)
         $levelAPatterns = [
             'alt text', 'alternative text', 'image alt', 'missing alt',
+            'accessible name', 'name computation', 'link name', 'button name',
             'keyboard navigation', 'keyboard access', 'tab order',
             'form label', 'input label', 'missing label',
             'heading structure', 'heading hierarchy', 'h1', 'h2', 'h3',
@@ -233,6 +250,7 @@ class WCAGComplianceAnalytics extends AnalyticsEngine {
         $levelAAPatterns = [
             'color contrast', 'contrast ratio', 'text contrast',
             'focus indicator', 'focus visible', 'focus outline',
+            'hover or focus', 'additional content on hover', 'not dismissible',
             'resize text', 'text scaling', 'zoom',
             'link purpose', 'link text', 'descriptive link'
         ];
@@ -244,21 +262,21 @@ class WCAGComplianceAnalytics extends AnalyticsEngine {
             'error prevention', 'error suggestion'
         ];
         
-        foreach ($levelAPatterns as $pattern) {
+        foreach ($levelAAAPatterns as $pattern) {
             if (strpos($content, $pattern) !== false) {
-                return 'A';
+                return 'AAA';
             }
         }
-        
+
         foreach ($levelAAPatterns as $pattern) {
             if (strpos($content, $pattern) !== false) {
                 return 'AA';
             }
         }
-        
-        foreach ($levelAAAPatterns as $pattern) {
+
+        foreach ($levelAPatterns as $pattern) {
             if (strpos($content, $pattern) !== false) {
-                return 'AAA';
+                return 'A';
             }
         }
         
@@ -272,7 +290,7 @@ class WCAGComplianceAnalytics extends AnalyticsEngine {
      * @return string
      */
     private function categorizeViolation($issue) {
-        $content = strtolower(($issue['title'] ?? '') . ' ' . ($issue['description'] ?? ''));
+        $content = $this->normalizeLowerText(($issue['title'] ?? '') . ' ' . ($issue['description'] ?? ''));
         
         $categories = [
             'Images and Media' => ['alt text', 'alternative text', 'image', 'media', 'video', 'audio'],
@@ -313,8 +331,12 @@ class WCAGComplianceAnalytics extends AnalyticsEngine {
             ];
         }
         
+        // Treat unresolved issues with unknown WCAG mapping as Level A penalties
+        // so every active accessibility issue affects the client-facing score.
+        $effectiveLevelACount = $levelCounts['A'] + $levelCounts['Unknown'];
+
         // Compliance is inverse of issues (fewer issues = higher compliance)
-        $levelACompliance = max(0, 100 - ($levelCounts['A'] / $totalIssues * 100));
+        $levelACompliance = max(0, 100 - ($effectiveLevelACount / $totalIssues * 100));
         $levelAACompliance = max(0, 100 - ($levelCounts['AA'] / $totalIssues * 100));
         $levelAAACompliance = max(0, 100 - ($levelCounts['AAA'] / $totalIssues * 100));
         
@@ -419,6 +441,11 @@ class WCAGComplianceAnalytics extends AnalyticsEngine {
         }
         
         return $recommendations;
+    }
+
+    private function isResolvedIssue($issue) {
+        $status = $this->normalizeLowerText($issue['status_name'] ?? ($issue['status'] ?? ''));
+        return in_array($status, ['resolved', 'closed', 'fixed'], true);
     }
     
     /**

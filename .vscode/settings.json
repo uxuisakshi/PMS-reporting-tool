@@ -1,4 +1,10 @@
 {
     "html.autoClosingTags": false,
-    "javascript.autoClosingTags": false
+    "javascript.autoClosingTags": false,
+    "chat.tools.terminal.autoApprove": {
+        "/^Test-NetConnection 142\\.79\\.228\\.254 -Port 22925$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
 }

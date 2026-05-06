@@ -17,3 +17,28 @@ api/*.log
 .env
 .env.*
 !.env.example
+
+# Local database config override (never commit)
+config/database.local.php
+
+node_modules/
+
+# User Uploads & dynamic assets
+uploads/*
+!uploads/.gitkeep
+assets/uploads/*
+!assets/uploads/.gitkeep
+storage/*
+!storage/.gitkeep
+
+# Temporary / Runtime Files
+tmp/*
+!tmp/.gitkeep
+
+# Diagnostic / one-off scripts (should never be committed)
+*diag*.php
+*test_token*.php
+fix_tokens.php
+
+# Office Temp Files
+~$*

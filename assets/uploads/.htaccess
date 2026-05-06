@@ -1,3 +1,15 @@
+# Block PHP execution in upload directories - prevents webshell execution
+# even if a malicious file bypasses MIME type checks
+<FilesMatch "\.(php|php3|php4|php5|php7|phtml|phar|shtml|cgi|pl|py|rb|sh|asp|aspx|jsp|cfm)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
 # Route direct file access through authenticated PHP endpoint
 <IfModule mod_rewrite.c>
     RewriteEngine On

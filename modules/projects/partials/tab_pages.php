@@ -1,4 +1,4 @@
-﻿        <?php $canManageAssignmentsInView = in_array($userRole, ['admin', 'super_admin', 'project_lead'], true); ?>
+        <?php $canManageAssignmentsInView = in_array($userRole, ['admin', 'project_lead', 'qa'], true); ?>
         <!-- Pages Tab -->
         <div class="tab-pane fade" id="pages" role="tabpanel">
             <div class="d-flex justify-content-between align-items-center mb-3">
@@ -181,7 +181,7 @@
                                         <?php endif; ?>
                                     </td>
                                     <td>
-                                        <?php if (in_array($userRole, ['admin', 'super_admin', 'project_lead', 'qa']) || 
+                                        <?php if (in_array($userRole, ['admin', 'project_lead', 'qa']) || 
                                                   $env['at_tester_id'] == $userId): ?>
                                         <select class="form-select form-select-sm env-status-update" 
                                                 data-page-id="<?php echo $page['id']; ?>" 
@@ -215,7 +215,7 @@
                                         <?php endif; ?>
                                     </td>
                                     <td>
-                                        <?php if (in_array($userRole, ['admin', 'super_admin', 'project_lead', 'qa']) || 
+                                        <?php if (in_array($userRole, ['admin', 'project_lead', 'qa']) || 
                                                   $env['ft_tester_id'] == $userId): ?>
                                         <select class="form-select form-select-sm env-status-update" 
                                                 data-page-id="<?php echo $page['id']; ?>" 
@@ -249,7 +249,7 @@
                                         <?php endif; ?>
                                     </td>
                                     <td>
-                                        <?php if (in_array($userRole, ['admin', 'super_admin', 'project_lead', 'qa']) || 
+                                        <?php if (in_array($userRole, ['admin', 'project_lead', 'qa']) || 
                                                   $env['qa_id'] == $userId): ?>
                                         <?php
                                             $qaStatusRaw = strtolower(trim((string)($env['qa_status'] ?? 'not_started')));
@@ -471,6 +471,15 @@
                                 $mapped = null; $envs = null; $pageIdForEnv = null;
                                 $mpStmt->execute([$projectId, $projectId, $u['id'], $u['id'], $u['id']]);
                                 $mapped = $mpStmt->fetch(PDO::FETCH_ASSOC);
+                                if (!$mapped) {
+                                    $mapped = [
+                                        'id' => $u['id'],
+                                        'page_number' => $u['page_number'] ?? '',
+                                        'page_name' => $u['name'] ?? '',
+                                        'status' => $u['status'] ?? 'not_started',
+                                        'notes' => $u['notes'] ?? ''
+                                    ];
+                                }
                                 if ($mapped) $pageIdForEnv = $mapped['id'];
                                 if ($pageIdForEnv) { $envStmt->execute([$pageIdForEnv]); $envs = $envStmt->fetch(PDO::FETCH_ASSOC); }
                         ?>
@@ -478,34 +487,23 @@
                                 <td><input type="checkbox" class="unique-check" value="<?php echo (int)$u['id']; ?>"></td>
                                 <?php
                                     // Determine display for Page No and Page Name.
-                                    $displayPageNo = '';
-                                    $displayPageName = '';
+                                    $displayPageNo = resolvePageDisplayValue($mapped ?: $u);
+                                    $displayPageName = $mapped['page_name'] ?? ($u['name'] ?? '');
                                     
-                                    // First check if unique page itself has page_number field set
-                                    if (!empty($u['page_number'])) {
-                                        $displayPageNo = $u['page_number'];
-                                        $displayPageName = $u['name'] ?? '';
-                                    } elseif (!empty($mapped) && !empty($mapped['page_number'])) {
-                                        $displayPageNo = $mapped['page_number'];
-                                        $displayPageName = $mapped['page_name'] ?? ($u['name'] ?? '');
-                                    } else {
-                                        // If no mapped project page, prefer moving generated "Page N" or "Global N" (from unique name) into Page No
-                                        $genLike = '';
-                                        if (!empty($u['name']) && preg_match('/^(Page|Global)\s+\d+/i', $u['name'])) {
-                                            $genLike = $u['name'];
-                                        }
-                                        if ($genLike) {
-                                            $displayPageNo = $genLike;
-                                            // keep page name blank (or show canonical_url)
+                                    // If page_number is still empty in results but was resolved from name, 
+                                    // adjust display name if needed.
+                                    if (empty($u['page_number']) && empty($mapped['page_number'])) {
+                                        if (preg_match('/^(Page|Global)\s+\d+/i', $displayPageName)) {
                                             $displayPageName = $u['canonical_url'] ?? '';
-                                        } else {
-                                            // fallback: show mapped page_name if exists, otherwise unique name
-                                            $displayPageNo = '';
-                                            $displayPageName = $mapped['page_name'] ?? ($u['name'] ?? '');
                                         }
                                     }
                                 ?>
-                                <td><?php echo htmlspecialchars($displayPageNo); ?></td>
+                                <td>
+                                    <div class="d-flex align-items-center justify-content-between gap-2">
+                                        <span class="page-no-display flex-grow-1 text-truncate"><?php echo htmlspecialchars($displayPageNo); ?></span>
+                                        <button type="button" class="btn btn-sm btn-link flex-shrink-0 edit-page-name" data-field="page_number" data-unique-id="<?php echo (int)$u['id']; ?>" data-page-id="<?php echo (int)($mapped['id'] ?? 0); ?>" data-current-name="<?php echo htmlspecialchars($displayPageNo); ?>" onclick="return window.handleEditPageName(this);">Edit</button>
+                                    </div>
+                                </td>
                                 <td>
                                     <div class="d-flex align-items-center justify-content-between gap-2">
                                         <span class="page-name-display flex-grow-1 text-truncate"><?php echo htmlspecialchars($displayPageName); ?></span>
@@ -513,15 +511,22 @@
                                     </div>
                                 </td>
                                 <td>
-                                    <?php
-                                        $uniqueDisplay = $u['canonical_url'] ?? $u['name'] ?? '';
-                                        echo htmlspecialchars($uniqueDisplay);
-                                    ?>
+                                    <?php $uniqueDisplay = $u['canonical_url'] ?? $u['name'] ?? ''; ?>
+                                    <div class="d-flex align-items-center justify-content-between gap-2">
+                                        <span class="unique-url-display flex-grow-1 text-truncate"><?php echo htmlspecialchars($uniqueDisplay); ?></span>
+                                        <button type="button" class="btn btn-sm btn-link flex-shrink-0 edit-page-name" data-field="canonical_url" data-unique-id="<?php echo (int)$u['id']; ?>" data-page-id="<?php echo (int)$u['id']; ?>" data-current-name="<?php echo htmlspecialchars($uniqueDisplay); ?>" onclick="return window.handleEditPageName(this);">Edit</button>
+                                    </div>
                                 </td>
                                 <td>
                                     <?php
                                         $groupForUnique->execute([$projectId, $u['id']]);
                                         $grows = $groupForUnique->fetchAll(PDO::FETCH_COLUMN);
+                                        if (empty($grows)) {
+                                            $fallbackUrl = trim((string)($u['canonical_url'] ?? ''));
+                                            if ($fallbackUrl !== '') {
+                                                $grows = [$fallbackUrl];
+                                            }
+                                        }
                                         if (!empty($grows)) {
                                             $urlCount = count($grows);
                                             $maxVisible = 3; // Show only first 3 URLs initially
@@ -694,8 +699,6 @@
                                 <td>
                                     <?php if ($pageIdForEnv && $canManageAssignmentsInView): ?>
                                         <button class="btn btn-sm btn-outline-primary assign-page-btn me-1" data-bs-toggle="modal" data-bs-target="#assignPageModal-<?php echo $pageIdForEnv; ?>">Assign</button>
-                                    <?php elseif (!$pageIdForEnv): ?>
-                                        <span class="text-muted small">No mapped page</span>
                                     <?php endif; ?>
                                     <button class="btn btn-sm btn-danger delete-unique" data-id="<?php echo (int)$u['id']; ?>">Delete</button>
                                 </td>
@@ -716,6 +719,7 @@
                                 <div class="modal-dialog modal-lg">
                                     <div class="modal-content">
                                         <form method="POST" action="<?php echo $baseDir; ?>/modules/projects/manage_assignments.php?project_id=<?php echo $projectId; ?>&tab=pages">
+                                            <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                                             <input type="hidden" name="assign_page" value="1">
                                             <input type="hidden" name="page_id" value="<?php echo $pageIdForEnv; ?>">
                                             <input type="hidden" name="return_to" value="<?php echo htmlspecialchars($baseDir . '/modules/projects/view.php?id=' . $projectId . '#project_pages_sub'); ?>">
@@ -844,7 +848,7 @@
                         <a href="#" class="btn btn-sm btn-outline-primary" id="importAllUrlsBtn">
                             <i class="fas fa-upload"></i> Import All URLs CSV/Excel
                         </a>
-                        <?php if (in_array($userRole, ['admin', 'super_admin', 'project_lead', 'qa'])): ?>
+                        <?php if (in_array($userRole, ['admin', 'project_lead', 'qa'])): ?>
                             <button class="btn btn-sm btn-primary" id="openAddGroupedUrlModal">
                                 <i class="fas fa-plus"></i> Add Page
                             </button>
@@ -1006,79 +1010,5 @@
             </div> <!-- end .tab-content for pages sub-tabs -->
         </div>
 
-<script>
-(function () {
-    var exportBtn = document.getElementById('exportPagesBtn');
-    if (!exportBtn) return;
-
-    exportBtn.addEventListener('click', function () {
-        if (typeof XLSX === 'undefined') {
-            alert('Excel library not loaded. Please refresh the page.');
-            return;
-        }
-
-        var projectTitle = <?php echo json_encode($project['title'] ?? 'Project'); ?>;
-        var wb = XLSX.utils.book_new();
-
-        var pagesRows = [['Page No.', 'Page Name', 'Unique URL', 'Grouped URLs', 'FT Tester', 'AT Tester', 'QA', 'Page Status', 'Notes']];
-        document.querySelectorAll('#uniquePagesTable tbody tr[id^="unique-row-"]').forEach(function (tr) {
-            var cells = tr.querySelectorAll('td');
-            if (cells.length < 10) return;
-            var pageNo    = cells[1].textContent.trim();
-            var pageName  = (cells[2].querySelector('.page-name-display') || cells[2]).textContent.trim();
-            var uniqueUrl = cells[3].textContent.trim();
-            var groupedList = cells[4].querySelectorAll('.grouped-url-item');
-            var groupedUrls = [];
-            groupedList.forEach(function (el) { groupedUrls.push(el.textContent.trim()); });
-            var ftText     = cells[5].textContent.replace(/\s+/g, ' ').trim();
-            var atText     = cells[6].textContent.replace(/\s+/g, ' ').trim();
-            var qaText     = cells[7].textContent.replace(/\s+/g, ' ').trim();
-            var statusText = cells[8].textContent.trim();
-            var notesText  = (cells[9].querySelector('.notes-display') || cells[9]).textContent.trim();
-            pagesRows.push([pageNo, pageName, uniqueUrl, groupedUrls.join('\n'), ftText, atText, qaText, statusText, notesText]);
-        });
-        var wsPages = XLSX.utils.aoa_to_sheet(pagesRows);
-        wsPages['!cols'] = [{wch:12},{wch:30},{wch:40},{wch:50},{wch:25},{wch:25},{wch:25},{wch:20},{wch:30}];
-        XLSX.utils.book_append_sheet(wb, wsPages, 'Project Pages');
-
-        var urlRows = [['URL', 'Unique Page No.']];
-        document.querySelectorAll('#allUrlsTable tbody tr[id^="grouped-row-"]').forEach(function (tr) {
-            var cells = tr.querySelectorAll('td');
-            if (cells.length < 5) return;
-            var url = cells[1].textContent.trim();
-            var uniqueSel = cells[2].querySelector('select');
-            var uniquePage = uniqueSel
-                ? (uniqueSel.options[uniqueSel.selectedIndex] ? uniqueSel.options[uniqueSel.selectedIndex].text : '')
-                : cells[2].textContent.trim();
-            urlRows.push([url, uniquePage]);
-        });
-        var wsUrls = XLSX.utils.aoa_to_sheet(urlRows);
-        wsUrls['!cols'] = [{wch:60},{wch:30}];
-        XLSX.utils.book_append_sheet(wb, wsUrls, 'All URLs');
-
-        var safeTitle = projectTitle.replace(/[^a-zA-Z0-9_\- ]/g, '').trim() || 'Project';
-        XLSX.writeFile(wb, safeTitle + ' - Pages & URLs.xlsx');
-    });
-}());
-</script>
-
-<script>
-(function () {
-    var projectId = <?php echo (int)($projectId ?? 0); ?>;
-    var baseDir   = <?php echo json_encode($baseDir ?? ''); ?>;
-
-    var clientReportBtn = document.getElementById('exportClientReportBtn');
-    if (!clientReportBtn) return;
-
-    clientReportBtn.addEventListener('click', function () {
-        clientReportBtn.disabled = true;
-        clientReportBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Preparing...';
-        // Server-side generation preserves all formatting, charts, images
-        window.location.href = baseDir + '/api/export_client_report.php?project_id=' + encodeURIComponent(projectId);
-        setTimeout(function () {
-            clientReportBtn.disabled = false;
-            clientReportBtn.innerHTML = '<i class="fas fa-file-excel me-1"></i> Export Client Report';
-        }, 3000);
-    });
-}());
-</script>
+<script>window._tabPagesConfig = { projectTitle: <?php echo json_encode($project['title'] ?? 'Project'); ?> };</script>
+<script src="<?php echo $baseDir; ?>/assets/js/tab-pages.js?v=<?php echo time(); ?>"></script>

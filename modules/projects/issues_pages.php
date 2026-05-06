@@ -5,7 +5,7 @@ require_once __DIR__ . '/../../includes/helpers.php';
 require_once __DIR__ . '/../../includes/project_permissions.php';
 
 $auth = new Auth();
-$auth->requireRole(['admin', 'project_lead', 'qa', 'at_tester', 'ft_tester', 'super_admin', 'client']);
+$auth->requireRole(['admin', 'project_lead', 'qa', 'at_tester', 'ft_tester', 'admin', 'client']);
 
 $baseDir = getBaseDir();
 $projectId = (int)($_GET['project_id'] ?? 0);
@@ -47,7 +47,7 @@ $projectUsersStmt = $db->prepare("
     UNION
     SELECT u.id, u.full_name, u.username, u.role
     FROM users u
-    WHERE u.is_active = 1 AND u.role IN ('admin', 'super_admin')
+    WHERE u.is_active = 1 AND u.role IN ('admin')
     ORDER BY full_name
 ");
 $projectUsersStmt->execute([$projectId]);
@@ -65,6 +65,21 @@ $issueStatuses = $issueStatusesStmt->fetchAll(PDO::FETCH_ASSOC);
 $pagesStmt = $db->prepare("SELECT id, page_name, page_number, url FROM project_pages WHERE project_id = ? ORDER BY page_name");
 $pagesStmt->execute([$projectId]);
 $projectPages = $pagesStmt->fetchAll(PDO::FETCH_ASSOC);
+
+$projectPageById = [];
+$projectPageIdByUrl = [];
+foreach ($projectPages as $projectPageRow) {
+    $pageRowId = (int)($projectPageRow['id'] ?? 0);
+    if ($pageRowId <= 0) {
+        continue;
+    }
+    $projectPageById[$pageRowId] = $projectPageRow;
+
+    $pageUrl = trim((string)($projectPageRow['url'] ?? ''));
+    if ($pageUrl !== '') {
+        $projectPageIdByUrl[$pageUrl] = $pageRowId;
+    }
+}
 
 // Environments list for filters
 $envList = [];
@@ -85,6 +100,7 @@ try {
             pp.id,
             pp.page_name,
             pp.page_number,
+            pp.status,
             (SELECT GROUP_CONCAT(DISTINCT te.name SEPARATOR ', ') 
              FROM page_environments pe2 
              JOIN testing_environments te ON pe2.environment_id = te.id 
@@ -95,8 +111,10 @@ try {
              WHERE pe3.page_id = pp.id) AS testers,
             (SELECT COUNT(DISTINCT i.id) 
              FROM issues i 
-             WHERE i.project_id = pp.project_id 
-             AND i.page_id = pp.id
+             WHERE i.project_id = pp.project_id AND (
+                 EXISTS (SELECT 1 FROM issue_pages ip WHERE ip.issue_id = i.id AND ip.page_id = pp.id)
+                 OR (i.page_id = pp.id AND NOT EXISTS (SELECT 1 FROM issue_pages ip2 WHERE ip2.issue_id = i.id))
+             )
              $clientFilter) AS issues_count,
             (SELECT COALESCE(SUM(ptl.hours_spent), 0)
              FROM project_time_logs ptl
@@ -127,20 +145,34 @@ try {
             up.id AS unique_id,
             up.page_name AS unique_name,
             up.url AS canonical_url,
-            pp.id AS mapped_page_id
+            NULL AS mapped_page_id
         FROM grouped_urls gu 
         LEFT JOIN project_pages up ON gu.unique_page_id = up.id
-        LEFT JOIN project_pages pp ON pp.project_id = gu.project_id AND (pp.url = gu.url OR pp.url = gu.normalized_url OR pp.url = up.url)
         WHERE gu.project_id = ? 
         ORDER BY gu.url
     ");
     $groupedStmt->execute([$projectId]);
     $groupedUrls = $groupedStmt->fetchAll(PDO::FETCH_ASSOC);
     
-    // Group by page ID
+    // Group grouped URLs by their resolved project page.
     foreach ($groupedUrls as $g) {
-        if (!empty($g['unique_page_id'])) {
-            $urlsByUniqueId[(int)$g['unique_page_id']][] = $g;
+        $resolvedUniqueId = (int)($g['unique_page_id'] ?? 0);
+        if ($resolvedUniqueId <= 0) {
+            $resolvedUniqueId = (int)($g['mapped_page_id'] ?? 0);
+        }
+
+        if ($resolvedUniqueId <= 0) {
+            $groupUrl = trim((string)($g['url'] ?? ''));
+            $groupNormalizedUrl = trim((string)($g['normalized_url'] ?? ''));
+            if ($groupUrl !== '' && isset($projectPageIdByUrl[$groupUrl])) {
+                $resolvedUniqueId = (int)$projectPageIdByUrl[$groupUrl];
+            } elseif ($groupNormalizedUrl !== '' && isset($projectPageIdByUrl[$groupNormalizedUrl])) {
+                $resolvedUniqueId = (int)$projectPageIdByUrl[$groupNormalizedUrl];
+            }
+        }
+
+        if ($resolvedUniqueId > 0) {
+            $urlsByUniqueId[$resolvedUniqueId][] = $g;
         }
     }
 } catch (Exception $e) {
@@ -155,25 +187,30 @@ try {
             up.id AS unique_id,
             up.page_name AS unique_name,
             up.url AS canonical_url,
-            COUNT(gu.id) AS grouped_count,
-            MIN(pp.id) AS mapped_page_id,
-            MIN(pp.page_number) AS mapped_page_number,
-            MIN(pp.page_name) AS mapped_page_name
+            up.id AS mapped_page_id,
+            up.page_number AS mapped_page_number,
+            up.page_name AS mapped_page_name,
+            COUNT(DISTINCT gu.id) AS grouped_count
         FROM project_pages up
-        LEFT JOIN grouped_urls gu ON gu.project_id = up.project_id AND gu.unique_page_id = up.id
-        LEFT JOIN project_pages pp ON pp.project_id = up.project_id
-            AND (
-                pp.url = gu.url
-                OR pp.url = gu.normalized_url
-                OR pp.url = up.url
-                OR pp.page_name = up.page_name
-                OR pp.page_number = up.page_name
-            )
+        LEFT JOIN grouped_urls gu
+            ON gu.project_id = up.project_id
+           AND (
+                gu.unique_page_id = up.id
+                OR (
+                    up.url IS NOT NULL AND up.url <> ''
+                    AND (gu.url = up.url OR gu.normalized_url = up.url)
+                )
+           )
         WHERE up.project_id = ?
         GROUP BY up.id
         ORDER BY 
-            SUBSTRING_INDEX(MIN(pp.page_number), ' ', 1) ASC,
-            CAST(SUBSTRING_INDEX(MIN(pp.page_number), ' ', -1) AS UNSIGNED) ASC,
+            CASE
+                WHEN up.page_number LIKE 'Global%' THEN 0
+                WHEN up.page_number LIKE 'Page%' THEN 1
+                ELSE 2
+            END ASC,
+            CAST(SUBSTRING_INDEX(up.page_number, ' ', -1) AS UNSIGNED) ASC,
+            up.page_number ASC,
             up.page_name ASC
     ");
     $uniqueIssueStmt->execute([$projectId]);
@@ -182,6 +219,18 @@ try {
     $uniqueIssuePages = []; 
     error_log("Error loading pages: " . $e->getMessage());
 }
+
+$displayPageNumberById = [];
+foreach ($uniqueIssuePages as &$uniqueIssuePageRow) {
+    $displayPageId = (int)($uniqueIssuePageRow['mapped_page_id'] ?? 0) ?: (int)($uniqueIssuePageRow['unique_id'] ?? 0);
+    $displayPageNumber = resolvePageDisplayValue($uniqueIssuePageRow);
+
+    if ($displayPageId > 0) {
+        $displayPageNumberById[$displayPageId] = $displayPageNumber;
+    }
+    $uniqueIssuePageRow['display_page_number'] = $displayPageNumber;
+}
+unset($uniqueIssuePageRow);
 
 // Aggregate totals
 $issuesPagesCount = count($uniqueIssuePages);
@@ -256,6 +305,8 @@ include __DIR__ . '/../../includes/header.php';
             </div>
         </div>
     </div>
+
+    <?php include __DIR__ . '/partials/regression_panel.php'; ?>
 
     <div class="card">
         <div class="card-header d-flex justify-content-between align-items-center">
@@ -377,10 +428,10 @@ include __DIR__ . '/../../includes/header.php';
     $count = isset($sum['issues_count']) ? (int)$sum['issues_count'] : 0;
     $prodHours = isset($sum['production_hours']) ? (float)$sum['production_hours'] : 0;
     $uniqueLabel = $u['canonical_url'] ?: ($u['unique_name'] ?? "");
-    $pageNoLabel = $u['mapped_page_number'] ?? "";
+    $pageNoLabel = $u['display_page_number'] ?? ($displayPageNumberById[$mappedPageId] ?? ($u['mapped_page_number'] ?? ""));
     $displayName = $u['mapped_page_name'] ?? "";
     if (!$displayName) { $displayName = $u['unique_name'] ?? $uniqueLabel; }
-    $pageUrls = $urlsByUniqueId[$u['unique_id']] ?? [];
+    $pageUrls = $urlsByUniqueId[$mappedPageId] ?? ($urlsByUniqueId[(int)($u['unique_id'] ?? 0)] ?? []);
     $hasUrls = !empty($pageUrls);
     $urlCount = count($pageUrls);
 
@@ -440,8 +491,7 @@ include __DIR__ . '/../../includes/header.php';
                                 data-page-env="<?php echo htmlspecialchars($envs ?: '-'); ?>"
                                 data-page-status="<?php echo htmlspecialchars($pageStatusLabel); ?>"
                                 data-page-issues="<?php echo $count; ?>"
-                                style="cursor: pointer;"
-                                onclick="window.location.href='<?php echo $baseDir; ?>/modules/projects/issues_page_detail.php?project_id=<?php echo $projectId; ?>&page_id=<?php echo (int)$mappedPageId; ?>'">
+                                style="cursor: pointer;">
                                 <td class="text-muted"><?php echo $rowNum++; ?></td>
                                 <td>
                                     <span class="badge bg-primary-subtle text-primary">
@@ -477,8 +527,7 @@ include __DIR__ . '/../../includes/header.php';
                                             type="button" 
                                             data-bs-toggle="collapse" 
                                             data-bs-target="#urls-<?php echo (int)$u['unique_id']; ?>" 
-                                            aria-expanded="false"
-                                            onclick="event.stopPropagation();">
+                                            aria-expanded="false">
                                         <i class="fas fa-link me-1"></i> <?php echo $urlCount; ?>
                                     </button>
                                     <?php else: ?>
@@ -531,7 +580,9 @@ include __DIR__ . '/partials/issues_modals.php';
 <!-- Select2 JS -->
 <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
 
-<script>
+<script nonce="<?php echo $cspNonce ?? ''; ?>">
+    window._csrfToken = <?php echo json_encode(generateCsrfToken()); ?>;
+    
     window.ProjectConfig = {
         projectId: <?php echo json_encode($projectId); ?>,
         userId: <?php echo json_encode($userId); ?>,
@@ -550,10 +601,21 @@ include __DIR__ . '/partials/issues_modals.php';
 
 <script src="<?php echo $baseDir; ?>/modules/projects/js/issue_title_field.js"></script>
 <script src="<?php echo $baseDir; ?>/modules/projects/js/view_issues.js?v=<?php echo time(); ?>"></script>
+<script src="<?php echo $baseDir; ?>/modules/projects/js/regression-panel.js?v=<?php echo time(); ?>"></script>
 
-<script>
-// Filters for issues_pages.php
+<script nonce="<?php echo $cspNonce ?? ''; ?>">
+// Row clicks and Filters for issues_pages.php
 (function() {
+    $(document).on('click', '.issues-page-row', function(e) {
+        // Prevent action if clicking inside a button, link, or input
+        if ($(e.target).closest('button, a, input, select').length) return;
+        var pageId = $(this).data('page-id');
+        var projectId = window.ProjectConfig ? window.ProjectConfig.projectId : null;
+        if (projectId && pageId) {
+            window.location.href = window.ProjectConfig.baseDir + '/modules/projects/issues_page_detail.php?project_id=' + projectId + '&page_id=' + pageId;
+        }
+    });
+
     function updateIssuesPagesNoDataRow() {
         var $tbody = $('#issuesPageList table tbody');
         if (!$tbody.length) return;
@@ -585,7 +647,7 @@ include __DIR__ . '/partials/issues_modals.php';
             var qaText = String($row.data('page-qa') || '').toLowerCase();
             var envText = String($row.data('page-env') || '').toLowerCase();
             var statusText = String($row.data('page-status') || '').toLowerCase();
-            var urlText = $row.find('td').eq(1).find('.text-muted').text().toLowerCase();
+            var urlText = $row.find('td').eq(2).find('.text-muted').text().toLowerCase();
 
             var show = true;
             if (q && name.indexOf(q) === -1 && urlText.indexOf(q) === -1) show = false;
@@ -656,6 +718,7 @@ include __DIR__ . '/partials/issues_modals.php';
 })();
 </script>
 
+<?php if ($_SESSION['role'] !== 'client'): ?>
 <!-- Floating Project Chat (bottom-right) -->
 <style>
 .chat-launcher { position: fixed; bottom: 20px; right: 20px; z-index: 1060; border-radius: 999px; box-shadow: 0 10px 24px rgba(0,0,0,0.18); padding: 12px 18px; display: flex; align-items: center; gap: 8px; }
@@ -687,7 +750,7 @@ include __DIR__ . '/partials/issues_modals.php';
             </button>
         </div>
     </div>
-    <iframe src="<?php echo $baseDir; ?>/modules/chat/project_chat.php?project_id=<?php echo (int)$projectId; ?>&embed=1" title="Project Chat"></iframe>
+    <iframe src="" data-src="<?php echo $baseDir; ?>/modules/chat/project_chat.php?project_id=<?php echo (int)$projectId; ?>&embed=1" title="Project Chat"></iframe>
 </div>
 
 <button type="button" class="btn btn-primary chat-launcher" id="chatLauncher">
@@ -695,35 +758,7 @@ include __DIR__ . '/partials/issues_modals.php';
     <span>Project Chat</span>
 </button>
 
-<script>
-document.addEventListener('DOMContentLoaded', function () {
-    var launcher = document.getElementById('chatLauncher');
-    var widget = document.getElementById('projectChatWidget');
-    var closeBtn = document.getElementById('chatWidgetClose');
-    var fullscreenBtn = document.getElementById('chatWidgetFullscreen');
-    if (!launcher || !widget || !closeBtn || !fullscreenBtn) return;
+<script src="<?php echo $baseDir; ?>/assets/js/chat-widget.js?v=<?php echo time(); ?>"></script>
+<?php endif; ?>
 
-    function openChatWidget() {
-        widget.classList.add('open');
-        launcher.style.display = 'none';
-        setTimeout(function () { try { closeBtn.focus(); } catch (e) {} }, 0);
-    }
-    function closeChatWidget() {
-        widget.classList.remove('open');
-        launcher.style.display = 'inline-flex';
-        setTimeout(function () { try { launcher.focus(); } catch (e) {} }, 0);
-    }
-
-    launcher.addEventListener('click', openChatWidget);
-    closeBtn.addEventListener('click', closeChatWidget);
-    fullscreenBtn.addEventListener('click', function () {
-        window.location.href = '<?php echo $baseDir; ?>/modules/chat/project_chat.php?project_id=<?php echo (int)$projectId; ?>';
-    });
-    window.addEventListener('message', function (event) {
-        if (!event || !event.data || event.data.type !== 'pms-chat-close') return;
-        closeChatWidget();
-    });
-});
-</script>
-
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<?php include __DIR__ . '/../../includes/footer.php'; 

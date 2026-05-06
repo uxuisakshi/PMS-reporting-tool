@@ -88,6 +88,9 @@
         return fetch(uploadUrl, {
             method: 'POST',
             body: fd,
+            headers: {
+                'X-CSRF-Token': window._csrfToken || ''
+            },
             credentials: opts.credentials || 'same-origin'
         }).then(parseJsonFromResponse).catch(function () {
             return { success: false, error: 'Image upload failed' };

@@ -1,13 +1,8 @@
 <?php
-// Simple test endpoint
-if (isset($_GET['test'])) {
-    header('Content-Type: application/json');
-    echo json_encode(['success' => true, 'message' => 'API is working', 'timestamp' => date('Y-m-d H:i:s')]);
-    exit;
-}
-
+ob_start();
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../includes/auth.php';
+ob_end_clean();
 
 header('Content-Type: application/json');
 
@@ -178,6 +173,6 @@ try {
     echo json_encode(['success' => true, 'breakdown' => $breakdown, 'total_unique_issues' => count($allUniqueIssues)]);
 } catch (Exception $e) {
     error_log('QA breakdown query failed: ' . $e->getMessage());
-    echo json_encode(['success' => false, 'error' => 'Database error: ' . $e->getMessage()]);
+    echo json_encode(['success' => false, 'error' => 'An internal error occurred']);
 }
 ?>

@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../includes/auth.php';
+require_once __DIR__ . '/../includes/helpers.php';
 
 $auth = new Auth();
 $auth->requireLogin();
@@ -10,6 +11,7 @@ $pageTitle = 'My Notifications';
 
 // Handle mark as read
 if (isset($_POST['mark_read'])) {
+    verifyCsrfToken($_POST['csrf_token'] ?? '');
     $notificationId = $_POST['notification_id'];
     $stmt = $db->prepare("UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?");
     $stmt->execute([$notificationId, $userId]);
@@ -20,6 +22,7 @@ if (isset($_POST['mark_read'])) {
 
 // Handle mark all as read
 if (isset($_POST['mark_all_read'])) {
+    verifyCsrfToken($_POST['csrf_token'] ?? '');
     $stmt = $db->prepare("UPDATE notifications SET is_read = 1 WHERE user_id = ? AND is_read = 0");
     $stmt->execute([$userId]);
     $_SESSION['success'] = "All notifications marked as read";
@@ -29,6 +32,7 @@ if (isset($_POST['mark_all_read'])) {
 
 // Handle delete notification
 if (isset($_POST['delete_notification'])) {
+    verifyCsrfToken($_POST['csrf_token'] ?? '');
     $notificationId = $_POST['notification_id'];
     $stmt = $db->prepare("DELETE FROM notifications WHERE id = ? AND user_id = ?");
     $stmt->execute([$notificationId, $userId]);
@@ -91,6 +95,7 @@ include __DIR__ . '/../includes/header.php';
         <div>
             <?php if ($unreadCount > 0): ?>
                 <form id="markAllReadForm" method="POST" class="d-inline">
+                    <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                     <input type="hidden" name="mark_all_read" value="1">
                     <button type="button" class="btn btn-success" onclick="confirmForm('markAllReadForm', 'Mark all notifications as read?')">
                         <i class="fas fa-check-double"></i> Mark All Read
@@ -208,6 +213,7 @@ include __DIR__ . '/../includes/header.php';
                                         
                                         <?php if (!$notification['is_read']): ?>
                                             <form method="POST" class="d-inline">
+                                                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                                                 <input type="hidden" name="notification_id" value="<?php echo $notification['id']; ?>">
                                                 <button type="submit" name="mark_read" class="btn btn-outline-success btn-sm">
                                                     <i class="fas fa-check"></i> Mark Read
@@ -216,6 +222,7 @@ include __DIR__ . '/../includes/header.php';
                                         <?php endif; ?>
                                         
                                         <form id="deleteNotificationForm_<?php echo $notification['id']; ?>" method="POST" class="d-inline">
+                                            <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                                             <input type="hidden" name="notification_id" value="<?php echo $notification['id']; ?>">
                                             <input type="hidden" name="delete_notification" value="1">
                                             <button type="button" class="btn btn-outline-danger btn-sm" onclick="confirmForm('deleteNotificationForm_<?php echo $notification['id']; ?>', 'Delete this notification?')">
@@ -258,4 +265,4 @@ include __DIR__ . '/../includes/header.php';
     </div>
 </div>
 
-<?php include __DIR__ . '/../includes/footer.php'; ?>
+<?php include __DIR__ . '/../includes/footer.php'; 

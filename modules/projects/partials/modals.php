@@ -33,7 +33,7 @@
                     </button>
                 </div>
             </div>
-            <iframe src="<?php echo $baseDir; ?>/modules/chat/project_chat.php?project_id=<?php echo $projectId; ?>&embed=1" title="Project Chat"></iframe>
+            <iframe src="" data-src="<?php echo $baseDir; ?>/modules/chat/project_chat.php?project_id=<?php echo $projectId; ?>&embed=1" title="Project Chat"></iframe>
         </div>
 
         <button type="button" class="btn btn-primary chat-launcher" id="chatLauncher">
@@ -53,6 +53,7 @@
     <div class="modal-dialog">
         <div class="modal-content">
             <form method="POST" action="<?php echo $baseDir; ?>/modules/projects/phases.php" id="addPhaseForm">
+                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                 <input type="hidden" name="project_id" value="<?php echo $projectId; ?>">
                 <input type="hidden" name="phase_name" id="phaseNameHidden">
                 <div class="modal-header">
@@ -121,110 +122,14 @@
     </div>
 </div>
 
-<script>
-// Handle custom phase name toggle and duration calculation
-document.addEventListener('DOMContentLoaded', function() {
-    const phaseSelect = document.getElementById('phaseNameSelect');
-    const phaseHidden = document.getElementById('phaseNameHidden');
-    const customDiv = document.getElementById('customPhaseNameDiv');
-    const customInput = document.getElementById('customPhaseName');
-    const startDateInput = document.getElementById('phaseStartDate');
-    const endDateInput = document.getElementById('phaseEndDate');
-    const durationHint = document.getElementById('durationHint');
-    const addPhaseForm = document.getElementById('addPhaseForm');
-    
-    if (phaseSelect) {
-        phaseSelect.addEventListener('change', function() {
-            if (this.value === 'custom') {
-                customDiv.style.display = 'block';
-                customInput.required = true;
-                durationHint.textContent = '';
-            } else {
-                customDiv.style.display = 'none';
-                customInput.required = false;
-                customInput.value = '';
-                
-                // Auto-calculate end date based on typical duration
-                const selectedOption = this.options[this.selectedIndex];
-                const duration = selectedOption.getAttribute('data-duration');
-                
-                if (duration && startDateInput.value) {
-                    const startDate = new Date(startDateInput.value);
-                    const endDate = new Date(startDate);
-                    endDate.setDate(endDate.getDate() + parseInt(duration));
-                    endDateInput.value = endDate.toISOString().split('T')[0];
-                    durationHint.textContent = `Typical: ${duration} days`;
-                } else if (duration) {
-                    durationHint.textContent = `Typical: ${duration} days`;
-                } else {
-                    durationHint.textContent = '';
-                }
-            }
-        });
-        
-        // Auto-calculate end date when start date changes
-        startDateInput.addEventListener('change', function() {
-            const selectedOption = phaseSelect.options[phaseSelect.selectedIndex];
-            const duration = selectedOption.getAttribute('data-duration');
-            
-            if (duration && this.value && phaseSelect.value !== 'custom') {
-                const startDate = new Date(this.value);
-                const endDate = new Date(startDate);
-                endDate.setDate(endDate.getDate() + parseInt(duration));
-                endDateInput.value = endDate.toISOString().split('T')[0];
-            }
-            
-            // Set min attribute on end date
-            if (this.value) {
-                endDateInput.setAttribute('min', this.value);
-            } else {
-                endDateInput.removeAttribute('min');
-            }
-        });
-        
-        // Validate end date is not before start date
-        endDateInput.addEventListener('change', function() {
-            const startDate = startDateInput.value;
-            const endDate = this.value;
-            
-            if (startDate && endDate) {
-                const start = new Date(startDate);
-                const end = new Date(endDate);
-                
-                if (end < start) {
-                    alert('End date cannot be before start date');
-                    this.value = '';
-                }
-            }
-        });
-    }
-    
-    // Handle form submission
-    if (addPhaseForm) {
-        addPhaseForm.addEventListener('submit', function(e) {
-            // Set the hidden input value based on selection
-            if (phaseSelect.value === 'custom') {
-                const customName = customInput.value.trim();
-                if (!customName) {
-                    e.preventDefault();
-                    alert('Please enter a custom phase name');
-                    customInput.focus();
-                    return false;
-                }
-                phaseHidden.value = customName;
-            } else {
-                phaseHidden.value = phaseSelect.value;
-            }
-        });
-    }
-});
-</script>
+<script src="<?php echo $baseDir; ?>/assets/js/project-modals.js?v=<?php echo time(); ?>"></script>
 
 <!-- Edit Phase Modal -->
 <div class="modal fade" id="editPhaseModal" tabindex="-1">
     <div class="modal-dialog">
         <div class="modal-content">
             <form method="POST" action="<?php echo $baseDir; ?>/modules/projects/phases.php">
+                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                 <input type="hidden" name="project_id" value="<?php echo $projectId; ?>">
                 <input type="hidden" name="phase_id" id="edit_phase_id">
                 <div class="modal-header">
@@ -278,6 +183,7 @@ document.addEventListener('DOMContentLoaded', function() {
     <div class="modal-dialog">
         <div class="modal-content">
             <form method="POST" action="<?php echo $baseDir; ?>/modules/projects/handle_asset.php" enctype="multipart/form-data">
+                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                 <input type="hidden" name="project_id" value="<?php echo $projectId; ?>">
                 <div class="modal-header">
                     <h5 class="modal-title">Add Project Asset</h5>
@@ -624,7 +530,7 @@ document.addEventListener('DOMContentLoaded', function() {
     </div>
 </div>
 
-<script>
+<script nonce="<?php echo $cspNonce ?? ''; ?>">
     (function(){
         if (!window.ProjectConfig) return;
         var projectId = window.ProjectConfig.projectId || 0;
@@ -704,7 +610,12 @@ document.addEventListener('DOMContentLoaded', function() {
                                         '<button type="button" class="btn btn-sm btn-link flex-shrink-0 edit-page-name" data-field="page_name" data-unique-id="' + uid + '" data-page-id="' + uid + '" data-current-name="' + _escapeHtml(displayName) + '" onclick="return window.handleEditPageName(this);">Edit</button>'+
                                     '</div>'+
                                 '</td>'+
-                                '<td>' + _escapeHtml(canonical || name || '') + '</td>'+
+                                '<td>'+
+                                    '<div class="d-flex align-items-center justify-content-between gap-2">'+
+                                        '<span class="unique-url-display flex-grow-1 text-truncate">' + _escapeHtml(canonical || name || '') + '</span>'+
+                                        '<button type="button" class="btn btn-sm btn-link flex-shrink-0 edit-page-name" data-field="canonical_url" data-unique-id="' + uid + '" data-page-id="' + uid + '" data-current-name="' + _escapeHtml(canonical || name || '') + '" onclick="return window.handleEditPageName(this);">Edit</button>'+
+                                    '</div>'+
+                                '</td>'+
                                 '<td><div class="unique-grouped-list" data-unique-id="' + uid + '"><span class="text-muted">No grouped URLs</span></div></td>'+
                                 '<td><span class="text-muted">No FT assignments</span></td>'+
                                 '<td><span class="text-muted">No AT assignments</span></td>'+
@@ -766,6 +677,8 @@ document.addEventListener('DOMContentLoaded', function() {
                     <label class="form-label">Field</label>
                     <select id="editPage_field" class="form-select form-select-sm">
                         <option value="page_name">Page Name</option>
+                        <option value="page_number">Page Number</option>
+                        <option value="canonical_url">Unique URL</option>
                         <option value="notes">Notes</option>
                     </select>
                 </div>

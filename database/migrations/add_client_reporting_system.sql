@@ -1,4 +1,4 @@
--- Migration: Add Client Reporting and Analytics System
+﻿-- Migration: Add Client Reporting and Analytics System
 -- Date: 2026-03-11
 -- Description: Adds tables and columns for client reporting system with analytics
 
@@ -6,7 +6,7 @@ SET FOREIGN_KEY_CHECKS = 0;
 
 -- 1. Add client role to users table
 ALTER TABLE `users` 
-MODIFY COLUMN `role` enum('super_admin','admin','project_lead','qa','at_tester','ft_tester','client') NOT NULL;
+MODIFY COLUMN `role` enum('admin','admin','project_lead','qa','at_tester','ft_tester','client') NOT NULL;
 
 -- 2. Add client_ready column to issues table if not exists
 ALTER TABLE `issues` 

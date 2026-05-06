@@ -4,11 +4,16 @@ require_once __DIR__ . '/../../includes/functions.php';
 require_once __DIR__ . '/../../includes/helpers.php';
 
 $auth = new Auth();
-$auth->requireRole(['super_admin', 'admin']);
+$auth->requireRole(['admin']);
 
 $baseDir = getBaseDir();
 $projectId = (int)($_POST['project_id'] ?? 0);
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $projectId > 0) {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error'] = 'Invalid request. Please try again.';
+        header('Location: ' . $baseDir . '/modules/projects/edit.php?id=' . $projectId);
+        exit;
+    }
     $projectId = isset($_POST['project_id']) ? intval($_POST['project_id']) : 0;
     $newPoNumber = isset($_POST['new_po_number']) ? trim($_POST['new_po_number']) : '';
     $newTitle = isset($_POST['new_title']) ? trim($_POST['new_title']) : '';
@@ -147,4 +152,3 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $projectId > 0) {
 
 header("Location: " . $baseDir . "/modules/admin/projects.php");
 exit;
-?>

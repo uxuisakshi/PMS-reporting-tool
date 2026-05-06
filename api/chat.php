@@ -1,9 +1,11 @@
 <?php
+ob_start();
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../config/constants.php';
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/functions.php';
 require_once __DIR__ . '/../includes/helpers.php';
+ob_end_clean();
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -12,6 +14,13 @@ if (!$auth->isLoggedIn()) {
     http_response_code(401);
     echo json_encode(['error' => 'Unauthorized', 'message' => 'Please login to access this resource'], JSON_UNESCAPED_UNICODE);
     exit;
+}
+
+$viewerRole = strtolower(trim((string)($_SESSION['role'] ?? '')));
+$viewerRole = preg_replace('/[^a-z0-9]+/', '_', $viewerRole);
+$viewerRole = trim($viewerRole, '_');
+if ($viewerRole === 'client') {
+    jsonError('Project chat is not available for client accounts.', 403);
 }
 
 // CSRF protection for state-changing requests
@@ -129,6 +138,22 @@ function handleGetChat() {
 function handlePostChat() {
     global $db;
     
+    // Rate limiting: max 30 messages per minute per user
+    $userId = $_SESSION['user_id'];
+    $rateLimitKey = 'chat_rate_' . (int)$userId;
+    if (!isset($_SESSION[$rateLimitKey])) {
+        $_SESSION[$rateLimitKey] = ['count' => 0, 'window_start' => time()];
+    }
+    $rateData = &$_SESSION[$rateLimitKey];
+    if (time() - $rateData['window_start'] > 60) {
+        $rateData = ['count' => 0, 'window_start' => time()];
+    }
+    $rateData['count']++;
+    if ($rateData['count'] > 30) {
+        jsonError('Too many messages. Please slow down.', 429);
+        return;
+    }
+    
     $input = json_decode(file_get_contents('php://input'), true);
     if (json_last_error() !== JSON_ERROR_NONE) {
         jsonError('Invalid JSON input', 400);
@@ -173,7 +198,7 @@ function handlePostChat() {
             WHERE p.id = ? AND (
                 p.project_lead_id = ? OR
                 ua.user_id = ? OR
-                ? IN ('admin', 'super_admin')
+                ? IN ('admin')
             )
             LIMIT 1
         ");
@@ -196,7 +221,7 @@ function handlePostChat() {
                 pp.qa_id = ? OR
                 p.project_lead_id = ? OR
                 ua.user_id = ? OR
-                ? IN ('admin', 'super_admin')
+                ? IN ('admin')
             )
             LIMIT 1
         ");
@@ -289,4 +314,3 @@ function handlePostChat() {
         jsonError('An error occurred while sending message', 500);
     }
 }
-?>

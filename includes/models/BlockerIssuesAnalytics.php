@@ -21,7 +21,7 @@ class BlockerIssuesAnalytics extends AnalyticsEngine {
      * @return AnalyticsReport
      */
     public function generateReport($projectId = null, $clientId = null) {
-        $cacheKey = $this->generateCacheKey('blocker_issues', $projectId, $clientId);
+        $cacheKey = $this->generateCacheKey('blocker_issues_v2', $projectId, $clientId);
         
         if ($cached = $this->getCachedReport($cacheKey)) {
             return $cached;
@@ -104,6 +104,7 @@ class BlockerIssuesAnalytics extends AnalyticsEngine {
                 'critical_blockers' => $this->countCriticalBlockers($blockerIssues)
             ],
             'top_blockers' => $topBlockers,
+            'blocker_issue_list' => $this->buildBlockerIssueList($blockerIssues),
             'functionality_breakdown' => $functionalityBreakdown,
             'resolution_metrics' => $resolutionMetrics,
             'urgency_analysis' => $urgencyAnalysis,
@@ -143,45 +144,8 @@ class BlockerIssuesAnalytics extends AnalyticsEngine {
      * @return bool
      */
     private function isBlockerIssue($issue) {
-        $title = strtolower($issue['title'] ?? '');
-        $description = strtolower($issue['description'] ?? '');
-        $severity = strtolower($issue['severity'] ?? '');
-        $priority = strtolower($issue['priority'] ?? '');
-        
-        // Check explicit blocker indicators
-        $blockerKeywords = [
-            'blocker', 'blocking', 'blocks', 'critical', 'showstopper',
-            'prevents', 'cannot', 'unable', 'broken', 'fails', 'error',
-            'inaccessible', 'unusable', 'non-functional'
-        ];
-        
-        $content = $title . ' ' . $description . ' ' . $severity . ' ' . $priority;
-        
-        foreach ($blockerKeywords as $keyword) {
-            if (strpos($content, $keyword) !== false) {
-                return true;
-            }
-        }
-        
-        // Check severity-based criteria
-        if (in_array($severity, ['critical', 'blocker'])) {
-            return true;
-        }
-        
-        // Check for accessibility blockers
-        $accessibilityBlockers = [
-            'keyboard trap', 'cannot navigate', 'screen reader',
-            'completely inaccessible', 'no alternative', 'missing alt',
-            'no focus', 'cannot access', 'broken navigation'
-        ];
-        
-        foreach ($accessibilityBlockers as $blocker) {
-            if (strpos($content, $blocker) !== false) {
-                return true;
-            }
-        }
-        
-        return false;
+        $severity = $this->normalizeLowerText($issue['severity'] ?? '');
+        return $severity === 'blocker';
     }
     
     /**
@@ -191,7 +155,7 @@ class BlockerIssuesAnalytics extends AnalyticsEngine {
      * @return string
      */
     private function classifyBlockerType($issue) {
-        $content = strtolower(($issue['title'] ?? '') . ' ' . ($issue['description'] ?? ''));
+        $content = $this->normalizeLowerText(($issue['title'] ?? '') . ' ' . ($issue['description'] ?? ''));
         
         $types = [
             'Accessibility Blocker' => ['keyboard', 'screen reader', 'navigation', 'focus', 'alt text', 'aria'],
@@ -220,7 +184,7 @@ class BlockerIssuesAnalytics extends AnalyticsEngine {
      * @return string
      */
     private function assessFunctionalityImpact($issue) {
-        $content = strtolower(($issue['title'] ?? '') . ' ' . ($issue['description'] ?? ''));
+        $content = $this->normalizeLowerText(($issue['title'] ?? '') . ' ' . ($issue['description'] ?? ''));
         
         $functionalities = [
             'Navigation' => ['navigation', 'menu', 'link', 'breadcrumb', 'tab'],
@@ -252,9 +216,9 @@ class BlockerIssuesAnalytics extends AnalyticsEngine {
      * @return string
      */
     private function assessUrgencyLevel($issue) {
-        $severity = strtolower($issue['severity'] ?? '');
-        $priority = strtolower($issue['priority'] ?? '');
-        $content = strtolower(($issue['title'] ?? '') . ' ' . ($issue['description'] ?? ''));
+        $severity = $this->normalizeLowerText($issue['severity'] ?? '');
+        $priority = $this->normalizeLowerText($issue['priority'] ?? '');
+        $content = $this->normalizeLowerText(($issue['title'] ?? '') . ' ' . ($issue['description'] ?? ''));
         
         // Critical urgency indicators
         $criticalIndicators = ['critical', 'immediate', 'showstopper', 'emergency'];
@@ -301,7 +265,7 @@ class BlockerIssuesAnalytics extends AnalyticsEngine {
             'low' => 0.5
         ];
         
-        $severity = strtolower($issue['severity'] ?? 'medium');
+        $severity = $this->normalizeLowerText($issue['severity'] ?? 'medium');
         $severityMultiplier = $severityMultipliers[$severity] ?? 1.0;
         
         // Users affected multiplier
@@ -481,6 +445,40 @@ class BlockerIssuesAnalytics extends AnalyticsEngine {
         }
         
         return $topBlockers;
+    }
+
+    /**
+     * Build a full blocker issue list for dashboard rendering.
+     *
+     * @param array $blockerIssues
+     * @return array
+     */
+    private function buildBlockerIssueList($blockerIssues) {
+        usort($blockerIssues, function($left, $right) {
+            $leftResolved = in_array($left['status'] ?? 'Open', ['Resolved', 'Closed'], true);
+            $rightResolved = in_array($right['status'] ?? 'Open', ['Resolved', 'Closed'], true);
+
+            if ($leftResolved !== $rightResolved) {
+                return $leftResolved ? 1 : -1;
+            }
+
+            return ($right['impact_score'] ?? 0) <=> ($left['impact_score'] ?? 0);
+        });
+
+        return array_map(function($issue) {
+            return [
+                'id' => (int) ($issue['id'] ?? 0),
+                'project_id' => (int) ($issue['project_id'] ?? 0),
+                'page_id' => (int) ($issue['page_id'] ?? 0),
+                'issue_key' => (string) ($issue['issue_key'] ?? ''),
+                'title' => (string) ($issue['title'] ?? 'Untitled Issue'),
+                'status' => (string) ($issue['status'] ?? 'Open'),
+                'urgency_level' => (string) ($issue['urgency_level'] ?? 'Medium'),
+                'blocker_type' => (string) ($issue['blocker_type'] ?? 'General Blocker'),
+                'impact_score' => (float) ($issue['impact_score'] ?? 0),
+                'page_url' => (string) ($issue['page_url'] ?? ''),
+            ];
+        }, $blockerIssues);
     }
     
     /**

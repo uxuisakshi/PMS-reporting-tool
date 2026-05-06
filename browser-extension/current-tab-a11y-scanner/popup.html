@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Current Tab A11y Scanner</title>
+    <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+    <main class="app">
+        <section class="panel hero">
+            <p class="eyebrow">Independent Scan</p>
+            <h1>Current Tab A11y Scanner</h1>
+            <p class="subtle">Scan the active page, export findings to Excel, and optionally upload a viewport screenshot into PMS temporary storage.</p>
+        </section>
+
+        <section class="panel settings">
+            <label class="field">
+                <span>PMS upload endpoint</span>
+                <input id="uploadEndpoint" type="url" placeholder="https://pms.example.com/api/extension_temp_upload.php">
+            </label>
+            <label class="field">
+                <span>Optional extension token</span>
+                <input id="uploadToken" type="password" placeholder="Only if server requires it">
+            </label>
+            <label class="check">
+                <input id="enableUpload" type="checkbox">
+                <span>Upload screenshot + metadata to PMS temporary testing folder</span>
+            </label>
+        </section>
+
+        <section class="panel actions">
+            <button id="runScanBtn" class="primary">Scan Current Tab</button>
+            <button id="downloadExcelBtn" class="secondary" disabled>Download Excel</button>
+        </section>
+
+        <section class="panel summary">
+            <div class="summary-grid">
+                <article>
+                    <span>Total findings</span>
+                    <strong id="totalFindings">0</strong>
+                </article>
+                <article>
+                    <span>Critical</span>
+                    <strong id="criticalCount">0</strong>
+                </article>
+                <article>
+                    <span>Serious</span>
+                    <strong id="seriousCount">0</strong>
+                </article>
+                <article>
+                    <span>Moderate</span>
+                    <strong id="moderateCount">0</strong>
+                </article>
+                <article>
+                    <span>Minor</span>
+                    <strong id="minorCount">0</strong>
+                </article>
+            </div>
+            <p id="pageMeta" class="page-meta">No scan yet.</p>
+            <p id="uploadMeta" class="upload-meta"></p>
+            <p id="statusMessage" class="status idle">Ready.</p>
+        </section>
+
+        <section class="panel findings">
+            <div id="findingsList" class="findings-list">
+                <p class="empty">Run a scan to see findings.</p>
+            </div>
+        </section>
+    </main>
+
+    <script src="vendor/xlsx.full.min.js"></script>
+    <script src="popup.js"></script>
+</body>
+</html>

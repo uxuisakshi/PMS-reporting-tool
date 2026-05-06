@@ -8,78 +8,154 @@
 $analyticsWidgets = $dashboardData['analytics_widgets'] ?? [];
 $assignedProjects = $dashboardData['assigned_projects'] ?? [];
 $projectIdsList = implode(',', array_column($assignedProjects, 'id'));
+$activeReport = (string) ($_GET['report'] ?? '');
+$commonIssuesWidget = $analyticsWidgets['common_issues'] ?? [
+    'type' => 'analytics',
+    'title' => 'Common Issues',
+    'icon' => 'fas fa-list-ul',
+    'reportType' => 'common_issues',
+    'drillDownUrl' => '',
+    'summary' => [],
+    'emptyMessage' => '0 common issues found.'
+];
+
+if (empty($commonIssuesWidget['summary'])) {
+    $commonIssuesWidget['emptyMessage'] = $commonIssuesWidget['emptyMessage'] ?? '0 common issues found.';
+}
+
+$reportTabs = [];
+
+if (isset($analyticsWidgets['user_affected'])) {
+    $reportTabs[] = [
+        'key' => 'user_affected',
+        'label' => 'User Impact',
+        'widgetType' => 'analytics',
+        'widgetData' => $analyticsWidgets['user_affected'],
+        'fullWidth' => false,
+    ];
+}
+
+if (isset($analyticsWidgets['wcag_compliance'])) {
+    $reportTabs[] = [
+        'key' => 'wcag_compliance',
+        'label' => 'WCAG',
+        'widgetType' => 'analytics',
+        'widgetData' => $analyticsWidgets['wcag_compliance'],
+        'fullWidth' => false,
+    ];
+}
+
+if (isset($analyticsWidgets['severity_analysis'])) {
+    $reportTabs[] = [
+        'key' => 'severity_analysis',
+        'label' => 'Severity',
+        'widgetType' => 'analytics',
+        'widgetData' => $analyticsWidgets['severity_analysis'],
+        'fullWidth' => false,
+    ];
+}
+
+$reportTabs[] = [
+    'key' => 'common_issues',
+    'label' => 'Common Issues',
+    'widgetType' => 'analytics',
+    'widgetData' => $commonIssuesWidget,
+    'fullWidth' => false,
+];
+
+if (isset($analyticsWidgets['blocker_issues'])) {
+    $reportTabs[] = [
+        'key' => 'blocker_issues',
+        'label' => 'Blockers',
+        'widgetType' => 'analytics',
+        'widgetData' => $analyticsWidgets['blocker_issues'],
+        'fullWidth' => false,
+    ];
+}
+
+if (isset($analyticsWidgets['page_issues'])) {
+    $reportTabs[] = [
+        'key' => 'page_issues',
+        'label' => 'Pages',
+        'widgetType' => 'analytics',
+        'widgetData' => $analyticsWidgets['page_issues'],
+        'fullWidth' => false,
+    ];
+}
+
+if (isset($analyticsWidgets['commented_issues'])) {
+    $reportTabs[] = [
+        'key' => 'commented_issues',
+        'label' => 'Discussion',
+        'widgetType' => 'analytics',
+        'widgetData' => $analyticsWidgets['commented_issues'],
+        'fullWidth' => false,
+    ];
+}
+
+if (isset($analyticsWidgets['compliance_trend'])) {
+    $reportTabs[] = [
+        'key' => 'compliance_trend',
+        'label' => 'Trend',
+        'widgetType' => 'trend',
+        'widgetData' => $analyticsWidgets['compliance_trend'],
+        'fullWidth' => true,
+    ];
+}
+
+$availableReportKeys = array_column($reportTabs, 'key');
+if ($activeReport === '' || !in_array($activeReport, $availableReportKeys, true)) {
+    $activeReport = $availableReportKeys[0] ?? '';
+}
 ?>
 
-<div class="row mb-4">
-    <div class="col-12">
-        <h2 class="section-title">
-            <i class="fas fa-chart-line text-primary"></i>
-            Analytics Reports
-        </h2>
-        <p class="text-muted">Click on any widget to view detailed analytics</p>
+<div class="section-heading">
+    <div>
+        <span class="section-kicker">Report Workspace</span>
+        <h2 class="section-title mb-2">Analytics reports</h2>
     </div>
 </div>
 
+<?php if (!empty($reportTabs)): ?>
+<div class="analytics-tabs-shell">
+    <div class="analytics-tabs-intro">
+        <span class="analytics-tabs-label">Report tabs</span>
+    </div>
+    <div class="analytics-shortcuts" role="tablist" aria-label="Analytics report tabs">
+        <?php foreach ($reportTabs as $reportTab): ?>
+            <?php $isActiveTab = $activeReport === $reportTab['key']; ?>
+            <button
+                type="button"
+                class="analytics-shortcut-pill<?php echo $isActiveTab ? ' is-active' : ''; ?>"
+                id="analytics-tab-<?php echo htmlspecialchars($reportTab['key'], ENT_QUOTES, 'UTF-8'); ?>"
+                data-report-tab="<?php echo htmlspecialchars($reportTab['key'], ENT_QUOTES, 'UTF-8'); ?>"
+                data-report-target="analytics-report-<?php echo htmlspecialchars($reportTab['key'], ENT_QUOTES, 'UTF-8'); ?>"
+                role="tab"
+                aria-selected="<?php echo $isActiveTab ? 'true' : 'false'; ?>"
+                aria-controls="analytics-report-<?php echo htmlspecialchars($reportTab['key'], ENT_QUOTES, 'UTF-8'); ?>"
+                tabindex="<?php echo $isActiveTab ? '0' : '-1'; ?>"
+            ><?php echo htmlspecialchars($reportTab['label'], ENT_QUOTES, 'UTF-8'); ?></button>
+        <?php endforeach; ?>
+    </div>
+</div>
+<?php endif; ?>
+
 <!-- Analytics Widgets Grid -->
-<div class="analytics-widgets-grid">
-    <?php if (!empty($analyticsWidgets)): ?>
-        
-        <!-- User Impact Analysis Widget -->
-        <?php if (isset($analyticsWidgets['user_affected'])): ?>
-        <div class="widget-container">
-            <?php echo $dashboardController->visualization->renderDashboardWidget('analytics', $analyticsWidgets['user_affected']); ?>
-        </div>
-        <?php endif; ?>
-
-        <!-- WCAG Compliance Widget -->
-        <?php if (isset($analyticsWidgets['wcag_compliance'])): ?>
-        <div class="widget-container">
-            <?php echo $dashboardController->visualization->renderDashboardWidget('analytics', $analyticsWidgets['wcag_compliance']); ?>
-        </div>
-        <?php endif; ?>
-
-        <!-- Severity Analysis Widget -->
-        <?php if (isset($analyticsWidgets['severity_analysis'])): ?>
-        <div class="widget-container">
-            <?php echo $dashboardController->visualization->renderDashboardWidget('analytics', $analyticsWidgets['severity_analysis']); ?>
-        </div>
-        <?php endif; ?>
-
-        <!-- Common Issues Widget -->
-        <?php if (isset($analyticsWidgets['common_issues'])): ?>
-        <div class="widget-container">
-            <?php echo $dashboardController->visualization->renderDashboardWidget('analytics', $analyticsWidgets['common_issues']); ?>
-        </div>
-        <?php endif; ?>
-
-        <!-- Blocker Issues Widget -->
-        <?php if (isset($analyticsWidgets['blocker_issues'])): ?>
-        <div class="widget-container">
-            <?php echo $dashboardController->visualization->renderDashboardWidget('analytics', $analyticsWidgets['blocker_issues']); ?>
-        </div>
-        <?php endif; ?>
-
-        <!-- Page Analysis Widget -->
-        <?php if (isset($analyticsWidgets['page_issues'])): ?>
-        <div class="widget-container">
-            <?php echo $dashboardController->visualization->renderDashboardWidget('analytics', $analyticsWidgets['page_issues']); ?>
-        </div>
-        <?php endif; ?>
-
-        <!-- Discussion Activity Widget -->
-        <?php if (isset($analyticsWidgets['commented_issues'])): ?>
-        <div class="widget-container">
-            <?php echo $dashboardController->visualization->renderDashboardWidget('analytics', $analyticsWidgets['commented_issues']); ?>
-        </div>
-        <?php endif; ?>
-
-        <!-- Compliance Trends Widget (Full Width) -->
-        <?php if (isset($analyticsWidgets['compliance_trend'])): ?>
-        <div class="widget-container widget-full-width">
-            <?php echo $dashboardController->visualization->renderDashboardWidget('trend', $analyticsWidgets['compliance_trend']); ?>
-        </div>
-        <?php endif; ?>
-
+<div class="analytics-tab-panels">
+    <?php if (!empty($reportTabs)): ?>
+        <?php foreach ($reportTabs as $reportTab): ?>
+        <?php $isActivePanel = $activeReport === $reportTab['key']; ?>
+        <section
+            class="widget-container analytics-tab-panel<?php echo $reportTab['fullWidth'] ? ' widget-full-width' : ''; ?><?php echo $isActivePanel ? ' is-active' : ''; ?>"
+            id="analytics-report-<?php echo htmlspecialchars($reportTab['key'], ENT_QUOTES, 'UTF-8'); ?>"
+            data-report-panel="<?php echo htmlspecialchars($reportTab['key'], ENT_QUOTES, 'UTF-8'); ?>"
+            role="tabpanel"
+            aria-labelledby="analytics-tab-<?php echo htmlspecialchars($reportTab['key'], ENT_QUOTES, 'UTF-8'); ?>"
+            <?php echo $isActivePanel ? '' : 'hidden'; ?>
+        >
+            <?php echo $dashboardController->visualization->renderDashboardWidget($reportTab['widgetType'], $reportTab['widgetData']); ?>
+        </section>
+        <?php endforeach; ?>
     <?php else: ?>
         <!-- No Data State -->
         <div class="col-12">
@@ -89,205 +165,14 @@ $projectIdsList = implode(',', array_column($assignedProjects, 'id'));
                 </div>
                 <h3 class="text-muted">No Analytics Data Available</h3>
                 <p class="text-muted mb-4">
-                    Analytics widgets will appear here once you have accessibility issues in your assigned projects.
+                    Analytics widgets will appear here when data is available.
                 </p>
                 <a href="<?php echo $baseDir; ?>/modules/client/projects.php" class="btn btn-primary">
-                    <i class="fas fa-folder-open"></i> View Projects
+                    <i class="fas fa-folder-open"></i> View Digital Assets
                 </a>
             </div>
         </div>
     <?php endif; ?>
 </div>
 
-<style>
-.analytics-widgets-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
-    gap: 24px;
-    margin-bottom: 2rem;
-}
-
-.widget-container {
-    position: relative;
-}
-
-.widget-container.widget-full-width {
-    grid-column: 1 / -1;
-}
-
-.widget-container .dashboard-widget {
-    height: 100%;
-    min-height: 300px;
-    cursor: pointer;
-    transition: all 0.3s ease;
-    border: 1px solid #e9ecef;
-    border-radius: 12px;
-    overflow: hidden;
-}
-
-.widget-container .dashboard-widget:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 8px 25px rgba(0,0,0,0.15);
-    border-color: #2563eb;
-}
-
-.widget-container .widget-header {
-    background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
-    border-bottom: 1px solid #dee2e6;
-    padding: 16px 20px;
-}
-
-.widget-container .widget-title {
-    font-size: 1.1rem;
-    font-weight: 600;
-    color: #2c3e50;
-    margin: 0;
-}
-
-.widget-container .widget-title i {
-    margin-right: 8px;
-    opacity: 0.8;
-}
-
-.widget-container .widget-action {
-    color: #6c757d;
-    font-size: 0.9rem;
-    transition: color 0.2s ease;
-}
-
-.widget-container .widget-action:hover {
-    color: #2563eb;
-}
-
-.widget-container .widget-content {
-    padding: 20px;
-}
-
-.analytics-summary {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
-    gap: 12px;
-    margin-bottom: 16px;
-}
-
-.summary-metric {
-    text-align: center;
-    padding: 12px;
-    background: #f8f9fa;
-    border-radius: 8px;
-    border: 1px solid #e9ecef;
-}
-
-.summary-metric .metric-label {
-    font-size: 0.8rem;
-    color: #6c757d;
-    margin-bottom: 4px;
-    font-weight: 500;
-}
-
-.summary-metric .metric-value {
-    font-size: 1.25rem;
-    font-weight: 700;
-    color: #2c3e50;
-    line-height: 1;
-}
-
-.widget-actions {
-    margin-top: 16px;
-    text-align: center;
-}
-
-.widget-actions .btn {
-    font-size: 0.875rem;
-    padding: 6px 16px;
-    border-radius: 6px;
-    font-weight: 500;
-}
-
-.no-data-state {
-    background: #f8f9fa;
-    border-radius: 12px;
-    border: 2px dashed #dee2e6;
-    margin: 2rem 0;
-}
-
-.no-data-icon {
-    opacity: 0.6;
-}
-
-/* Responsive Design */
-@media (max-width: 1200px) {
-    .analytics-widgets-grid {
-        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-        gap: 20px;
-    }
-}
-
-@media (max-width: 768px) {
-    .analytics-widgets-grid {
-        grid-template-columns: 1fr;
-        gap: 16px;
-    }
-    
-    .widget-container .dashboard-widget {
-        min-height: 250px;
-    }
-    
-    .widget-container .widget-content {
-        padding: 16px;
-    }
-    
-    .analytics-summary {
-        grid-template-columns: repeat(2, 1fr);
-        gap: 8px;
-    }
-    
-    .summary-metric {
-        padding: 8px;
-    }
-    
-    .summary-metric .metric-value {
-        font-size: 1.1rem;
-    }
-}
-
-@media (max-width: 576px) {
-    .analytics-widgets-grid {
-        gap: 12px;
-    }
-    
-    .widget-container .widget-header {
-        padding: 12px 16px;
-    }
-    
-    .widget-container .widget-title {
-        font-size: 1rem;
-    }
-    
-    .analytics-summary {
-        grid-template-columns: 1fr;
-    }
-}
-</style>
-
-<script>
-// Add click handlers for drill-down navigation
-document.addEventListener('DOMContentLoaded', function() {
-    const widgets = document.querySelectorAll('.widget-container .dashboard-widget');
-    
-    widgets.forEach(widget => {
-        const drillDownLink = widget.querySelector('.widget-actions a');
-        if (drillDownLink) {
-            widget.addEventListener('click', function(e) {
-                // Don't trigger if clicking on action buttons
-                if (!e.target.closest('.widget-actions')) {
-                    window.location.href = drillDownLink.href;
-                }
-            });
-            
-            // Add visual feedback
-            widget.style.cursor = 'pointer';
-        }
-    });
-});
-</script>
+<script src="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/assets/js/client-dashboard-widgets.js?v=<?php echo urlencode((string) ($assetVersion ?? '20260406v16')); ?>"></script>

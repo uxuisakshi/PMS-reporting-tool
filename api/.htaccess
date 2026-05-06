@@ -1,0 +1,25 @@
+# Strict CSP for API endpoints — they return JSON, no scripts needed
+# This overrides the looser fallback CSP set in the root .htaccess
+<IfModule mod_headers.c>
+    Header always set Content-Security-Policy "default-src 'none'; frame-ancestors 'none'"
+</IfModule>
+
+# Block direct access to log files
+<FilesMatch "(error_log|\.log)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+# Redirect PHP error_log to a path outside webroot
+# Replace 'yourusername' with your actual cPanel username
+<IfModule mod_php.c>
+    php_value error_log /home/yourusername/logs/php_errors.log
+</IfModule>
+<IfModule mod_php8.c>
+    php_value error_log /home/yourusername/logs/php_errors.log
+</IfModule>

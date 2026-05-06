@@ -15,7 +15,7 @@
     <script src="https://cdn.datatables.net/1.11.5/js/jquery.dataTables.min.js"></script>
     <script src="https://cdn.datatables.net/1.11.5/js/dataTables.bootstrap5.min.js"></script>
     <script src="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/assets/js/script.js?v=20260225v2"></script>
-    <script>
+    <script nonce="<?php echo $cspNonce ?? ''; ?>">
     $(document).ready(function() {
         $(document).on('click', '.status-update-link', function(e) {
             e.preventDefault();
@@ -131,7 +131,7 @@
         </div>
     </div>
 
-    <script>
+    <script nonce="<?php echo $cspNonce ?? ''; ?>">
     // Global Confirm Modal Function
     window.confirmModal = function(message, callback, options = {}) {
         const modalEl = document.getElementById('globalConfirmModal');

@@ -153,31 +153,197 @@ function getStatusOptions($entityType) {
     }
 }
 
+function ensureIssueStatusVisibilityColumns($db) {
+    static $checked = false;
+    if ($checked) {
+        return;
+    }
+    $checked = true;
+
+    try {
+        $columns = [];
+        $stmt = $db->query("SHOW COLUMNS FROM issue_statuses");
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $columns[] = strtolower((string)($row['Field'] ?? ''));
+        }
+
+        if (!in_array('visible_to_client', $columns, true)) {
+            $db->exec("ALTER TABLE issue_statuses ADD COLUMN visible_to_client TINYINT(1) NOT NULL DEFAULT 1 AFTER is_qa");
+        }
+        if (!in_array('visible_to_internal', $columns, true)) {
+            $db->exec("ALTER TABLE issue_statuses ADD COLUMN visible_to_internal TINYINT(1) NOT NULL DEFAULT 1 AFTER visible_to_client");
+        }
+    } catch (Exception $e) {
+        error_log('Failed to ensure issue status visibility columns: ' . $e->getMessage());
+    }
+}
+
+function getIssueStatusesForRole($db, $role = '', array $columns = []) {
+    ensureIssueStatusVisibilityColumns($db);
+
+    $baseColumns = ['id', 'name', 'color', 'category', 'points', 'is_qa', 'visible_to_client', 'visible_to_internal'];
+    $selectColumns = array_values(array_unique(array_merge($baseColumns, $columns)));
+    $sql = 'SELECT ' . implode(', ', $selectColumns) . ' FROM issue_statuses';
+    $params = [];
+    $normalizedRole = strtolower(trim((string)$role));
+
+    if ($normalizedRole === 'client') {
+        $sql .= ' WHERE visible_to_client = 1';
+    } elseif ($normalizedRole !== '') {
+        $sql .= ' WHERE visible_to_internal = 1';
+    }
+
+    $sql .= ' ORDER BY name ASC';
+    $stmt = $db->prepare($sql);
+    $stmt->execute($params);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
 /**
  * Sanitize chat HTML allowing only a small whitelist of tags and safe attributes.
- * Allows <a href>, <img src> (data: or http/https), <b>, <strong>, <i>, <em>, <u>, <br>, <p>, <ul>, <ol>, <li>
+ * Allows <a href>, <img src> (http/https only), <b>, <strong>, <i>, <em>, <u>, <br>, <p>, <ul>, <ol>, <li>
+ * Uses DOM-based parsing when available for robust XSS prevention.
  */
 function sanitize_chat_html($html) {
-    // Simple fallback sanitizer: strip <script> tags and on* attributes, prevent javascript: URIs.
     if (trim($html) === '') return '';
-    // Remove script blocks
-    $html = preg_replace('#<script.*?>.*?</script>#is', '', $html);
-    // Remove on* attributes (onclick, onerror, etc.)
-    $html = preg_replace('/\s+on[a-z]+\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)/i', '', $html);
-    // Remove javascript: URIs in href/src
-    $html = preg_replace_callback('/<(a|img)\b([^>]*)>/i', function($m){
-        $tag = $m[1]; $attrs = $m[2];
-        // remove javascript: in attributes
-        $attrs = preg_replace_callback('/(href|src)\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)/i', function($ma){
-            $name = $ma[1]; $val = trim($ma[2], "'\"");
-            if (preg_match('#^\s*javascript:#i', $val)) {
-                return '';
-            }
-            return $name . '="' . htmlspecialchars($val, ENT_QUOTES, 'UTF-8') . '"';
-        }, $attrs);
-        return '<' . $tag . $attrs . '>';
+
+    // --- Pass 1: Regex pre-filter (fast removal of obvious dangerous content) ---
+
+    // Strip dangerous tags completely including their content
+    $html = preg_replace('#<(script|style|iframe|object|embed|form|input|button|select|textarea|base|link|meta|applet|frame|frameset|layer|ilayer|bgsound|xml|svg|math)\b[^>]*>.*?</\1>#is', '', $html);
+    // Strip self-closing dangerous tags (including svg, math)
+    $html = preg_replace('#<(script|style|iframe|object|embed|form|input|button|select|textarea|base|link|meta|applet|frame|frameset|layer|ilayer|bgsound|xml|svg|math)\b[^>]*/?\>#is', '', $html);
+
+    // Remove ALL event handler attributes (on*) - covers onerror, onload, onclick, etc.
+    $html = preg_replace('/(\s+on[a-z][a-z0-9]*\s*=\s*)("[^"]*"|\'[^\']*\'|[^\s>\/]+)/i', '', $html);
+
+    // Remove style attributes entirely (prevents CSS expression(), url(javascript:...) etc.)
+    $html = preg_replace('/\s+style\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>\/]+)/i', '', $html);
+
+    // Remove data: URIs from src/href (can carry JS payloads)
+    $html = preg_replace_callback('/(src|href|action|formaction|xlink:href)\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>\/]+)/i', function ($m) {
+        $attr = $m[1];
+        $val = trim($m[2], "'\"");
+        // Block javascript:, vbscript:, data: URIs
+        if (preg_match('#^\s*(javascript|vbscript|data)\s*:#i', $val)) {
+            return '';
+        }
+        return $attr . '="' . htmlspecialchars($val, ENT_QUOTES, 'UTF-8') . '"';
     }, $html);
-    return $html;
+
+    // --- Pass 2: DOM-based sanitization (when ext/dom available) ---
+    if (class_exists('DOMDocument')) {
+        $allowedTags = [
+            'a', 'img', 'b', 'strong', 'i', 'em', 'u', 'br', 'p',
+            'ul', 'ol', 'li', 'span', 'code', 'pre', 'blockquote',
+            'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr',
+            'table', 'thead', 'tbody', 'tr', 'th', 'td',
+        ];
+        // Allowed attributes per tag (whitelist approach)
+        $allowedAttrs = [
+            'a'   => ['href', 'title', 'target', 'rel'],
+            'img' => ['src', 'alt', 'title', 'width', 'height'],
+            'td'  => ['colspan', 'rowspan'],
+            'th'  => ['colspan', 'rowspan'],
+            '*'   => ['class'], // class allowed on all tags (no JS in class)
+        ];
+
+        $doc = new DOMDocument();
+        libxml_use_internal_errors(true);
+        // Wrap in utf-8 meta so DOMDocument handles encoding correctly
+        $doc->loadHTML('<?xml encoding="utf-8"?><html><body>' . $html . '</body></html>', LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
+        libxml_clear_errors();
+
+        $toRemove = [];
+        $xpath = new DOMXPath($doc);
+
+        // Collect all elements
+        foreach ($xpath->query('//*') as $node) {
+            $tagName = strtolower($node->nodeName);
+            if (!in_array($tagName, $allowedTags, true)) {
+                // Replace disallowed tag with its text content (don't just remove — preserve text)
+                $frag = $doc->createDocumentFragment();
+                while ($node->firstChild) {
+                    $frag->appendChild($node->firstChild);
+                }
+                $node->parentNode->replaceChild($frag, $node);
+                continue;
+            }
+
+            // Remove disallowed attributes
+            $attrsToRemove = [];
+            foreach ($node->attributes as $attr) {
+                $attrName = strtolower($attr->name);
+                $allowed = $allowedAttrs[$tagName] ?? [];
+                $allowedAll = $allowedAttrs['*'] ?? [];
+                if (!in_array($attrName, $allowed, true) && !in_array($attrName, $allowedAll, true)) {
+                    $attrsToRemove[] = $attr->name;
+                }
+                // Extra: block javascript/vbscript/data in any remaining attr value
+                if (preg_match('#^\s*(javascript|vbscript|data)\s*:#i', $attr->value)) {
+                    $attrsToRemove[] = $attr->name;
+                }
+            }
+            foreach ($attrsToRemove as $a) {
+                $node->removeAttribute($a);
+            }
+
+            // Force target="_blank" links to have rel="noopener noreferrer"
+            if ($tagName === 'a') {
+                $target = $node->getAttribute('target');
+                if ($target === '_blank') {
+                    $node->setAttribute('rel', 'noopener noreferrer');
+                }
+                // Ensure external links always have rel set
+                if (!$node->hasAttribute('rel')) {
+                    $node->setAttribute('rel', 'noopener noreferrer');
+                }
+            }
+        }
+
+        // Extract body innerHTML
+        $body = $doc->getElementsByTagName('body')->item(0);
+        if ($body) {
+            $result = '';
+            foreach ($body->childNodes as $child) {
+                $result .= $doc->saveHTML($child);
+            }
+            return $result;
+        }
+    }
+
+    // --- Fallback: regex-only path (when DOM not available) ---
+    // Sanitize href/src on <a> and <img> tags
+    $html = preg_replace_callback('/<(a|img)\b([^>]*)>/i', function ($m) {
+        $tag = strtolower($m[1]);
+        $attrs = $m[2];
+        // Keep only safe attributes
+        $safeAttrs = '';
+        if ($tag === 'a') {
+            if (preg_match('/href\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)/i', $attrs, $hm)) {
+                $val = trim($hm[1], "'\"");
+                if (!preg_match('#^\s*(javascript|vbscript|data)\s*:#i', $val)) {
+                    $safeAttrs .= ' href="' . htmlspecialchars($val, ENT_QUOTES, 'UTF-8') . '"';
+                }
+            }
+            $safeAttrs .= ' rel="noopener noreferrer"';
+        } elseif ($tag === 'img') {
+            if (preg_match('/src\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)/i', $attrs, $sm)) {
+                $val = trim($sm[1], "'\"");
+                if (!preg_match('#^\s*(javascript|vbscript|data)\s*:#i', $val)) {
+                    $safeAttrs .= ' src="' . htmlspecialchars($val, ENT_QUOTES, 'UTF-8') . '"';
+                }
+            }
+            if (preg_match('/alt\s*=\s*("[^"]*"|\'[^\']*\')/i', $attrs, $am)) {
+                $safeAttrs .= ' alt=' . $am[1];
+            }
+        }
+        return '<' . $tag . $safeAttrs . '>';
+    }, $html);
+
+    // Strip any tags not in the allowed whitelist
+    $allowed = '<a><img><b><strong><i><em><u><br><p><ul><ol><li><span><code><pre><blockquote><h1><h2><h3><h4><h5><h6><hr><table><thead><tbody><tr><th><td>';
+    return strip_tags($html, $allowed);
 }
 
 if (!function_exists('ensureAvailabilityStatusMaster')) {
@@ -361,6 +527,21 @@ function extract_local_upload_paths_from_html($html, $allowedPrefixes = ['upload
             parse_str($query, $qp);
             $path = (string)($qp['path'] ?? '');
             $path = rawurldecode($path);
+        } elseif ($urlPath !== '' && stripos($urlPath, '/api/public_image.php') !== false) {
+            $qp = [];
+            parse_str($query, $qp);
+            $token = trim((string)($qp['t'] ?? ''));
+            if ($token !== '' && strpos($token, '.') !== false) {
+                $parts = explode('.', $token, 2);
+                $payloadB64 = (string)($parts[0] ?? '');
+                $sig = (string)($parts[1] ?? '');
+                $expected = hash_hmac('sha256', $payloadB64, get_public_image_token_secret());
+                if (hash_equals($expected, $sig)) {
+                    $decoded = base64url_decode($payloadB64);
+                    $payload = is_string($decoded) ? json_decode($decoded, true) : null;
+                    $path = (string)($payload['p'] ?? '');
+                }
+            }
         } else {
             $candidate = $urlPath !== '' ? $urlPath : $url;
             $candidate = str_replace('\\', '/', $candidate);
@@ -464,12 +645,22 @@ function get_public_image_token_secret() {
         return $secret;
     }
 
+    // Fallback: derive from APP_KEY if set (stronger than DB credentials)
+    $appKey = trim((string)getenv('APP_KEY'));
+    if ($appKey !== '') {
+        $secret = hash_pbkdf2('sha256', $appKey, 'pms_public_image_secret_v1', 100000, 32);
+        return $secret;
+    }
+
+    // Last resort: derive from DB credentials + server path.
+    // Log a warning so admins know to set PMS_PUBLIC_IMAGE_SECRET.
+    error_log('SECURITY WARNING: PMS_PUBLIC_IMAGE_SECRET env var not set. Set it to a random 32+ char secret for stronger public image token security.');
     $parts = [
         (string)DB_HOST,
         (string)DB_NAME,
         (string)DB_USER,
         (string)DB_PASS,
-        __DIR__
+        strtolower(str_replace('\\', '/', realpath(__DIR__)))
     ];
     $secret = hash('sha256', implode('|', $parts));
     return $secret;
@@ -487,16 +678,31 @@ function normalize_local_upload_path_from_src($src, $allowedPrefixes = ['uploads
         $qp = [];
         parse_str($query, $qp);
         $path = rawurldecode((string)($qp['path'] ?? ''));
+    } elseif ($urlPath !== '' && stripos($urlPath, '/api/public_image.php') !== false) {
+        $qp = [];
+        parse_str($query, $qp);
+        $token = trim((string)($qp['t'] ?? ''));
+        if ($token !== '' && strpos($token, '.') !== false) {
+            $parts = explode('.', $token, 2);
+            $payloadB64 = (string)($parts[0] ?? '');
+            $sig = (string)($parts[1] ?? '');
+            $expected = hash_hmac('sha256', $payloadB64, get_public_image_token_secret());
+            if (hash_equals($expected, $sig)) {
+                $decoded = base64url_decode($payloadB64);
+                $payload = is_string($decoded) ? json_decode($decoded, true) : null;
+                $path = (string)($payload['p'] ?? '');
+            }
+        }
     } else {
         $candidate = $urlPath !== '' ? $urlPath : $src;
         $candidate = str_replace('\\', '/', $candidate);
         $candidate = ltrim($candidate, '/');
-        $posUploads = strpos($candidate, 'uploads/');
         $posAssetsUploads = strpos($candidate, 'assets/uploads/');
-        if ($posUploads !== false) {
-            $path = substr($candidate, $posUploads);
-        } elseif ($posAssetsUploads !== false) {
+        $posUploads = strpos($candidate, 'uploads/');
+        if ($posAssetsUploads !== false) {
             $path = substr($candidate, $posAssetsUploads);
+        } elseif ($posUploads !== false) {
+            $path = substr($candidate, $posUploads);
         }
     }
 
@@ -516,14 +722,21 @@ function normalize_local_upload_path_from_src($src, $allowedPrefixes = ['uploads
     if (!$allowed) return null;
 
     $ext = strtolower((string)pathinfo($path, PATHINFO_EXTENSION));
-    $imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'avif'];
+    $imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'avif'];
     if (!in_array($ext, $imageExts, true)) return null;
 
     return $path;
 }
 
 function build_public_image_url_from_src($src) {
-    $relPath = normalize_local_upload_path_from_src($src, ['uploads/issues/', 'uploads/chat/', 'assets/uploads/']);
+    $relPath = normalize_local_upload_path_from_src($src, [
+        'uploads/issues/', 
+        'uploads/chat/', 
+        'assets/uploads/issues/', 
+        'assets/uploads/chat/', 
+        'assets/uploads/issue_screenshots/',
+        'assets/uploads/'
+    ]);
     if ($relPath === null) {
         return (string)$src;
     }
@@ -543,8 +756,35 @@ function build_public_image_url_from_src($src) {
     return rtrim($baseDir, '/') . '/api/public_image.php?t=' . rawurlencode($token);
 }
 
+function rewrite_html_public_image_urls($html) {
+    $html = (string)$html;
+    if ($html === '') {
+        return $html;
+    }
+
+    $rewritten = preg_replace_callback(
+        '/\b(src|href)\s*=\s*(["\'])(.*?)\2/i',
+        static function ($matches) {
+            $attrName = (string)($matches[1] ?? '');
+            $quote = (string)($matches[2] ?? '"');
+            $value = html_entity_decode((string)($matches[3] ?? ''), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+            $publicUrl = build_public_image_url_from_src($value);
+            if ($publicUrl === $value) {
+                return (string)$matches[0];
+            }
+
+            return $attrName . '=' . $quote
+                . htmlspecialchars($publicUrl, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
+                . $quote;
+        },
+        $html
+    );
+
+    return is_string($rewritten) ? $rewritten : $html;
+}
+
 /**
- * Render a user's full name as a link to their profile unless the user is an admin/super_admin.
+ * Render a user's full name as a link to their profile unless the user is an admin/admin.
  * Accepts either a user id or an array with keys ['id','full_name','role'].
  */
 function renderUserNameLink($user) {
@@ -570,7 +810,7 @@ function renderUserNameLink($user) {
     }
 
     $name = $name ?: 'User';
-    if (in_array($role, ['admin', 'super_admin'])) {
+    if (in_array($role, ['admin'])) {
         return htmlspecialchars($name, ENT_QUOTES, 'UTF-8');
     }
 
@@ -579,4 +819,3 @@ function renderUserNameLink($user) {
     return '<a href="' . htmlspecialchars($href, ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($name, ENT_QUOTES, 'UTF-8') . '</a>';
 }
 
-?>

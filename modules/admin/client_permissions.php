@@ -5,7 +5,7 @@ require_once __DIR__ . '/../../includes/helpers.php';
 require_once __DIR__ . '/../../includes/email.php';
 
 $auth = new Auth();
-$auth->requireRole(['admin', 'super_admin']);
+$auth->requireRole(['admin']);
 
 $db = Database::getInstance();
 $userId = $_SESSION['user_id'];
@@ -13,6 +13,11 @@ $baseDir = getBaseDir();
 
 // Handle form submissions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error'] = 'Invalid request. Please try again.';
+        header('Location: client_permissions.php');
+        exit;
+    }
     if (isset($_POST['grant_permissions'])) {
         $projectIds = $_POST['project_ids'] ?? [];
         $targetUserId = intval($_POST['user_id']);
@@ -93,65 +98,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ]);
                 } catch (Exception $e) {
                     error_log("Failed to log activity: " . $e->getMessage());
-                }
-                
-                // Create in-app notification (after commit)
-                try {
-                    $permissionsList = array_map(function($p) {
-                        return ucfirst(str_replace('_', ' ', $p));
-                    }, $permissions);
-                    $notificationMessage = "You have been granted access to " . count($projectIds) . " project(s).";
-                    createNotification($db, $targetUserId, 'permission_update', $notificationMessage, '/modules/projects/my_client_projects.php');
-                } catch (Exception $e) {
-                    error_log("Failed to create notification: " . $e->getMessage());
-                }
-                
-                // Send email notification to user
-                try {
-                    $emailSender = new EmailSender();
-                    
-                    $emailSubject = "Project Access Granted";
-                    $emailBody = "
-                        <!DOCTYPE html>
-                        <html>
-                        <head>
-                            <style>
-                                body { font-family: Arial, sans-serif; line-height: 1.6; }
-                                .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-                                .header { background-color: #28a745; color: white; padding: 20px; text-align: center; }
-                                .content { padding: 20px; background-color: #f8f9fa; }
-                                .button { display: inline-block; padding: 10px 20px; background-color: #007bff; 
-                                          color: white; text-decoration: none; border-radius: 5px; }
-                                ul { background-color: white; padding: 20px; border-radius: 5px; }
-                            </style>
-                        </head>
-                        <body>
-                            <div class='container'>
-                                <div class='header'>
-                                    <h1>Project Access Granted</h1>
-                                </div>
-                                <div class='content'>
-                                    <h2>Hello " . htmlspecialchars($targetUser['full_name']) . ",</h2>
-                                    <p>You have been granted access to the following project(s):</p>
-                                    <ul>
-                                        <li>" . implode("</li><li>", array_map('htmlspecialchars', $projectNames)) . "</li>
-                                    </ul>
-                                    " . ($expiresAt ? "<p><strong>Access Expires:</strong> " . date('F d, Y', strtotime($expiresAt)) . "</p>" : "") . "
-                                    " . ($notes ? "<p><strong>Notes:</strong> " . nl2br(htmlspecialchars($notes)) . "</p>" : "") . "
-                                    <p>You can now view issues and track progress for these projects.</p>
-                                    <p style='text-align: center; margin-top: 30px;'>
-                                        <a href='" . $baseDir . "/modules/client/dashboard.php' class='button'>View Dashboard</a>
-                                    </p>
-                                </div>
-                            </div>
-                        </body>
-                        </html>
-                    ";
-                    
-                    $emailSender->send($targetUser['email'], $emailSubject, $emailBody, true);
-                } catch (Exception $e) {
-                    error_log("Failed to send permission notification email: " . $e->getMessage());
-                    // Don't fail the request if email fails
                 }
                 
                 $_SESSION['success'] = "Project access granted successfully to " . htmlspecialchars($targetUser['full_name']) . " for " . count($projectIds) . " project(s)!";
@@ -313,10 +259,16 @@ foreach ($permissionTypes as $perm) {
     $permissionsByCategory[$perm['category']][] = $perm;
 }
 
-// Get current permissions with filters
+// Get current permissions with filters, search, and pagination
 $selectedClient = isset($_GET['client_id']) ? intval($_GET['client_id']) : 0;
 $selectedUser = isset($_GET['user_id']) ? intval($_GET['user_id']) : 0;
 $selectedProject = isset($_GET['project_id']) ? intval($_GET['project_id']) : 0;
+$searchTerm = isset($_GET['search']) ? trim($_GET['search']) : '';
+
+// Pagination parameters
+$page = isset($_GET['page']) ? max(1, intval($_GET['page'])) : 1;
+$perPage = 20;
+$offset = ($page - 1) * $perPage;
 
 $whereConditions = ["cp.is_active = 1", "cp.project_id IS NOT NULL"];
 $params = [];
@@ -336,6 +288,38 @@ if ($selectedProject) {
     $params[] = $selectedProject;
 }
 
+// Add search functionality
+if ($searchTerm) {
+    $whereConditions[] = "(
+        u.full_name LIKE ? OR 
+        u.email LIKE ? OR 
+        c.name LIKE ? OR 
+        p.title LIKE ? OR 
+        p.po_number LIKE ? OR 
+        cp.permission_type LIKE ? OR
+        pt.description LIKE ?
+    )";
+    $searchParam = '%' . $searchTerm . '%';
+    $params = array_merge($params, [$searchParam, $searchParam, $searchParam, $searchParam, $searchParam, $searchParam, $searchParam]);
+}
+
+// Get total count for pagination
+$countQuery = "
+    SELECT COUNT(*) 
+    FROM client_permissions cp
+    JOIN users u ON cp.user_id = u.id
+    JOIN projects p ON cp.project_id = p.id
+    JOIN clients c ON p.client_id = c.id
+    LEFT JOIN users gb ON cp.granted_by = gb.id
+    LEFT JOIN client_permissions_types pt ON cp.permission_type = pt.permission_type
+    WHERE " . implode(" AND ", $whereConditions);
+
+$countStmt = $db->prepare($countQuery);
+$countStmt->execute($params);
+$totalPermissions = $countStmt->fetchColumn();
+$totalPages = ceil($totalPermissions / $perPage);
+
+// Get permissions for current page
 $currentPermissions = $db->prepare("
     SELECT cp.*, u.full_name as user_name, u.email as user_email, u.role as user_role,
            c.name as client_name,
@@ -350,8 +334,9 @@ $currentPermissions = $db->prepare("
     LEFT JOIN client_permissions_types pt ON cp.permission_type = pt.permission_type
     WHERE " . implode(" AND ", $whereConditions) . "
     ORDER BY c.name, p.title, u.full_name, pt.category, cp.permission_type
+    LIMIT ? OFFSET ?
 ");
-$currentPermissions->execute($params);
+$currentPermissions->execute(array_merge($params, [$perPage, $offset]));
 
 include __DIR__ . '/../../includes/header.php';
 ?>
@@ -394,6 +379,27 @@ include __DIR__ . '/../../includes/header.php';
             <div class="card mb-4">
                 <div class="card-body">
                     <form method="GET" class="row g-3">
+                        <div class="col-md-12">
+                            <label class="form-label">Search Permissions</label>
+                            <div class="input-group">
+                                <span class="input-group-text"><i class="fas fa-search"></i></span>
+                                <input type="text" name="search" class="form-control" 
+                                       placeholder="Search by user name, email, client, project, or permission type..." 
+                                       value="<?php echo htmlspecialchars($searchTerm); ?>">
+                                <?php if ($searchTerm): ?>
+                                <button type="button" class="btn btn-outline-secondary" onclick="clearSearch()">
+                                    <i class="fas fa-times"></i>
+                                </button>
+                                <?php endif; ?>
+                            </div>
+                            <?php if ($searchTerm): ?>
+                            <small class="text-muted">
+                                <i class="fas fa-info-circle"></i> 
+                                Searching for: <strong>"<?php echo htmlspecialchars($searchTerm); ?>"</strong>
+                                <a href="?" class="text-decoration-none ms-2">Clear search</a>
+                            </small>
+                            <?php endif; ?>
+                        </div>
                         <div class="col-md-3">
                             <label class="form-label">Filter by Client</label>
                             <select name="client_id" class="form-select">
@@ -439,8 +445,8 @@ include __DIR__ . '/../../includes/header.php';
                         </div>
                         <div class="col-md-2">
                             <label class="form-label">&nbsp;</label>
-                            <button type="submit" class="btn btn-outline-primary d-block w-100">
-                                <i class="fas fa-filter"></i> Filter
+                            <button type="submit" class="btn btn-primary d-block w-100">
+                                <i class="fas fa-search"></i> Search & Filter
                             </button>
                         </div>
                     </form>
@@ -449,8 +455,24 @@ include __DIR__ . '/../../includes/header.php';
 
             <!-- Current Permissions -->
             <div class="card">
-                <div class="card-header">
-                    <h5 class="mb-0"><i class="fas fa-list"></i> Current Project Permissions</h5>
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <div>
+                        <h5 class="mb-0"><i class="fas fa-list"></i> Current Project Permissions</h5>
+                        <?php if ($searchTerm): ?>
+                        <small class="text-muted">
+                            <i class="fas fa-search"></i> Search results for: <strong>"<?php echo htmlspecialchars($searchTerm); ?>"</strong>
+                        </small>
+                        <?php endif; ?>
+                    </div>
+                    <?php if ($totalPermissions > 0): ?>
+                    <small class="text-muted">
+                        Showing <?php echo number_format($offset + 1); ?>-<?php echo number_format(min($offset + $perPage, $totalPermissions)); ?> 
+                        of <?php echo number_format($totalPermissions); ?> permissions
+                        <?php if ($searchTerm || $selectedClient || $selectedUser || $selectedProject): ?>
+                        <br><span class="badge bg-info">Filtered Results</span>
+                        <?php endif; ?>
+                    </small>
+                    <?php endif; ?>
                 </div>
                 <div class="card-body">
                     <?php if ($currentPermissions->rowCount() > 0): ?>
@@ -514,6 +536,7 @@ include __DIR__ . '/../../includes/header.php';
                                     </td>
                                     <td>
                                         <form method="POST" style="display: inline;">
+                                            <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                                             <input type="hidden" name="permission_id" value="<?php echo $perm['id']; ?>">
                                             <input type="hidden" name="revoke_permission" value="1">
                                             <button type="submit" class="btn btn-sm btn-outline-danger" 
@@ -527,9 +550,99 @@ include __DIR__ . '/../../includes/header.php';
                             </tbody>
                         </table>
                     </div>
+                    
+                    <?php if ($totalPages > 1): ?>
+                    <!-- Pagination -->
+                    <nav aria-label="Permissions pagination" class="mt-4">
+                        <ul class="pagination justify-content-center">
+                            <?php
+                            // Build query string for pagination links
+                            $queryParams = [];
+                            if ($selectedClient) $queryParams['client_id'] = $selectedClient;
+                            if ($selectedUser) $queryParams['user_id'] = $selectedUser;
+                            if ($selectedProject) $queryParams['project_id'] = $selectedProject;
+                            if ($searchTerm) $queryParams['search'] = $searchTerm;
+                            
+                            // Previous page
+                            if ($page > 1):
+                                $prevParams = array_merge($queryParams, ['page' => $page - 1]);
+                            ?>
+                            <li class="page-item">
+                                <a class="page-link" href="?<?php echo http_build_query($prevParams); ?>">
+                                    <i class="fas fa-chevron-left"></i> Previous
+                                </a>
+                            </li>
+                            <?php endif; ?>
+                            
+                            <?php
+                            // Page numbers
+                            $startPage = max(1, $page - 2);
+                            $endPage = min($totalPages, $page + 2);
+                            
+                            if ($startPage > 1):
+                            ?>
+                            <li class="page-item">
+                                <a class="page-link" href="?<?php echo http_build_query(array_merge($queryParams, ['page' => 1])); ?>">1</a>
+                            </li>
+                            <?php if ($startPage > 2): ?>
+                            <li class="page-item disabled">
+                                <span class="page-link">...</span>
+                            </li>
+                            <?php endif; ?>
+                            <?php endif; ?>
+                            
+                            <?php for ($i = $startPage; $i <= $endPage; $i++): ?>
+                            <li class="page-item <?php echo $i == $page ? 'active' : ''; ?>">
+                                <a class="page-link" href="?<?php echo http_build_query(array_merge($queryParams, ['page' => $i])); ?>">
+                                    <?php echo $i; ?>
+                                </a>
+                            </li>
+                            <?php endfor; ?>
+                            
+                            <?php if ($endPage < $totalPages): ?>
+                            <?php if ($endPage < $totalPages - 1): ?>
+                            <li class="page-item disabled">
+                                <span class="page-link">...</span>
+                            </li>
+                            <?php endif; ?>
+                            <li class="page-item">
+                                <a class="page-link" href="?<?php echo http_build_query(array_merge($queryParams, ['page' => $totalPages])); ?>">
+                                    <?php echo $totalPages; ?>
+                                </a>
+                            </li>
+                            <?php endif; ?>
+                            
+                            <?php
+                            // Next page
+                            if ($page < $totalPages):
+                                $nextParams = array_merge($queryParams, ['page' => $page + 1]);
+                            ?>
+                            <li class="page-item">
+                                <a class="page-link" href="?<?php echo http_build_query($nextParams); ?>">
+                                    Next <i class="fas fa-chevron-right"></i>
+                                </a>
+                            </li>
+                            <?php endif; ?>
+                        </ul>
+                    </nav>
+                    
+                    <!-- Page size info -->
+                    <div class="text-center text-muted small mt-3">
+                        Showing <?php echo $perPage; ?> permissions per page
+                    </div>
+                    <?php endif; ?>
+                    
                     <?php else: ?>
                     <div class="alert alert-info">
-                        <i class="fas fa-info-circle"></i> No project-specific permissions found. Use the filters above or grant new permissions.
+                        <i class="fas fa-info-circle"></i> 
+                        <?php if ($searchTerm): ?>
+                            No permissions found matching your search criteria "<strong><?php echo htmlspecialchars($searchTerm); ?></strong>". 
+                            <a href="?" class="text-decoration-none">Clear search</a> to see all permissions.
+                        <?php elseif ($selectedClient || $selectedUser || $selectedProject): ?>
+                            No permissions found with the selected filters. Try adjusting your filter criteria.
+                        <?php else: ?>
+                            No project-specific permissions found. Use the search and filters above or grant new permissions.
+                        <?php endif; ?>
                     </div>
                     <?php endif; ?>
                 </div>
@@ -543,6 +656,7 @@ include __DIR__ . '/../../includes/header.php';
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
             <form method="POST">
+                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                 <div class="modal-header">
                     <h5 class="modal-title">Grant Project Access to Client User</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
@@ -638,33 +752,6 @@ include __DIR__ . '/../../includes/header.php';
     </div>
 </div>
 
-<script>
-// Client filter for projects
-document.getElementById('clientFilter').addEventListener('change', function() {
-    const clientId = this.value;
-    const checkboxes = document.querySelectorAll('.form-check[data-client-id]');
-    
-    checkboxes.forEach(function(checkbox) {
-        if (clientId === '' || checkbox.dataset.clientId === clientId) {
-            checkbox.style.display = 'block';
-        } else {
-            checkbox.style.display = 'none';
-            checkbox.querySelector('input').checked = false;
-        }
-    });
-    
-    updateSelectedCount();
-});
+<script src="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/assets/js/admin-client-permissions.js"></script>
 
-// Update selected count
-document.querySelectorAll('.project-checkbox').forEach(function(checkbox) {
-    checkbox.addEventListener('change', updateSelectedCount);
-});
-
-function updateSelectedCount() {
-    const count = document.querySelectorAll('.project-checkbox:checked').length;
-    document.getElementById('selectedCount').textContent = count;
-}
-</script>
-
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<?php include __DIR__ . '/../../includes/footer.php'; 

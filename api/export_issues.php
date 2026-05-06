@@ -2,9 +2,13 @@
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/functions.php';
 require_once __DIR__ . '/../includes/helpers.php';
+require_once __DIR__ . '/../includes/project_permissions.php';
 
 $auth = new Auth();
-$auth->requireRole(['admin', 'project_lead', 'qa', 'super_admin']);
+$auth->requireRole(['admin', 'project_lead', 'qa', 'admin']);
+
+// CSRF protection for state-changing POST export
+enforceApiCsrf();
 
 $projectId = (int)($_POST['project_id'] ?? 0);
 $format = $_POST['format'] ?? 'excel';
@@ -21,6 +25,13 @@ if (!$projectId || empty($selectedColumns)) {
 }
 
 $db = Database::getInstance();
+
+// IDOR fix: verify user has access to this project
+if (!hasProjectAccess($db, $_SESSION['user_id'], $projectId)) {
+    http_response_code(403);
+    echo json_encode(['success' => false, 'message' => 'Access denied']);
+    exit;
+}
 
 // Get project details
 $stmt = $db->prepare("SELECT p.*, c.name as client_name FROM projects p LEFT JOIN clients c ON p.client_id = c.id WHERE p.id = ?");

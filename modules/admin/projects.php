@@ -9,10 +9,15 @@ $projectManager = new ProjectManager();
 $db = Database::getInstance();
 
 // Preload project leads for selection
-$projectLeads = $db->query("SELECT id, full_name FROM users WHERE role IN ('project_lead','admin','super_admin') ORDER BY full_name")->fetchAll();
+$projectLeads = $db->query("SELECT id, full_name FROM users WHERE role IN ('project_lead','admin','admin') ORDER BY full_name")->fetchAll();
 
 // Handle project creation
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_project'])) {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error'] = 'Invalid request. Please try again.';
+        header('Location: projects.php');
+        exit;
+    }
     $projectMode = $_POST['project_mode'] ?? 'standalone';
     $hasSubprojects = $projectMode === 'parent';
     $projectData = [
@@ -86,7 +91,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_project'])) {
         redirect("/modules/projects/view.php?id=$projectId");
     }
 }
-
+?>
+<style>
+#projectsTable_wrapper .dataTables_length select {
+    min-width: 100px;
+    padding-right: 2.5rem !important;
+    background-position: right 0.8rem center;
+    text-overflow: clip;
+}
+.expand-btn { cursor: pointer; transition: transform 0.2s; display: inline-block; }
+.expand-btn.expanded { transform: rotate(90deg); }
+.sub-projects-wrapper { padding: 10px 15px; background: #f8f9fa; border-radius: 4px; }
+</style>
+<?php
 include __DIR__ . '/../../includes/header.php';
 ?>
 <div class="container-fluid">
@@ -136,11 +153,32 @@ include __DIR__ . '/../../includes/header.php';
                     </select>
                 </div>
                 <div class="col-md-3">
+                    <label class="form-label">Client</label>
+                    <select id="clientFilter" class="form-select">
+                        <option value="">All Clients</option>
+                        <?php
+                        $filterClients = $db->query("SELECT id, name FROM clients ORDER BY name")->fetchAll();
+                        foreach ($filterClients as $fc) {
+                            echo '<option value="' . $fc['id'] . '">' . htmlspecialchars($fc['name']) . '</option>';
+                        }
+                        ?>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Start Date</label>
+                    <input type="date" id="startDate" class="form-control" value="<?php echo date('Y-m-d', strtotime('-1 month')); ?>">
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">End Date</label>
+                    <input type="date" id="endDate" class="form-control" value="<?php echo date('Y-m-d'); ?>">
+                </div>
+                <div class="col-md-6">
                     <label class="form-label">Search</label>
                     <input type="text" id="searchProject" class="form-control" placeholder="Search projects...">
                 </div>
             </div>
         </div>
+
     </div>
     
     <!-- Projects Table -->
@@ -156,7 +194,9 @@ include __DIR__ . '/../../includes/header.php';
                         <th>Type</th>
                         <th>Priority</th>
                         <th>Status</th>
+                        <th>Created At</th>
                         <th>Actions</th>
+
                     </tr>
                 </thead>
                 <tbody>
@@ -179,31 +219,31 @@ include __DIR__ . '/../../includes/header.php';
 
                     foreach ($parents as $project):
                         $subs = $children[$project['id']] ?? [];
-                        $collapseId = 'subprojects-' . $project['id'];
                     ?>
-                    <tr data-status="<?php echo htmlspecialchars($project['status']); ?>" 
+                    <tr id="project-row-<?php echo $project['id']; ?>" 
+                        data-status="<?php echo htmlspecialchars($project['status']); ?>" 
                         data-type="<?php echo htmlspecialchars($project['project_type'] ?? ''); ?>"
                         data-priority="<?php echo htmlspecialchars($project['priority'] ?? ''); ?>"
-                        data-title="<?php echo htmlspecialchars(strtolower($project['title'])); ?>"
-                        data-code="<?php echo htmlspecialchars(strtolower($project['project_code'] ?: $project['po_number'])); ?>">
+                        data-client-id="<?php echo htmlspecialchars($project['client_id']); ?>"
+                        data-created-at="<?php echo date('Y-m-d', strtotime($project['created_at'])); ?>"
+                        data-subprojects='<?php echo !empty($subs) ? json_encode($subs, JSON_HEX_APOS | JSON_HEX_QUOT) : ""; ?>'>
+
                         <td>
                             <?php if (!empty($subs)): ?>
-                            <button class="btn btn-link p-0" data-bs-toggle="collapse" data-bs-target="#<?php echo $collapseId; ?>" aria-expanded="false" aria-controls="<?php echo $collapseId; ?>">
-                                <i class="fas fa-chevron-down"></i>
-                            </button>
+                            <i class="fas fa-chevron-right expand-btn text-primary" onclick="toggleSubprojects(<?php echo $project['id']; ?>, this)"></i>
                             <?php endif; ?>
                         </td>
                         <td><?php echo htmlspecialchars($project['project_code'] ?: $project['po_number']); ?></td>
                         <td>
-                            <?php echo htmlspecialchars($project['title']); ?>
+                            <strong><?php echo htmlspecialchars($project['title']); ?></strong>
                             <?php if (!empty($subs)): ?>
-                                <span class="badge bg-secondary ms-2"><?php echo count($subs); ?> sub</span>
+                                <span class="badge bg-secondary ms-1"><?php echo count($subs); ?> sub</span>
                             <?php endif; ?>
                         </td>
-                        <td><?php echo $project['client_name']; ?></td>
+                        <td><?php echo htmlspecialchars($project['client_name']); ?></td>
                         <td>
                             <span class="badge bg-info">
-                                <?php echo ucfirst($project['project_type']); ?>
+                                <?php echo ucfirst($project['project_type'] ?: 'N/A'); ?>
                             </span>
                         </td>
                         <td>
@@ -223,60 +263,16 @@ include __DIR__ . '/../../includes/header.php';
                             </span>
                         </td>
                         <td>
-                            <a href="<?php echo $baseDir; ?>/modules/projects/view.php?id=<?php echo $project['id']; ?>" 
-                               class="btn btn-sm btn-info">
-                                <i class="fas fa-eye"></i>
-                            </a>
-                            <a href="<?php echo $baseDir; ?>/modules/projects/edit.php?id=<?php echo $project['id']; ?>" 
-                               class="btn btn-sm btn-warning">
-                                <i class="fas fa-edit"></i>
-                            </a>
+                            <span class="text-muted small">
+                                <?php echo date('d-M-Y', strtotime($project['created_at'])); ?>
+                            </span>
+                        </td>
+                        <td>
+
+                            <a href="<?php echo $baseDir; ?>/modules/projects/view.php?id=<?php echo $project['id']; ?>" class="btn btn-sm btn-outline-info" title="View"><i class="fas fa-eye"></i></a>
+                            <a href="<?php echo $baseDir; ?>/modules/projects/edit.php?id=<?php echo $project['id']; ?>" class="btn btn-sm btn-outline-warning" title="Edit"><i class="fas fa-edit"></i></a>
                         </td>
                     </tr>
-                    <?php if (!empty($subs)): ?>
-                    <tr class="collapse" id="<?php echo $collapseId; ?>">
-                        <td></td>
-                        <td colspan="7">
-                            <div class="table-responsive">
-                                <table class="table table-sm mb-0">
-                                    <thead>
-                                        <tr>
-                                            <th>Sub-Project Code</th>
-                                            <th>Title</th>
-                                            <th>Client</th>
-                                            <th>Type</th>
-                                            <th>Priority</th>
-                                            <th>Status</th>
-                                            <th>Actions</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        <?php foreach ($subs as $sub): ?>
-                                        <tr>
-                                            <td><?php echo htmlspecialchars($sub['project_code'] ?: $sub['po_number']); ?></td>
-                                            <td><?php echo htmlspecialchars($sub['title']); ?></td>
-                                            <td><?php echo htmlspecialchars($sub['client_name']); ?></td>
-                                            <td><span class="badge bg-info"><?php echo ucfirst($sub['project_type']); ?></span></td>
-                                            <td><span class="badge bg-<?php 
-                                                echo $sub['priority'] === 'critical' ? 'danger' : 
-                                                     ($sub['priority'] === 'high' ? 'warning' : 'secondary');
-                                            ?>"><?php echo ucfirst($sub['priority']); ?></span></td>
-                                            <td><span class="badge bg-<?php 
-                                                echo $sub['status'] === 'completed' ? 'success' : 
-                                                     ($sub['status'] === 'in_progress' ? 'primary' : 'secondary');
-                                            ?>"><?php echo formatProjectStatusLabel($sub['status']); ?></span></td>
-                                            <td>
-                                                <a href="<?php echo $baseDir; ?>/modules/projects/view.php?id=<?php echo $sub['id']; ?>" class="btn btn-sm btn-info"><i class="fas fa-eye"></i></a>
-                                                <a href="<?php echo $baseDir; ?>/modules/projects/edit.php?id=<?php echo $sub['id']; ?>" class="btn btn-sm btn-warning"><i class="fas fa-edit"></i></a>
-                                            </td>
-                                        </tr>
-                                        <?php endforeach; ?>
-                                    </tbody>
-                                </table>
-                            </div>
-                        </td>
-                    </tr>
-                    <?php endif; ?>
                     <?php endforeach; ?>
                 </tbody>
             </table>
@@ -289,6 +285,7 @@ include __DIR__ . '/../../includes/header.php';
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
             <form method="POST">
+                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                 <div class="modal-header">
                     <h5 class="modal-title">Create New Project</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
@@ -394,131 +391,10 @@ include __DIR__ . '/../../includes/header.php';
     </div>
 </div>
 
-<script>
-(() => {
-    const modeRadios = document.querySelectorAll('input[name="project_mode"]');
-    const subContainer = document.getElementById('subprojectsContainer');
-    const subList = document.getElementById('subprojectList');
-    const addBtn = document.getElementById('addSubprojectBtn');
-    const singleFields = document.querySelectorAll('.single-project-fields');
-    const singleFieldInputs = document.querySelectorAll('.single-project-fields input, .single-project-fields select, .single-project-fields textarea');
-
-    // Track original required flags
-    singleFieldInputs.forEach(el => {
-        if (el.required) el.dataset.wasRequired = '1';
-    });
-
-    function toggleMode() {
-        const showSubs = Array.from(modeRadios).some(r => r.checked && r.value === 'parent');
-        subContainer.classList.toggle('d-none', !showSubs);
-        singleFields.forEach(el => {
-            const wrapper = el.closest('.mb-3') || el;
-            wrapper.classList.toggle('d-none', showSubs);
-        });
-        singleFieldInputs.forEach(el => {
-            if (showSubs) {
-                el.required = false;
-            } else if (el.dataset.wasRequired === '1') {
-                el.required = true;
-            }
-        });
-    }
-
-    function addSubRow() {
-        const row = document.createElement('div');
-        row.className = 'border rounded p-3 position-relative';
-        row.innerHTML = `
-            <button type="button" class="btn-close position-absolute top-0 end-0 mt-2 me-2" aria-label="Remove"></button>
-            <div class="row g-3">
-                <div class="col-md-6">
-                    <label class="form-label">Sub-Project Title *</label>
-                    <input type="text" name="child_title[]" class="form-control" required>
-                </div>
-                <div class="col-md-6">
-                    <label class="form-label">Project Type *</label>
-                    <select name="child_type[]" class="form-select" required>
-                        <option value="web">Web Project</option>
-                        <option value="app">App Project</option>
-                        <option value="pdf">PDF Remediation</option>
-                    </select>
-                </div>
-                <div class="col-md-4">
-                    <label class="form-label">Priority</label>
-                    <select name="child_priority[]" class="form-select">
-                        <option value="low">Low</option>
-                        <option value="medium" selected>Medium</option>
-                        <option value="high">High</option>
-                        <option value="critical">Critical</option>
-                    </select>
-                </div>
-                <div class="col-md-4">
-                    <label class="form-label">Project Lead</label>
-                    <select name="child_lead_id[]" class="form-select">
-                        <option value="">Select Project Lead</option>
-                        ${`<?php foreach ($projectLeads as $lead): ?>`}
-                        <option value="<?php echo $lead['id']; ?>"><?php echo htmlspecialchars($lead['full_name']); ?></option>
-                        ${`<?php endforeach; ?>`}
-                    </select>
-                </div>
-                <div class="col-md-4">
-                    <label class="form-label">Total Hours (optional)</label>
-                    <input type="number" name="child_total_hours[]" class="form-control" step="0.01" min="0">
-                </div>
-            </div>
-        `;
-        row.querySelector('.btn-close').addEventListener('click', () => row.remove());
-        subList.appendChild(row);
-    }
-
-    if (modeRadios.length) {
-        modeRadios.forEach(radio => radio.addEventListener('change', toggleMode));
-        toggleMode();
-    }
-    if (addBtn) addBtn.addEventListener('click', addSubRow);
-})();
-
-// Project table filtering
-$(document).ready(function() {
-    function filterProjects() {
-        const statusFilter = $('#statusFilter').val().toLowerCase();
-        const typeFilter = $('#typeFilter').val().toLowerCase();
-        const priorityFilter = $('#priorityFilter').val().toLowerCase();
-        const searchText = $('#searchProject').val().toLowerCase();
-        
-        $('#projectsTable tbody > tr').each(function() {
-            const row = $(this);
-            
-            // Skip collapse rows
-            if (row.hasClass('collapse')) {
-                return;
-            }
-            
-            const status = row.data('status');
-            const type = row.data('type');
-            const priority = row.data('priority');
-            const title = row.data('title');
-            const code = row.data('code');
-            
-            let showRow = true;
-            
-            if (statusFilter && status !== statusFilter) showRow = false;
-            if (typeFilter && type !== typeFilter) showRow = false;
-            if (priorityFilter && priority !== priorityFilter) showRow = false;
-            if (searchText && title.indexOf(searchText) === -1 && code.indexOf(searchText) === -1) showRow = false;
-            
-            row.toggle(showRow);
-            
-            // Also hide/show the collapse row if it exists
-            const collapseRow = row.next('.collapse');
-            if (collapseRow.length) {
-                collapseRow.toggle(showRow);
-            }
-        });
-    }
-    
-    $('#statusFilter, #typeFilter, #priorityFilter').on('change', filterProjects);
-    $('#searchProject').on('keyup', filterProjects);
-});
+<script nonce="<?php echo $cspNonce ?? ''; ?>">
+window.AdminProjectsConfig = {
+    projectLeads: <?php echo json_encode(array_map(function($l){ return ['id'=>(int)$l['id'],'full_name'=>$l['full_name']]; }, $projectLeads), JSON_HEX_TAG | JSON_HEX_AMP); ?>
+};
 </script>
-
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<script src="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/assets/js/admin-projects.js"></script>
+<?php include __DIR__ . '/../../includes/footer.php'; 

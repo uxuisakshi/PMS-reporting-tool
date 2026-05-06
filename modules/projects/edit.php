@@ -18,6 +18,14 @@ if (!$projectId) {
 }
 
 $db = Database::getInstance();
+$userId = $_SESSION['user_id'];
+
+// Check permission
+if (!canEditProjectById($db, $userId, $projectId)) {
+    $_SESSION['error'] = "You do not have permission to edit this project.";
+    header("Location: " . $base_url . "/modules/projects/view.php?id=" . $projectId);
+    exit;
+}
 
 // Get project details
 try {
@@ -48,6 +56,11 @@ $duplicateCodeDefault = 'COPY-' . ($project['po_number'] ?? ('PRJ-' . $projectId
 
 // Handle update
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error'] = 'Invalid request. Please try again.';
+        header('Location: ' . $base_url . '/modules/projects/edit.php?id=' . $projectId);
+        exit;
+    }
     if (isset($_POST['update_project'])) {
         // Sanitize inputs
         $title = isset($_POST['title']) ? trim($_POST['title']) : '';
@@ -161,7 +174,7 @@ try {
                 <a class="nav-link" href="<?php echo $base_url; ?>/modules/admin/projects.php">
                     <i class="fas fa-arrow-left"></i> Back to Projects
                 </a>
-                <a class="nav-link" href="<?php echo $base_url; ?>/modules/auth/logout.php">
+                <a class="nav-link" href="<?php echo $base_url; ?>/modules/auth/logout.php?csrf_token=<?php echo urlencode(generateCsrfToken()); ?>">
                     <i class="fas fa-sign-out-alt"></i> Logout
                 </a>
             </div>
@@ -198,6 +211,7 @@ try {
                         
                         <!-- Edit Form -->
                         <form method="POST" id="editProjectForm">
+                            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars(generateCsrfToken()); ?>">
                             <div class="row">
                                 <!-- Read-only fields -->
                                 <div class="col-md-6 mb-3">
@@ -351,6 +365,7 @@ try {
         <div class="modal-dialog">
             <div class="modal-content">
                 <form method="POST" action="<?php echo $base_url; ?>/modules/projects/delete.php">
+                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars(generateCsrfToken()); ?>">
                     <input type="hidden" name="project_id" value="<?php echo $projectId; ?>">
                     <input type="hidden" name="delete_project" value="1">
                     <div class="modal-header bg-danger text-white">
@@ -395,6 +410,7 @@ try {
         <div class="modal-dialog">
             <div class="modal-content">
                 <form method="POST" action="<?php echo $base_url; ?>/modules/projects/archive.php">
+                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars(generateCsrfToken()); ?>">
                     <input type="hidden" name="project_id" value="<?php echo $projectId; ?>">
                     <input type="hidden" name="archive_project" value="1">
                     <div class="modal-header">
@@ -426,6 +442,7 @@ try {
         <div class="modal-dialog">
             <div class="modal-content">
                 <form method="POST" action="<?php echo $base_url; ?>/modules/projects/duplicate.php">
+                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars(generateCsrfToken()); ?>">
                     <input type="hidden" name="project_id" value="<?php echo $projectId; ?>">
                     <input type="hidden" name="duplicate_project" value="1">
                     <div class="modal-header">
@@ -466,8 +483,8 @@ try {
         </div>
     </div>
 
-    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
     $(document).ready(function() {
         // Form validation

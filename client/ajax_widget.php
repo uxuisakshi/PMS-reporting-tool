@@ -8,11 +8,6 @@
 // Set JSON content type
 header('Content-Type: application/json');
 
-// Enable CORS for same-origin requests
-header('Access-Control-Allow-Origin: ' . $_SERVER['HTTP_HOST']);
-header('Access-Control-Allow-Methods: POST');
-header('Access-Control-Allow-Headers: Content-Type');
-
 // Start session
 session_start();
 

@@ -128,7 +128,7 @@ $criticalIssues = $stats['critical_issues'] ?? 0;
                     </div>
                 </div>
 
-                <!-- Client Readiness -->
+                <!-- Availability -->
                 <div class="metric-item">
                     <div class="metric-header">
                         <span class="metric-label">Availability Rate</span>

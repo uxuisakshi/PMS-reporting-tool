@@ -1,8 +1,12 @@
-﻿<?php
+<?php
+set_time_limit(300); // 5 minutes max execution time
+ini_set('memory_limit', '512M'); // Increase memory limit for large JSON results
+ob_start();
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/functions.php';
 require_once __DIR__ . '/../includes/helpers.php';
 require_once __DIR__ . '/../includes/project_permissions.php';
+ob_end_clean();
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -19,6 +23,8 @@ function ensureA11yFindingsTable(PDO $db): void {
     $db->exec("\n        CREATE TABLE IF NOT EXISTS automated_a11y_findings (\n            id INT AUTO_INCREMENT PRIMARY KEY,\n            project_id INT NOT NULL,\n            page_id INT NOT NULL,\n            rule_id VARCHAR(120) NOT NULL,\n            title VARCHAR(255) NOT NULL,\n            severity VARCHAR(20) NOT NULL DEFAULT 'Major',\n            wcag_sc VARCHAR(100) NULL,\n            wcag_name VARCHAR(255) NULL,\n            wcag_level VARCHAR(20) NULL,\n            actual_results LONGTEXT NULL,\n            incorrect_code LONGTEXT NULL,\n            screenshots_json LONGTEXT NULL,\n            recommendation LONGTEXT NULL,\n            correct_code LONGTEXT NULL,\n            help_url VARCHAR(1000) NULL,\n            occurrence_count INT NOT NULL DEFAULT 1,\n            scan_url VARCHAR(1000) NULL,\n            scan_urls_json LONGTEXT NULL,\n            raw_payload LONGTEXT NULL,\n            status VARCHAR(30) NOT NULL DEFAULT 'needs_review',\n            moved_issue_id INT NULL,\n            created_by INT NULL,\n            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,\n            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,\n            KEY idx_a11y_project_page_status (project_id, page_id, status),\n            KEY idx_a11y_created_at (created_at)\n        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci\n    ");
 
     $alterStatements = [
+        "ALTER TABLE automated_a11y_findings MODIFY COLUMN description LONGTEXT NULL",
+        "ALTER TABLE automated_a11y_findings ADD COLUMN description LONGTEXT NULL",
         "ALTER TABLE automated_a11y_findings ADD COLUMN actual_results LONGTEXT NULL",
         "ALTER TABLE automated_a11y_findings ADD COLUMN incorrect_code LONGTEXT NULL",
         "ALTER TABLE automated_a11y_findings ADD COLUMN screenshots_json LONGTEXT NULL",
@@ -47,17 +53,62 @@ function ensureA11yFindingsTable(PDO $db): void {
 function normalizeScanUrl(string $rawUrl): ?string {
     $rawUrl = trim($rawUrl);
     if ($rawUrl === '') return null;
-    if (preg_match('/^https?:\/\//i', $rawUrl)) return $rawUrl;
 
-    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-    $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
-    $origin = $scheme . '://' . $host;
-    $baseDir = getBaseDir();
+    // Resolve relative URLs to absolute first
+    if (!preg_match('/^https?:\/\//i', $rawUrl)) {
+        $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+        $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+        $origin = $scheme . '://' . $host;
+        $baseDir = getBaseDir();
 
-    if (strpos($rawUrl, '//') === 0) return $scheme . ':' . $rawUrl;
-    if (strpos($rawUrl, '/') === 0) return $origin . $rawUrl;
+        if (strpos($rawUrl, '//') === 0) {
+            $rawUrl = $scheme . ':' . $rawUrl;
+        } elseif (strpos($rawUrl, '/') === 0) {
+            $rawUrl = $origin . $rawUrl;
+        } else {
+            $rawUrl = rtrim($origin . $baseDir, '/') . '/' . ltrim($rawUrl, '/');
+        }
+    }
 
-    return rtrim($origin . $baseDir, '/') . '/' . ltrim($rawUrl, '/');
+    // SSRF protection: block private/internal IP ranges and localhost
+    $parsed = parse_url($rawUrl);
+    if (!$parsed || empty($parsed['host'])) return null;
+
+    $host = strtolower($parsed['host']);
+
+    // Block localhost variants
+    if (in_array($host, ['localhost', '127.0.0.1', '::1', '0.0.0.0'], true)) return null;
+    if (preg_match('/^127\.\d+\.\d+\.\d+$/', $host)) return null;
+
+    // Block private IPv4 ranges (RFC 1918)
+    if (preg_match('/^10\.\d+\.\d+\.\d+$/', $host)) return null;
+    if (preg_match('/^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/', $host)) return null;
+    if (preg_match('/^192\.168\.\d+\.\d+$/', $host)) return null;
+
+    // Block link-local and metadata endpoints
+    if (preg_match('/^169\.254\.\d+\.\d+$/', $host)) return null;
+
+    // Block non-http(s) schemes (already enforced above, but double-check)
+    $scheme = strtolower($parsed['scheme'] ?? '');
+    if (!in_array($scheme, ['http', 'https'], true)) return null;
+
+    // DNS rebinding protection: resolve hostname and validate the resolved IP
+    // This prevents attackers from using a domain that resolves to an internal IP
+    if (!filter_var($host, FILTER_VALIDATE_IP)) {
+        // It's a hostname, not a raw IP — resolve it
+        $resolved = @gethostbyname($host);
+        if ($resolved && $resolved !== $host) {
+            // Check resolved IP against blocked ranges
+            if (in_array($resolved, ['127.0.0.1', '::1', '0.0.0.0'], true)) return null;
+            if (preg_match('/^127\.\d+\.\d+\.\d+$/', $resolved)) return null;
+            if (preg_match('/^10\.\d+\.\d+\.\d+$/', $resolved)) return null;
+            if (preg_match('/^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/', $resolved)) return null;
+            if (preg_match('/^192\.168\.\d+\.\d+$/', $resolved)) return null;
+            if (preg_match('/^169\.254\.\d+\.\d+$/', $resolved)) return null;
+        }
+    }
+
+    return $rawUrl;
 }
 
 function getScanProgressPath(string $token): ?string {
@@ -80,6 +131,32 @@ function readScanProgress(string $token): ?array {
     $raw = @file_get_contents($path);
     $data = json_decode((string)$raw, true);
     return is_array($data) ? $data : null;
+}
+
+function stopScanProcess(string $token): bool {
+    $data = readScanProgress($token);
+    if (!$data || empty($data['pid'])) {
+        return false;
+    }
+    $pid = (int)$data['pid'];
+    if ($pid <= 0) return false;
+
+    // Kill the process (cross-platform support)
+    if (strncasecmp(PHP_OS, 'WIN', 3) === 0) {
+        @exec("taskkill /F /PID $pid > NUL 2>&1");
+    } else if (function_exists('posix_kill')) {
+        @posix_kill($pid, 9); // SIGKILL
+    } else {
+        @exec("kill -9 $pid > /dev/null 2>&1");
+    }
+
+    // Update progress to cancelled
+    writeScanProgress($token, array_merge($data, [
+        'status' => 'cancelled',
+        'error' => 'Scan was cancelled by user.',
+        'updated_at' => date('Y-m-d H:i:s')
+    ]));
+    return true;
 }
 
 function mapSeverity(string $severity): string {
@@ -484,7 +561,7 @@ function aggregateFindingsByRule(array $findings): array {
     return $out;
 }
 
-function runDeepScan(string $url, string $outputJsonPath, string $screenshotDir): array {
+function runDeepScan(string $url, string $outputJsonPath, string $screenshotDir, ?string $progressToken = null, string $mode = 'default'): array {
     $script = realpath(__DIR__ . '/../scripts/deep_a11y_scan.js');
     if (!$script) {
         throw new RuntimeException('Deep scan script not found');
@@ -496,14 +573,40 @@ function runDeepScan(string $url, string $outputJsonPath, string $screenshotDir)
         . ' --out ' . escapeshellarg($outputJsonPath)
         . ' --screenshot-dir ' . escapeshellarg($screenshotDir)
         . ' --max-nodes 0'
-        . ' 2>&1';
+        . ' --mode ' . escapeshellarg($mode)
+        . ($progressToken ? ' --token ' . escapeshellarg($progressToken) : '');
 
-    $lines = [];
-    $exitCode = 0;
-    @exec($cmd, $lines, $exitCode);
+    $descriptorspec = [
+        0 => ["pipe", "r"], // stdin
+        1 => ["pipe", "w"], // stdout
+        2 => ["pipe", "w"]  // stderr
+    ];
+
+    $process = proc_open($cmd, $descriptorspec, $pipes);
+    if (!is_resource($process)) {
+        throw new RuntimeException('Failed to start deep scan process');
+    }
+
+    $status = proc_get_status($process);
+    $pid = $status['pid'];
+
+    // Store PID in progress file if token exists
+    if ($progressToken) {
+        $pData = readScanProgress($progressToken) ?: [];
+        $pData['pid'] = $pid;
+        writeScanProgress($progressToken, $pData);
+    }
+
+    // Capture output and wait
+    $stdout = stream_get_contents($pipes[1]);
+    $stderr = stream_get_contents($pipes[2]);
+    fclose($pipes[0]);
+    fclose($pipes[1]);
+    fclose($pipes[2]);
+    $exitCode = proc_close($process);
 
     if (!file_exists($outputJsonPath)) {
-        $err = implode("\n", $lines);
+        $err = trim($stderr . "\n" . $stdout);
         throw new RuntimeException('Deep scan output missing. ' . ($err !== '' ? $err : ''));
     }
 
@@ -662,10 +765,18 @@ $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $action = trim((string)($_GET['action'] ?? $_POST['action'] ?? 'scan'));
 $projectId = (int)($_GET['project_id'] ?? $_POST['project_id'] ?? 0);
 
-if ($projectId <= 0) {
+// For 'cancel' and 'progress', we only need a valid token, project_id is optional/supplemental
+if ($action === 'cancel') {
+    $token = trim((string)($_GET['token'] ?? $_POST['token'] ?? ''));
+    if ($token === '') jsonRes(['success' => false, 'message' => 'Token required'], 400);
+    $ok = stopScanProcess($token);
+    jsonRes(['success' => $ok, 'message' => $ok ? 'Scan cancelled' : 'Failed to cancel or already stopped']);
+}
+
+if ($action !== 'progress' && $projectId <= 0) {
     jsonRes(['success' => false, 'message' => 'Project is required'], 400);
 }
-if (!hasProjectAccess($db, $userId, $projectId)) {
+if ($projectId > 0 && !hasProjectAccess($db, $userId, $projectId)) {
     jsonRes(['success' => false, 'message' => 'Forbidden'], 403);
 }
 
@@ -718,6 +829,7 @@ try {
     }
 
     if ($method === 'POST' && $action === 'mark_moved') {
+        enforceApiCsrf();
         $findingId = (int)($_POST['finding_id'] ?? 0);
         $issueId = (int)($_POST['issue_id'] ?? 0);
         if ($findingId <= 0 || $issueId <= 0) {
@@ -733,6 +845,7 @@ try {
     }
 
     if ($method === 'POST' && $action === 'delete') {
+        enforceApiCsrf();
         $pageId = (int)($_POST['page_id'] ?? 0);
         $idsRaw = $_POST['ids'] ?? ($_POST['finding_id'] ?? '');
         $ids = [];
@@ -783,6 +896,9 @@ try {
     if ($method !== 'POST') {
         jsonRes(['success' => false, 'message' => 'Method not allowed'], 405);
     }
+
+    // CSRF protection for scan POST
+    enforceApiCsrf();
 
     $pageId = (int)($_POST['page_id'] ?? $_POST['unique_id'] ?? 0);
     if ($pageId <= 0) {
@@ -840,18 +956,47 @@ try {
             'completed' => 0,
             'total' => $totalUrls,
             'percent' => 0,
+            'page_id' => $pageId,
+            'project_id' => $projectId,
             'updated_at' => date('Y-m-d H:i:s')
         ]);
     }
 
+    $backgroundMode = false;
+    // Return immediate response to the user and continue in background
+    if (function_exists('fastcgi_finish_request')) {
+        $backgroundMode = true;
+        echo json_encode(['success' => true, 'status' => 'started', 'token' => $progressToken]);
+        session_write_close();
+        fastcgi_finish_request();
+    } else {
+        // Fallback for non-FPM environments
+        ignore_user_abort(true);
+        set_time_limit(1800);
+        $backgroundMode = true;
+        $res = json_encode(['success' => true, 'status' => 'started', 'token' => $progressToken]);
+        header('Content-Type: application/json');
+        header('Content-Length: ' . strlen($res));
+        header('Connection: close');
+        echo $res;
+        @ob_end_flush();
+        @flush();
+        session_write_close();
+    }
+
+    // --- EVERYTHING BELOW RUNS IN BACKGROUND ---
+    ignore_user_abort(true);
+    set_time_limit(0);
+
     $combinedFindings = [];
     $summary = ['issues' => 0, 'critical' => 0, 'serious' => 0, 'moderate' => 0, 'minor' => 0];
+    $scanMode = 'default';
     foreach ($scanUrls as $targetUrlRaw) {
         $targetUrl = normalizeScanUrl($targetUrlRaw);
         if ($targetUrl === null) continue;
         $urlToken = substr(sha1($targetUrl), 0, 10);
         $urlOutJson = realpath(__DIR__ . '/..') . DIRECTORY_SEPARATOR . 'tmp' . DIRECTORY_SEPARATOR . 'a11y_scan_' . $scanToken . '_' . $urlToken . '.json';
-        $scanResult = runDeepScan($targetUrl, $urlOutJson, $scanAbsDir);
+        $scanResult = runDeepScan($targetUrl, $urlOutJson, $scanAbsDir, $progressToken, $scanMode);
         $urlFindings = is_array($scanResult['findings'] ?? null) ? $scanResult['findings'] : [];
         foreach ($urlFindings as &$finding) {
             if (!is_array($finding)) continue;
@@ -897,6 +1042,10 @@ try {
         ]);
     }
 
+    if ($backgroundMode) {
+        exit;
+    }
+
     jsonRes([
         'success' => true,
         'project_id' => $projectId,
@@ -921,5 +1070,6 @@ try {
             'updated_at' => date('Y-m-d H:i:s')
         ]);
     }
-    jsonRes(['success' => false, 'message' => 'Deep accessibility scan failed: ' . $e->getMessage()], 500);
+    file_put_contents(__DIR__ . '/../tmp/pms_error.txt', "Error at line " . $e->getLine() . ": " . $e->getMessage() . "\n" . $e->getTraceAsString());
+    jsonRes(['success' => false, 'message' => 'Error: ' . $e->getMessage()], 500);
 }

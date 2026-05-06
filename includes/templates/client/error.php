@@ -1,7 +1,7 @@
 <?php
 /**
- * Client Error Template
- * Displays error messages for client users
+ * Error Template
+ * Displays error messages for portal users
  */
 
 $errorMessage = $errorMessage ?? 'An unexpected error occurred.';

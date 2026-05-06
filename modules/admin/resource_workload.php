@@ -3,7 +3,7 @@ require_once __DIR__ . '/../../includes/auth.php';
 require_once __DIR__ . '/../../includes/functions.php';
 
 $auth = new Auth();
-$auth->requireRole(['admin', 'super_admin', 'project_lead']);
+$auth->requireRole(['admin', 'project_lead']);
 
 $db = Database::getInstance();
 
@@ -243,6 +243,15 @@ usort($workload, function($a, $b) use ($sortBy) {
     };
 });
 
+// Pagination
+$perPage = max(10, min(100, (int)($_GET['per_page'] ?? 25)));
+$page    = max(1, (int)($_GET['page'] ?? 1));
+$totalResources = count($workload);
+$totalPages     = max(1, (int)ceil($totalResources / $perPage));
+if ($page > $totalPages) $page = $totalPages;
+$offset  = ($page - 1) * $perPage;
+$pagedWorkload = array_slice($workload, $offset, $perPage);
+
 include __DIR__ . '/../../includes/header.php';
 ?>
 
@@ -313,8 +322,13 @@ include __DIR__ . '/../../includes/header.php';
                 <div class="col-md-4">
                     <label class="form-label">&nbsp;</label>
                     <div class="d-flex gap-2">
+                        <select name="per_page" class="form-select" style="width:auto;">
+                            <?php foreach ([10, 25, 50, 100] as $pp): ?>
+                                <option value="<?php echo $pp; ?>"<?php if ($perPage == $pp) echo ' selected'; ?>><?php echo $pp; ?>/page</option>
+                            <?php endforeach; ?>
+                        </select>
                         <button type="submit" class="btn btn-primary">Apply Filters</button>
-                        <a href="<?php echo $_SERVER['PHP_SELF']; ?>" class="btn btn-outline-secondary">Clear</a>
+                        <a href="<?php echo htmlspecialchars($_SERVER['PHP_SELF'], ENT_QUOTES, 'UTF-8'); ?>" class="btn btn-outline-secondary">Clear</a>
                     </div>
                 </div>
             </form>
@@ -388,7 +402,7 @@ include __DIR__ . '/../../includes/header.php';
             <h5>Resource Details (<?php echo count($workload); ?> resources)</h5>
         </div>
         <div class="card-body">
-            <div class="table-responsive resource-workload-container">
+            <div class="table-responsive">
                 <table class="table table-hover">
                     <thead>
                         <tr>
@@ -404,7 +418,7 @@ include __DIR__ . '/../../includes/header.php';
                         </tr>
                     </thead>
                     <tbody>
-                        <?php foreach ($workload as $resource): ?>
+                        <?php foreach ($pagedWorkload as $resource): ?>
                         <tr>
                             <td>
                                 <div>
@@ -504,8 +518,8 @@ include __DIR__ . '/../../includes/header.php';
                                        class="btn btn-outline-primary btn-sm" title="View Profile">
                                         <i class="fas fa-user"></i>
                                     </a>
-                                    <a href="<?php echo $baseDir; ?>/modules/reports/dashboard.php?user_id=<?php echo $resource['id']; ?>" 
-                                       class="btn btn-outline-info btn-sm" title="View Reports">
+                                    <a href="<?php echo $baseDir; ?>/modules/admin/performance.php?user_id=<?php echo $resource['id']; ?>" 
+                                       class="btn btn-outline-info btn-sm" title="View Performance Report">
                                         <i class="fas fa-chart-bar"></i>
                                     </a>
                                     <a href="<?php echo $baseDir; ?>/modules/admin/manage_hours.php?user_id=<?php echo $resource['id']; ?>" 
@@ -517,7 +531,7 @@ include __DIR__ . '/../../includes/header.php';
                         </tr>
                         <?php endforeach; ?>
                         
-                        <?php if (empty($workload)): ?>
+                        <?php if (empty($pagedWorkload)): ?>
                         <tr>
                             <td colspan="9" class="text-center text-muted py-4">
                                 No resources found matching the selected filters.
@@ -529,42 +543,69 @@ include __DIR__ . '/../../includes/header.php';
             </div>
         </div>
     </div>
+
+    <!-- Pagination -->
+    <?php if ($totalPages > 1 || $totalResources > 10): ?>
+    <div class="d-flex justify-content-between align-items-center mt-3 flex-wrap gap-2">
+        <div class="text-muted small">
+            Showing <?php echo min($offset + 1, $totalResources); ?>–<?php echo min($offset + $perPage, $totalResources); ?>
+            of <?php echo $totalResources; ?> resource<?php echo $totalResources !== 1 ? 's' : ''; ?>
+        </div>
+        <nav>
+            <ul class="pagination pagination-sm mb-0">
+                <?php
+                $qs = $_GET; unset($qs['page']);
+                $baseQs = http_build_query($qs);
+                $baseUrl = strtok($_SERVER['REQUEST_URI'], '?');
+                $buildLink = function(int $p) use ($baseUrl, $baseQs): string {
+                    return $baseUrl . '?' . ($baseQs ? $baseQs . '&' : '') . 'page=' . $p;
+                };
+
+                // Prev
+                if ($page > 1) {
+                    echo '<li class="page-item"><a class="page-link" href="' . htmlspecialchars($buildLink($page - 1)) . '">&laquo;</a></li>';
+                } else {
+                    echo '<li class="page-item disabled"><span class="page-link">&laquo;</span></li>';
+                }
+
+                // Smart ellipsis
+                $pagesToShow = [];
+                if ($totalPages <= 9) {
+                    for ($i = 1; $i <= $totalPages; $i++) $pagesToShow[] = $i;
+                } else {
+                    $pagesToShow[] = 1;
+                    if ($page > 4) $pagesToShow[] = '...';
+                    for ($i = max(2, $page - 2); $i <= min($totalPages - 1, $page + 2); $i++) $pagesToShow[] = $i;
+                    if ($page < $totalPages - 3) $pagesToShow[] = '...';
+                    $pagesToShow[] = $totalPages;
+                }
+                foreach ($pagesToShow as $p) {
+                    if ($p === '...') {
+                        echo '<li class="page-item disabled"><span class="page-link">…</span></li>';
+                    } else {
+                        $cls = ($p == $page) ? ' active' : '';
+                        echo '<li class="page-item' . $cls . '"><a class="page-link" href="' . htmlspecialchars($buildLink((int)$p)) . '">' . $p . '</a></li>';
+                    }
+                }
+
+                // Next
+                if ($page < $totalPages) {
+                    echo '<li class="page-item"><a class="page-link" href="' . htmlspecialchars($buildLink($page + 1)) . '">&raquo;</a></li>';
+                } else {
+                    echo '<li class="page-item disabled"><span class="page-link">&raquo;</span></li>';
+                }
+                ?>
+            </ul>
+        </nav>
+    </div>
+    <?php endif; ?>
 </div>
 
 <style>
-.badge-sm {
-    font-size: 0.7em;
-}
-
-.progress {
-    border-radius: 4px;
-}
-
-.card {
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-}
-
-.table th {
-    font-weight: 600;
-    background-color: #f8f9fa;
-}
-</style>
-
-<style>
-/* Keep the resource workload table at a fixed max height to avoid increasing page scroll.
-   It will scroll internally when rows exceed the available space. */
-.resource-workload-container {
-    max-height: calc(70vh); /* adjust as needed */
-    overflow: auto;
-}
-
-/* Ensure the table header stays visible on scroll */
-.resource-workload-container thead th {
-    position: sticky;
-    top: 0;
-    z-index: 2;
-    background: #fff;
-}
+.badge-sm { font-size: 0.7em; }
+.progress { border-radius: 4px; }
+.card { box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+.table th { font-weight: 600; background-color: #f8f9fa; }
 </style>
 
 <?php include __DIR__ . '/../../includes/footer.php'; ?>

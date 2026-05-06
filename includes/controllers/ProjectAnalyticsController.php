@@ -19,9 +19,11 @@ require_once __DIR__ . '/../models/BlockerIssuesAnalytics.php';
 require_once __DIR__ . '/../models/PageIssuesAnalytics.php';
 require_once __DIR__ . '/../models/CommentedIssuesAnalytics.php';
 require_once __DIR__ . '/../models/ComplianceTrendAnalytics.php';
+require_once __DIR__ . '/../models/ClientComplianceScoreResolver.php';
 require_once __DIR__ . '/../models/VisualizationRenderer.php';
 class ProjectAnalyticsController {
     private $accessControl;
+    private $complianceResolver;
     private $visualization;
     private $analyticsEngines;
     private $db;
@@ -30,6 +32,7 @@ class ProjectAnalyticsController {
         global $db;
         $this->db = $db;
         $this->accessControl = new ClientAccessControlManager();
+        $this->complianceResolver = new ClientComplianceScoreResolver($this->accessControl);
         $this->visualization = new VisualizationRenderer();
         
         // Initialize all 9 analytics engines
@@ -162,7 +165,7 @@ class ProjectAnalyticsController {
                     'reportType' => $type,
                     'enhanced' => true,
                     'project_id' => $projectId,
-                    'drillDownUrl' => "/PMS/modules/client/dashboard_unified.php?type={$type}&project_id={$projectId}",
+                    'drillDownUrl' => buildClientProjectUrl((int) $projectId, '', '', ['report' => $type]) . '#analytics-report-' . rawurlencode($type),
                     'summary' => $this->getWidgetSummary($report->getData(), $type),
                     'insights' => $this->generateInsights($report->getData(), $type)
                 ];
@@ -190,13 +193,13 @@ class ProjectAnalyticsController {
             
             $totalIssues = (int)$stats['total_issues'];
             $resolvedIssues = (int)$stats['resolved_issues'];
-            $complianceRate = $totalIssues > 0 ? ($resolvedIssues / $totalIssues) * 100 : 0;
+            $complianceRate = $this->complianceResolver->resolveForClientUser((int) $clientUserId, [(int) $projectId]);
             
             return [
                 'total_issues' => $totalIssues,
                 'resolved_issues' => $resolvedIssues,
                 'critical_issues' => (int)$stats['critical_issues'],
-                'compliance_rate' => round($complianceRate, 2),
+                'compliance_rate' => round($complianceRate, 1),
                 'avg_users_affected' => round((float)$stats['avg_users_affected'], 1)
             ];
             

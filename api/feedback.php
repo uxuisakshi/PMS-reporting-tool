@@ -1,7 +1,9 @@
 <?php
+ob_start();
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/functions.php';
 require_once __DIR__ . '/../includes/helpers.php';
+ob_end_clean();
 
 header('Content-Type: application/json');
 
@@ -31,6 +33,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 try {
     if ($action === 'submit_feedback') {
+        // Removed rate limiting as per user request to allow unlimited feedback.
+
+
         // Support multiple recipients and optional project scoping
         $recipientIds = $_POST['recipient_ids'] ?? null; // expected as comma-separated or array
         $projectId = isset($_POST['project_id']) && $_POST['project_id'] !== '' ? (int)$_POST['project_id'] : null;
@@ -91,7 +96,7 @@ try {
         // Build additional notification recipients from flags.
         $notificationRecipients = $recipients;
         if ($sendToAdmin) {
-            $adminStmt = $db->query("SELECT id FROM users WHERE is_active = 1 AND role IN ('admin', 'super_admin')");
+            $adminStmt = $db->query("SELECT id FROM users WHERE is_active = 1 AND role IN ('admin')");
             while ($row = $adminStmt->fetch(PDO::FETCH_ASSOC)) {
                 $uid = (int)$row['id'];
                 if ($uid > 0 && $uid !== (int)$userId) $notificationRecipients[] = $uid;
@@ -138,7 +143,7 @@ try {
     } 
     elseif ($action === 'update_status') {
         // Admin functionality to update feedback status
-        if (!in_array($userRole, ['admin', 'super_admin'])) {
+        if (!in_array($userRole, ['admin'])) {
             echo json_encode(['success' => false, 'message' => 'Permission denied']);
             exit;
         }
@@ -169,7 +174,7 @@ try {
     }
     elseif ($action === 'get_feedback') {
         // Admin functionality to get feedback details
-        if (!in_array($userRole, ['admin', 'super_admin'])) {
+        if (!in_array($userRole, ['admin'])) {
             echo json_encode(['success' => false, 'message' => 'Permission denied']);
             exit;
         }
@@ -206,6 +211,55 @@ try {
         
         echo json_encode(['success' => true, 'feedback' => $feedback]);
     }
+    elseif ($action === 'list_my_feedbacks') {
+        // List feedbacks sent by or received by the current user
+        $page = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
+        $perPage = 10;
+        $offset = ($page - 1) * $perPage;
+        
+        // Get total count
+        $countStmt = $db->prepare("
+            SELECT COUNT(DISTINCT f.id) as total
+            FROM feedbacks f
+            LEFT JOIN feedback_recipients fr ON f.id = fr.feedback_id
+            WHERE f.sender_id = ?
+               OR fr.user_id = ?
+               OR (f.send_to_admin = 1 AND ? = 1)
+        ");
+        $isAdmin = in_array($userRole, ['admin']) ? 1 : 0;
+        $countStmt->execute([$userId, $userId, $isAdmin]);
+        $totalCount = (int)$countStmt->fetchColumn();
+        $totalPages = ceil($totalCount / $perPage);
+        
+        // Get paginated results
+        $stmt = $db->prepare("
+            SELECT DISTINCT f.id, f.content, f.status, f.created_at,
+                   p.title as project_title,
+                   GROUP_CONCAT(DISTINCT ru.full_name SEPARATOR ', ') as recipients
+            FROM feedbacks f
+            LEFT JOIN projects p ON f.project_id = p.id
+            LEFT JOIN feedback_recipients fr ON f.id = fr.feedback_id
+            LEFT JOIN users ru ON fr.user_id = ru.id
+            WHERE f.sender_id = ?
+               OR fr.user_id = ?
+               OR (f.send_to_admin = 1 AND ? = 1)
+            GROUP BY f.id
+            ORDER BY f.created_at DESC
+            LIMIT ? OFFSET ?
+        ");
+        $stmt->execute([$userId, $userId, $isAdmin, $perPage, $offset]);
+        $feedbacks = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        echo json_encode([
+            'success' => true, 
+            'feedbacks' => $feedbacks,
+            'pagination' => [
+                'current_page' => $page,
+                'per_page' => $perPage,
+                'total_count' => $totalCount,
+                'total_pages' => $totalPages
+            ]
+        ]);
+    }
     elseif ($action === 'get_user_feedback') {
         // User functionality to get their own feedback details
         $feedbackId = $_GET['feedback_id'] ?? '';
@@ -215,7 +269,7 @@ try {
             exit;
         }
         
-        $isAdmin = in_array($userRole, ['admin', 'super_admin']) ? 1 : 0;
+        $isAdmin = in_array($userRole, ['admin']) ? 1 : 0;
         // Users can view feedback they sent, received, generic feedback for their projects, admin-targeted (for admin), and lead-targeted (for project lead).
         $stmt = $db->prepare("
             SELECT f.*, 
@@ -262,7 +316,7 @@ try {
     }
     elseif ($action === 'delete_feedback') {
         // Admin functionality to delete feedback
-        if (!in_array($userRole, ['admin', 'super_admin'])) {
+        if (!in_array($userRole, ['admin'])) {
             echo json_encode(['success' => false, 'message' => 'Permission denied']);
             exit;
         }
@@ -291,7 +345,7 @@ try {
     }
     elseif ($action === 'export') {
         // Admin functionality to export feedbacks
-        if (!in_array($userRole, ['admin', 'super_admin'])) {
+        if (!in_array($userRole, ['admin'])) {
             echo json_encode(['success' => false, 'message' => 'Permission denied']);
             exit;
         }
@@ -315,9 +369,11 @@ try {
         }
         
         if (!empty($_POST['search'])) {
+            // Escape LIKE special chars; use addcslashes for clarity over manual str_replace
+            $searchEscaped = addcslashes($_POST['search'], '%_\\');
             $whereConditions[] = "(f.content LIKE ? OR f.subject LIKE ?)";
-            $params[] = "%{$_POST['search']}%";
-            $params[] = "%{$_POST['search']}%";
+            $params[] = "%{$searchEscaped}%";
+            $params[] = "%{$searchEscaped}%";
         }
         
         if (!empty($_POST['status'])) {
@@ -405,4 +461,3 @@ try {
     echo json_encode(['success' => false, 'message' => 'Database error']);
 }
 
-?>

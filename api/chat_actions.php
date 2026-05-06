@@ -5,6 +5,7 @@ if (session_status() !== PHP_SESSION_ACTIVE) {
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/functions.php';
 require_once __DIR__ . '/../includes/helpers.php';
+require_once __DIR__ . '/../includes/project_permissions.php';
 
 if (!isset($_SESSION['user_id'])) {
     header('Content-Type: application/json');
@@ -12,9 +13,18 @@ if (!isset($_SESSION['user_id'])) {
     exit;
 }
 
+// CSRF protection for state-changing requests
+enforceApiCsrf();
+
 $db = Database::getInstance();
 $userId = $_SESSION['user_id'];
 $action = $_GET['action'] ?? '';
+$sessionRole = normalizeRole($_SESSION['role'] ?? '');
+
+if ($sessionRole === 'client') {
+    echo json_encode(['error' => 'Project chat is not available for client accounts.']);
+    exit;
+}
 
 header('Content-Type: application/json');
 
@@ -27,7 +37,7 @@ function normalizeRole($role) {
 
 function isAdminRole($role) {
     $r = normalizeRole($role);
-    return in_array($r, ['admin', 'super_admin'], true);
+    return in_array($r, ['admin'], true);
 }
 
 function currentUserIsAdmin($db, $userId, $sessionRole) {
@@ -118,9 +128,18 @@ function ensureChatAuditSchema($db) {
 
 switch ($action) {
     case 'send_message':
+        // Removed rate limiting as per user request to allow unlimited messaging.
+
+
         ensureChatAuditSchema($db);
         $projectId = (isset($_POST['project_id']) && $_POST['project_id'] !== '' && $_POST['project_id'] !== 'null' && $_POST['project_id'] !== '0') ? intval($_POST['project_id']) : null;
         $pageId = (isset($_POST['page_id']) && $_POST['page_id'] !== '' && $_POST['page_id'] !== 'null' && $_POST['page_id'] !== '0') ? intval($_POST['page_id']) : null;
+
+        // IDOR prevention: verify project access before sending
+        if ($projectId && !hasProjectAccess($db, $userId, $projectId)) {
+            echo json_encode(['error' => 'Permission denied']);
+            exit;
+        }
         $replyTo = (isset($_POST['reply_to']) && is_numeric($_POST['reply_to'])) ? intval($_POST['reply_to']) : null;
         if ($replyTo === null) {
             $replyToken = trim((string)($_POST['reply_token'] ?? ''));
@@ -221,6 +240,12 @@ switch ($action) {
         $projectId = (isset($_GET['project_id']) && $_GET['project_id'] !== '' && $_GET['project_id'] !== 'null') ? intval($_GET['project_id']) : null;
         $pageId = (isset($_GET['page_id']) && $_GET['page_id'] !== '' && $_GET['page_id'] !== 'null') ? intval($_GET['page_id']) : null;
         $lastId = isset($_GET['last_id']) ? intval($_GET['last_id']) : 0;
+
+        // IDOR prevention: verify project access
+        if ($projectId && !hasProjectAccess($db, $userId, $projectId)) {
+            echo json_encode(['error' => 'Permission denied']);
+            exit;
+        }
         
         $sql = "SELECT cm.*, u.username, u.full_name, u.role FROM chat_messages cm JOIN users u ON cm.user_id = u.id WHERE cm.id > ? ";
         $params = [$lastId];
@@ -294,6 +319,11 @@ switch ($action) {
             echo json_encode(['error' => 'Message not found']);
             exit;
         }
+        // IDOR fix: verify user has access to the project this message belongs to
+        if (!empty($row['project_id']) && !hasProjectAccess($db, $userId, (int)$row['project_id'])) {
+            echo json_encode(['error' => 'Unauthorized']);
+            exit;
+        }
         if (!empty($row['deleted_at'])) {
             echo json_encode(['error' => 'Deleted message cannot be edited']);
             exit;
@@ -338,6 +368,11 @@ switch ($action) {
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         if (!$row) {
             echo json_encode(['error' => 'Message not found']);
+            exit;
+        }
+        // IDOR fix: verify user has access to the project this message belongs to
+        if (!empty($row['project_id']) && !hasProjectAccess($db, $userId, (int)$row['project_id'])) {
+            echo json_encode(['error' => 'Unauthorized']);
             exit;
         }
         if (!$isAdmin && (int)$row['user_id'] !== (int)$userId) {

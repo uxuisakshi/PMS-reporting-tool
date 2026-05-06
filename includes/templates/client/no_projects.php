@@ -1,13 +1,13 @@
 <?php
 /**
- * Client No Projects Template
- * Displayed when client has no assigned projects
+ * No Assigned Assets Template
+ * Displayed when no digital assets are assigned
  */
 
 $clientUser = $clientUser ?? [];
 $baseDir = $baseDir ?? '';
 
-$pageTitle = "No Projects Assigned";
+$pageTitle = "No Digital Assets Assigned";
 require_once __DIR__ . '/../../header.php';
 ?>
 
@@ -21,11 +21,11 @@ require_once __DIR__ . '/../../header.php';
                         <i class="fas fa-project-diagram fa-4x text-muted opacity-50"></i>
                     </div>
                     
-                    <h3 class="h4 mb-3">No Projects Assigned</h3>
+                    <h3 class="h4 mb-3">No Digital Assets Assigned</h3>
                     
                     <p class="text-muted mb-4">
-                        Welcome, <?php echo htmlspecialchars($clientUser['full_name'] ?? ($clientUser['username'] ?? 'Client'), ENT_QUOTES, 'UTF-8'); ?>! 
-                        You don't have any projects assigned to your account yet.
+                        Welcome, <?php echo htmlspecialchars($clientUser['full_name'] ?? ($clientUser['username'] ?? 'User'), ENT_QUOTES, 'UTF-8'); ?>! 
+                        You don't have any digital assets assigned to your account yet.
                     </p>
                     
                     <div class="alert alert-info text-start">
@@ -34,9 +34,9 @@ require_once __DIR__ . '/../../header.php';
                             What's Next?
                         </h6>
                         <ul class="mb-0 ps-3">
-                            <li>Your administrator will assign projects to your account</li>
+                            <li>Your administrator will assign digital assets to your account</li>
                             <li>Once assigned, you'll see accessibility analytics and reports here</li>
-                            <li>You'll receive an email notification when projects are assigned</li>
+                            <li>You'll receive an email notification when digital assets are assigned</li>
                         </ul>
                     </div>
                     

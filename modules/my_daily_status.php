@@ -126,34 +126,96 @@ if (!function_exists('recordProjectTimeLogHistory')) {
     }
 }
 
+if (!function_exists('getEditRequestState')) {
+    function getEditRequestState($db, $userId, $reqDate) {
+        $stmt = $db->prepare("
+            SELECT *
+            FROM user_edit_requests
+            WHERE user_id = ?
+              AND req_date = ?
+              AND request_type = 'edit'
+            LIMIT 1
+        ");
+        $stmt->execute([(int)$userId, (string)$reqDate]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+        $status = (string)($row['status'] ?? '');
+        $locked = !empty($row['locked_at']);
+
+        return [
+            'row' => $row,
+            'status' => $status,
+            'locked' => $locked,
+            'pending' => ($status === 'pending'),
+            'approved' => ($status === 'approved' && !$locked),
+            'waiting_approval' => ($status === 'pending' && !$locked),
+            'submitted' => ($status === 'pending' && $locked),
+            'rejected' => ($status === 'rejected'),
+            'used' => ($status === 'used')
+        ];
+    }
+}
+
+if (!function_exists('notifyEditRequestAdmins')) {
+    function notifyEditRequestAdmins($db, $userId, $adminMessage, $userMessage) {
+        $adminStmt = $db->prepare("SELECT id FROM users WHERE role IN ('admin') AND is_active = 1");
+        $adminStmt->execute();
+        $admins = $adminStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        foreach ($admins as $admin) {
+            createNotification($db, (int)$admin['id'], 'edit_request', (string)$adminMessage, '/modules/admin/edit_requests.php');
+        }
+
+        if ((string)$userMessage !== '') {
+            createNotification($db, (int)$userId, 'edit_request', (string)$userMessage, '/modules/notifications.php?filter=edit_request');
+        }
+
+        return count($admins);
+    }
+}
+
+if (!function_exists('hasPendingEditPayload')) {
+    function hasPendingEditPayload($db, $userId, $reqDate) {
+        try {
+            $pendingStmt = $db->prepare("SELECT id FROM user_pending_changes WHERE user_id = ? AND req_date = ? LIMIT 1");
+            $pendingStmt->execute([(int)$userId, (string)$reqDate]);
+            if ($pendingStmt->fetchColumn()) {
+                return true;
+            }
+        } catch (Exception $e) {}
+
+        try {
+            $editStmt = $db->prepare("SELECT id FROM user_pending_log_edits WHERE user_id = ? AND req_date = ? AND status = 'pending' LIMIT 1");
+            $editStmt->execute([(int)$userId, (string)$reqDate]);
+            if ($editStmt->fetchColumn()) {
+                return true;
+            }
+        } catch (Exception $e) {}
+
+        try {
+            $deleteStmt = $db->prepare("SELECT id FROM user_pending_log_deletions WHERE user_id = ? AND req_date = ? AND status = 'pending' LIMIT 1");
+            $deleteStmt->execute([(int)$userId, (string)$reqDate]);
+            if ($deleteStmt->fetchColumn()) {
+                return true;
+            }
+        } catch (Exception $e) {}
+
+        return false;
+    }
+}
+
 // Handle AJAX: check if edit request is pending for this date
 if (isset($_GET['action']) && $_GET['action'] === 'check_edit_request') {
     $reqDate = $_GET['date'] ?? $date;
-    $stmt = $db->prepare("
-        SELECT status, locked_at
-        FROM user_edit_requests
-        WHERE user_id = ?
-          AND req_date = ?
-          AND request_type = 'edit'
-    ");
-    $stmt->execute([$userId, $reqDate]);
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    $status = $row['status'] ?? null;
-    $pending = ($status === 'pending');
-    $pendingLocked = ($pending && !empty($row['locked_at']));
-    // Keep UI behavior consistent: only "pending" is actionable in the client.
-    // Approved/used/rejected requests should show normal "Request Edit" flow.
-    $approved = false;
-    $rejected = ($status === 'rejected');
-    $used = ($status === 'used');
+    $reqState = getEditRequestState($db, $userId, $reqDate);
     header('Content-Type: application/json');
     echo json_encode([
-        'pending' => $pending,
-        'pending_locked' => $pendingLocked,
-        'approved' => $approved,
-        'rejected' => $rejected,
-        'used' => $used,
-        'status' => $status
+        'pending' => $reqState['pending'],
+        'pending_locked' => $reqState['submitted'],
+        'approved' => $reqState['approved'],
+        'waiting_approval' => $reqState['waiting_approval'],
+        'rejected' => $reqState['rejected'],
+        'used' => $reqState['used'],
+        'status' => $reqState['status']
     ]);
     exit;
 }
@@ -164,35 +226,49 @@ if (isset($_POST['action']) && $_POST['action'] === 'request_edit') {
     $reason = $_POST['reason'] ?? '';
     
     try {
+        $reqState = getEditRequestState($db, $userId, $reqDate);
+        if ($reqState['approved']) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => true, 'already_approved' => true, 'message' => 'Edit access is already approved for this date.']);
+            exit;
+        }
+
+        if ($reqState['waiting_approval']) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => true, 'already_requested' => true, 'message' => 'Edit access request is already pending admin approval.']);
+            exit;
+        }
+
+        if ($reqState['submitted']) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'error' => 'Changes for this date are already submitted and awaiting admin review.']);
+            exit;
+        }
+
         // Insert or update request to pending
         $stmt = $db->prepare("INSERT INTO user_edit_requests (user_id, req_date, request_type, status, reason, locked_at) VALUES (?, ?, 'edit', 'pending', ?, NULL) ON DUPLICATE KEY UPDATE request_type='edit', status='pending', reason=VALUES(reason), locked_at=NULL, updated_at=NOW()");
         $stmt->execute([$userId, $reqDate, $reason]);
 
-        // Insert notification for all admins
-        $adminStmt = $db->prepare("SELECT id FROM users WHERE role IN ('admin','super_admin') AND is_active = 1");
-        $adminStmt->execute();
-        $admins = $adminStmt->fetchAll(PDO::FETCH_ASSOC);
-        
-        if (empty($admins)) {
+        $userName = $_SESSION['full_name'] ?? 'User';
+        $msg = $userName . " requested edit access for " . $reqDate;
+        if ($reason) {
+            $msg .= " - Reason: " . substr($reason, 0, 100) . (strlen($reason) > 100 ? '...' : '');
+        }
+        $adminCount = notifyEditRequestAdmins(
+            $db,
+            (int)$userId,
+            $msg,
+            "Your edit access request for {$reqDate} was submitted to admin."
+        );
+
+        if ($adminCount === 0) {
             header('Content-Type: application/json');
             echo json_encode(['success' => false, 'error' => 'No active admins found']);
             exit;
         }
         
-        $userName = $_SESSION['full_name'] ?? 'User';
-        $msg = $userName . " requested edit for " . $reqDate;
-        if ($reason) {
-            $msg .= " - Reason: " . substr($reason, 0, 100) . (strlen($reason) > 100 ? '...' : '');
-        }
-        $link = "/modules/admin/edit_requests.php";
-        
-        foreach ($admins as $admin) {
-            createNotification($db, (int)$admin['id'], 'edit_request', $msg, $link);
-        }
-        createNotification($db, (int)$userId, 'edit_request', "Your edit request for {$reqDate} was submitted to admin.", "/modules/notifications.php?filter=edit_request");
-        
         header('Content-Type: application/json');
-        echo json_encode(['success' => true, 'message' => 'Edit request sent to ' . count($admins) . ' admin(s)']);
+        echo json_encode(['success' => true, 'message' => 'Edit request sent to ' . $adminCount . ' admin(s)']);
         exit;
         
     } catch (Exception $e) {
@@ -206,35 +282,53 @@ if (isset($_POST['action']) && $_POST['action'] === 'request_edit') {
 if (isset($_POST['action']) && $_POST['action'] === 'submit_pending') {
     $reqDate = $_POST['date'] ?? $date;
     try {
-        $rowStmt = $db->prepare("
-            SELECT id, status, locked_at
-            FROM user_edit_requests
-            WHERE user_id = ?
-              AND req_date = ?
-              AND request_type = 'edit'
-            LIMIT 1
-        ");
-        $rowStmt->execute([$userId, $reqDate]);
-        $reqRow = $rowStmt->fetch(PDO::FETCH_ASSOC);
+        $reqState = getEditRequestState($db, $userId, $reqDate);
+        $reqRow = $reqState['row'];
 
-        if (!$reqRow || (string)($reqRow['status'] ?? '') !== 'pending') {
+        if (!$reqRow) {
             header('Content-Type: application/json');
-            echo json_encode(['success' => false, 'error' => 'No pending edit request found for this date']);
+            echo json_encode(['success' => false, 'error' => 'No approved edit access found for this date']);
             exit;
         }
 
-        if (!empty($reqRow['locked_at'])) {
+        if ($reqState['submitted']) {
             header('Content-Type: application/json');
             echo json_encode(['success' => true, 'already_submitted' => true]);
             exit;
         }
 
+        if ($reqState['waiting_approval']) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'error' => 'Edit access is still waiting for admin approval.']);
+            exit;
+        }
+
+        if (!$reqState['approved']) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'error' => 'Edit access is not active for this date. Please send a new request.']);
+            exit;
+        }
+
+        if (!hasPendingEditPayload($db, $userId, $reqDate)) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'error' => 'No pending changes found to submit.']);
+            exit;
+        }
+
         $updStmt = $db->prepare("
             UPDATE user_edit_requests
-            SET locked_at = NOW(), updated_at = NOW()
+            SET status = 'pending', locked_at = NOW(), updated_at = NOW()
             WHERE id = ?
         ");
         $updStmt->execute([(int)$reqRow['id']]);
+
+        $userName = $_SESSION['full_name'] ?? 'User';
+        notifyEditRequestAdmins(
+            $db,
+            (int)$userId,
+            $userName . " submitted final pending changes for " . $reqDate,
+            "Your pending changes for {$reqDate} were submitted for admin review."
+        );
 
         header('Content-Type: application/json');
         echo json_encode(['success' => true, 'message' => 'Pending changes submitted']);
@@ -252,25 +346,27 @@ if (isset($_POST['action']) && $_POST['action'] === 'save_pending') {
     $status = normalizeAvailabilityStatusKey($_POST['status'] ?? 'not_updated', $availabilityStatusKeys, 'not_updated');
     $notes = $_POST['notes'] ?? '';
     $personal_note = $_POST['personal_note'] ?? '';
-    
+
     try {
-        $lockStmt = $db->prepare("
-            SELECT locked_at
-            FROM user_edit_requests
-            WHERE user_id = ?
-              AND req_date = ?
-              AND request_type = 'edit'
-            LIMIT 1
-        ");
-        $lockStmt->execute([$userId, $reqDate]);
-        $lockRow = $lockStmt->fetch(PDO::FETCH_ASSOC);
-        if ($lockRow && !empty($lockRow['locked_at'])) {
+        $reqState = getEditRequestState($db, $userId, $reqDate);
+        if (!$reqState['row']) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'error' => 'Please request edit access first.']);
+            exit;
+        }
+
+        if ($reqState['submitted']) {
             header('Content-Type: application/json');
             echo json_encode(['success' => false, 'error' => 'Request already submitted. You can no longer modify pending changes.']);
             exit;
         }
 
-        // Create pending changes table if not exists
+        if (!$reqState['approved']) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'error' => 'Edit access is not approved yet for this date.']);
+            exit;
+        }
+
         $db->exec("CREATE TABLE IF NOT EXISTS user_pending_changes (
             id INT PRIMARY KEY AUTO_INCREMENT,
             user_id INT NOT NULL,
@@ -284,10 +380,8 @@ if (isset($_POST['action']) && $_POST['action'] === 'save_pending') {
             UNIQUE KEY uq_user_date (user_id, req_date),
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;");
-        // Keep status storage flexible when new master keys are introduced.
         $db->exec("ALTER TABLE user_pending_changes MODIFY COLUMN status VARCHAR(50) NOT NULL DEFAULT 'not_updated'");
-        
-        // Save pending changes
+
         $hasPendingLogsInput = array_key_exists('pending_time_logs', $_POST);
         $appendPendingLogs = (isset($_POST['pending_time_logs_append']) && (string)$_POST['pending_time_logs_append'] === '1');
         $existingPendingLogsRaw = '[]';
@@ -445,6 +539,11 @@ try { $db->exec("ALTER TABLE user_pending_changes ADD COLUMN pending_time_logs T
 
 // Handle Status Update
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error'] = 'Invalid request. Please try again.';
+        header('Location: ' . $_SERVER['PHP_SELF']);
+        exit;
+    }
     $isAdmin = hasAdminPrivileges();
     $targetUser = $userId;
     
@@ -714,14 +813,22 @@ if ($isTimeLogPost) {
         // Prevent logging for past dates unless admin or approved edit request
         $today = date('Y-m-d');
         if (!$isAdmin && $date < $today) {
-            if ($hasRequestTypeColumn) {
-                $reqCheck = $db->prepare("SELECT status FROM user_edit_requests WHERE user_id = ? AND req_date = ? AND status = 'approved' AND request_type = 'edit'");
-            } else {
-                $reqCheck = $db->prepare("SELECT status FROM user_edit_requests WHERE user_id = ? AND req_date = ? AND status = 'approved' AND (reason IS NULL OR reason NOT LIKE 'Deletion request for time log ID %')");
-            }
-            $reqCheck->execute([$userId, $date]);
-            $approved = $reqCheck->fetch(PDO::FETCH_ASSOC);
-            if (!$approved) {
+            $reqState = $hasRequestTypeColumn
+                ? getEditRequestState($db, $userId, $date)
+                : ['approved' => false, 'waiting_approval' => false, 'submitted' => false];
+            if (!$reqState['approved']) {
+                if ($reqState['waiting_approval']) {
+                    setMyDailyStatusToast('info', 'Edit access request is already pending admin approval for this date.');
+                    header("Location: " . $_SERVER['PHP_SELF'] . "?date=$date");
+                    exit;
+                }
+
+                if ($reqState['submitted']) {
+                    setMyDailyStatusToast('warning', 'Pending changes for this date are already submitted and awaiting admin review.');
+                    header("Location: " . $_SERVER['PHP_SELF'] . "?date=$date");
+                    exit;
+                }
+
                 // Capture current date values so admin can review and apply pending logs on approval.
                 $statusRowStmt = $db->prepare("SELECT status, notes FROM user_daily_status WHERE user_id = ? AND status_date = ?");
                 $statusRowStmt->execute([$userId, $date]);
@@ -787,17 +894,13 @@ if ($isTimeLogPost) {
                     ");
                 }
                 $reqStmt->execute([$userId, $date, $reason]);
-
-                $adminStmt = $db->prepare("SELECT id FROM users WHERE role IN ('admin','super_admin') AND is_active = 1");
-                $adminStmt->execute();
-                $admins = $adminStmt->fetchAll(PDO::FETCH_ASSOC);
                 $userName = $_SESSION['full_name'] ?? 'User';
-                $msg = $userName . " requested edit approval for time log on " . $date;
-                $link = "/modules/admin/edit_requests.php";
-                foreach ($admins as $admin) {
-                    createNotification($db, (int)$admin['id'], 'edit_request', $msg, $link);
-                }
-                createNotification($db, (int)$userId, 'edit_request', "Your time log edit request for {$date} was submitted to admin.", "/modules/notifications.php?filter=edit_request");
+                notifyEditRequestAdmins(
+                    $db,
+                    (int)$userId,
+                    $userName . " requested edit access for " . $date,
+                    "Your edit access request for {$date} was submitted to admin."
+                );
 
                 setMyDailyStatusToast('success', 'Edit request sent to admin for approval. Your log will be applied after approval.');
                 header("Location: " . $_SERVER['PHP_SELF'] . "?date=$date");
@@ -1036,7 +1139,7 @@ if (isset($_GET['delete_log_request'])) {
             ");
             $delReqStmt->execute([$userId, $date, $logId, $reason]);
 
-            $adminStmt = $db->prepare("SELECT id FROM users WHERE role IN ('admin','super_admin') AND is_active = 1");
+            $adminStmt = $db->prepare("SELECT id FROM users WHERE role IN ('admin') AND is_active = 1");
             $adminStmt->execute();
             $admins = $adminStmt->fetchAll(PDO::FETCH_ASSOC);
             $userName = $_SESSION['full_name'] ?? 'User';
@@ -1054,6 +1157,94 @@ if (isset($_GET['delete_log_request'])) {
         }
     }
     header("Location: " . $_SERVER['PHP_SELF'] . "?date=$date");
+    exit;
+}
+
+// Handle direct log edit (same day only for non-admins)
+if (isset($_GET['edit_log'])) {
+    $logId = (int)$_GET['edit_log'];
+    $date = $_GET['date'] ?? date('Y-m-d');
+    $isAdmin = hasAdminPrivileges();
+    
+    // Safety check: must be today OR admin
+    if (!$isAdmin && $date !== date('Y-m-d')) {
+        $_SESSION['toast_message'] = "Direct editing is only allowed for today's logs.";
+        $_SESSION['toast_type'] = "warning";
+        header("Location: ?date=" . urlencode($date));
+        exit;
+    }
+
+    $newProjectId = (int)$_GET['new_project_id'];
+    $newTaskTypeInput = trim((string)($_GET['new_task_type'] ?? ''));
+    $taskTypeMap = ['regression_testing' => 'regression', 'page_qa' => 'page_testing'];
+    $newTaskType = $taskTypeMap[$newTaskTypeInput] ?? $newTaskTypeInput;
+
+    $newHours = (float)$_GET['new_hours'];
+    $newDescription = $_GET['new_description'];
+    $newPageId = !empty($_GET['new_page_id']) ? (int)$_GET['new_page_id'] : null;
+    $newEnvironmentId = !empty($_GET['new_environment_id']) ? (int)$_GET['new_environment_id'] : null;
+    $newIssueId = !empty($_GET['new_issue_id']) ? (int)$_GET['new_issue_id'] : null;
+    $newPhaseId = !empty($_GET['new_phase_id']) ? (int)$_GET['new_phase_id'] : null;
+    $newGenericCategoryId = !empty($_GET['new_generic_category_id']) ? (int)$_GET['new_generic_category_id'] : null;
+    $newTestingType = $_GET['new_testing_type'] ?? '';
+    $newPhaseActivity = $_GET['new_phase_activity'] ?? '';
+    $newGenericTaskDetail = $_GET['new_generic_task_detail'] ?? '';
+
+    try {
+        $db->beginTransaction();
+        
+        // Verify log belongs to user and is on the correct date
+        $checkStmt = $db->prepare("SELECT * FROM project_time_logs WHERE id = ? AND user_id = ? AND log_date = ? LIMIT 1");
+        $checkStmt->execute([$logId, $userId, $date]);
+        $oldLog = $checkStmt->fetch(PDO::FETCH_ASSOC);
+        if (!$oldLog) {
+            throw new Exception("Log not found or access denied.");
+        }
+
+        $updateStmt = $db->prepare("
+            UPDATE project_time_logs 
+            SET project_id = ?, task_type = ?, hours_spent = ?, description = ?, 
+                page_id = ?, environment_id = ?, issue_id = ?, phase_id = ?, 
+                generic_category_id = ?, testing_type = ?
+            WHERE id = ?
+        ");
+        $updateStmt->execute([
+            $newProjectId, $newTaskType, $newHours, $newDescription,
+            $newPageId, $newEnvironmentId, $newIssueId, $newPhaseId,
+            $newGenericCategoryId, $newTestingType,
+            $logId
+        ]);
+
+        // Log the action using the correct function
+        recordProjectTimeLogHistory($db, [
+            'time_log_id' => $logId,
+            'project_id' => $newProjectId,
+            'user_id' => $userId,
+            'action_type' => 'updated',
+            'old_log_date' => $oldLog['log_date'],
+            'new_log_date' => $date,
+            'old_hours' => $oldLog['hours_spent'],
+            'new_hours' => $newHours,
+            'old_description' => $oldLog['description'],
+            'new_description' => $newDescription,
+            'changed_by' => $userId,
+            'context_json' => json_encode([
+                'task_type' => $newTaskType,
+                'page_id' => $newPageId,
+                'environment_id' => $newEnvironmentId,
+                'issue_id' => $newIssueId,
+                'phase_id' => $newPhaseId,
+                'testing_type' => $newTestingType
+            ], JSON_UNESCAPED_UNICODE)
+        ]);
+
+        $db->commit();
+        setMyDailyStatusToast('success', 'Log updated successfully.');
+    } catch (Exception $e) {
+        if ($db->inTransaction()) $db->rollBack();
+        setMyDailyStatusToast('danger', 'Error updating log: ' . $e->getMessage());
+    }
+    header("Location: ?date=" . urlencode($date));
     exit;
 }
 
@@ -1137,13 +1328,42 @@ if (isset($_GET['edit_log_request'])) {
                 exit;
             }
 
-            $reason = "Edit request for time log ID {$logId}";
-            $reqStmt = $db->prepare("
-                INSERT INTO user_edit_requests (user_id, req_date, request_type, status, reason)
-                VALUES (?, ?, 'edit', 'pending', ?)
-                ON DUPLICATE KEY UPDATE request_type = 'edit', status = 'pending', reason = VALUES(reason), updated_at = NOW()
-            ");
-            $reqStmt->execute([$userId, $date, $reason]);
+            $reqState = getEditRequestState($db, $userId, $date);
+            if (!$reqState['approved']) {
+                if ($reqState['waiting_approval']) {
+                    $_SESSION['error'] = 'Edit access for this date is still pending admin approval.';
+                    header("Location: " . $_SERVER['PHP_SELF'] . "?date=$date");
+                    exit;
+                }
+
+                if ($reqState['submitted']) {
+                    $_SESSION['error'] = 'Pending changes for this date are already submitted and awaiting admin review.';
+                    header("Location: " . $_SERVER['PHP_SELF'] . "?date=$date");
+                    exit;
+                }
+
+                $reason = 'Time log edit access request for date ' . $date;
+                $reqStmt = $db->prepare("
+                    INSERT INTO user_edit_requests (user_id, req_date, request_type, status, reason, locked_at)
+                    VALUES (?, ?, 'edit', 'pending', ?, NULL)
+                    ON DUPLICATE KEY UPDATE request_type = 'edit', status = 'pending', reason = VALUES(reason), locked_at = NULL, updated_at = NOW()
+                ");
+                $reqStmt->execute([$userId, $date, $reason]);
+
+                $userName = $_SESSION['full_name'] ?? 'User';
+                notifyEditRequestAdmins(
+                    $db,
+                    (int)$userId,
+                    $userName . " requested edit access for time log date " . $date,
+                    "Your edit access request for {$date} was submitted to admin."
+                );
+
+                $_SESSION['success'] = 'Edit access request sent. After admin approval, resubmit your log changes.';
+                header("Location: " . $_SERVER['PHP_SELF'] . "?date=$date");
+                exit;
+            }
+
+            $reason = "Pending edit for time log ID {$logId}";
 
             $editReqStmt = $db->prepare("
                 INSERT INTO user_pending_log_edits (
@@ -1181,18 +1401,7 @@ if (isset($_GET['edit_log_request'])) {
                 $reason
             ]);
 
-            $adminStmt = $db->prepare("SELECT id FROM users WHERE role IN ('admin','super_admin') AND is_active = 1");
-            $adminStmt->execute();
-            $admins = $adminStmt->fetchAll(PDO::FETCH_ASSOC);
-            $userName = $_SESSION['full_name'] ?? 'User';
-            $msg = $userName . " requested edit approval for time log on " . $date . " (Log ID: " . $logId . ")";
-            $link = "/modules/admin/edit_requests.php";
-            foreach ($admins as $admin) {
-                createNotification($db, (int)$admin['id'], 'edit_request', $msg, $link);
-            }
-            createNotification($db, (int)$userId, 'edit_request', "Your log edit request for {$date} (Log ID: {$logId}) was submitted to admin.", "/modules/notifications.php?filter=edit_request");
-
-            $_SESSION['success'] = "Edit request sent to admin for approval.";
+            $_SESSION['success'] = 'Pending log edit saved. Submit pending changes when you finish all edits for this date.';
         } catch (Exception $e) {
             $_SESSION['error'] = "Failed to send edit request: " . $e->getMessage();
         }
@@ -1270,11 +1479,11 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_personal_note') {
 
 
 
-    // Check if there's a pending edit request for this date
-    $editRequestStmt = $db->prepare("SELECT status FROM user_edit_requests WHERE user_id = ? AND req_date = ? AND request_type = 'edit'");
+    // Check if there's a draft-capable edit request for this date
+    $editRequestStmt = $db->prepare("SELECT status, locked_at FROM user_edit_requests WHERE user_id = ? AND req_date = ? AND request_type = 'edit'");
     $editRequestStmt->execute([$targetUser, $queriedDate]);
     $editRequest = $editRequestStmt->fetch(PDO::FETCH_ASSOC);
-    $hasPendingRequest = ($editRequest && $editRequest['status'] === 'pending');
+    $hasPendingRequest = ($editRequest && in_array((string)$editRequest['status'], ['approved', 'pending'], true));
 
 
 
@@ -1302,7 +1511,8 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_personal_note') {
                 'notes' => $pendingData['notes'],
                 'personal_note' => $pendingData['personal_note'],
                 'role' => $userRole,
-                'is_pending' => true
+                'is_pending' => true,
+                'edit_request_status' => (string)($editRequest['status'] ?? '')
             ]);
             exit;
         }
@@ -1340,6 +1550,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_personal_note') {
             'target_user' => $targetUser,
             'current_user' => $userId,
             'has_pending_request' => $hasPendingRequest,
+            'edit_request_status' => (string)($editRequest['status'] ?? ''),
             'status_found' => !empty($currentStatus)
         ]
     ];
@@ -1348,26 +1559,6 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_personal_note') {
 
     header('Content-Type: application/json');
     echo json_encode($response);
-    exit;
-}
-
-// Handle AJAX: check if edit request is pending or approved for this date
-if (isset($_GET['action']) && $_GET['action'] === 'check_edit_request') {
-    $reqDate = $_GET['date'] ?? $date;
-    $stmt = $db->prepare("
-        SELECT status, locked_at
-        FROM user_edit_requests
-        WHERE user_id = ?
-          AND req_date = ?
-          AND request_type = 'edit'
-    ");
-    $stmt->execute([$userId, $reqDate]);
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    $pending = ($row && $row['status'] === 'pending');
-    $pendingLocked = ($pending && !empty($row['locked_at']));
-    $approved = false;
-    header('Content-Type: application/json');
-    echo json_encode(['pending' => $pending, 'pending_locked' => $pendingLocked, 'approved' => $approved]);
     exit;
 }
 
@@ -1387,8 +1578,11 @@ $editReqStmt = $db->prepare("SELECT * FROM user_edit_requests WHERE user_id = ? 
 $editReqStmt->execute([$userId, $date]);
 $editReq = $editReqStmt->fetch(PDO::FETCH_ASSOC);
 $hasPendingRequest = ($editReq && $editReq['status'] === 'pending');
+$hasSubmittedPendingRequest = ($hasPendingRequest && !empty($editReq['locked_at']));
+$hasWaitingApprovalRequest = ($hasPendingRequest && empty($editReq['locked_at']));
+$hasApprovedEditAccess = ($editReq && $editReq['status'] === 'approved' && empty($editReq['locked_at']));
 $pendingData = null;
-if ($hasPendingRequest) {
+if ($editReq && in_array((string)$editReq['status'], ['approved', 'pending'], true)) {
     try {
         $pendingStmt = $db->prepare("SELECT * FROM user_pending_changes WHERE user_id = ? AND req_date = ?");
         $pendingStmt->execute([$userId, $date]);
@@ -1473,39 +1667,27 @@ $projectsSql = "
        AND (ua.is_removed IS NULL OR ua.is_removed = 0)
     WHERE p.status NOT IN ('cancelled', 'archived')
       AND (
-            ua.id IS NOT NULL
+            ? = 1 -- Admin bypass
+            OR ua.id IS NOT NULL
             OR p.project_lead_id = ?
             OR EXISTS (
-                SELECT 1
-                FROM project_pages pp
-                WHERE pp.project_id = p.id
-                  AND (
-                        pp.at_tester_id = ?
-                        OR pp.ft_tester_id = ?
-                        OR pp.qa_id = ?
-                      )
+                SELECT 1 FROM project_pages pp 
+                WHERE pp.project_id = p.id 
+                  AND (pp.at_tester_id = ? OR pp.ft_tester_id = ? OR pp.qa_id = ?)
             )
             OR EXISTS (
-                SELECT 1
-                FROM project_pages up
-                WHERE up.project_id = p.id
+                SELECT 1 FROM project_pages up 
+                WHERE up.project_id = p.id 
                   AND (
-                        up.at_tester_id = ?
-                        OR up.ft_tester_id = ?
-                        OR up.qa_id = ?
-                        {$jsonUniqueMembershipSql}
-                      )
+                    up.at_tester_id = ? OR up.ft_tester_id = ? OR up.qa_id = ?
+                    {$jsonUniqueMembershipSql}
+                  )
             )
             OR EXISTS (
-                SELECT 1
-                FROM project_pages pp2
+                SELECT 1 FROM project_pages pp2
                 JOIN page_environments pe ON pe.page_id = pp2.id
                 WHERE pp2.project_id = p.id
-                  AND (
-                        pe.at_tester_id = ?
-                        OR pe.ft_tester_id = ?
-                        OR pe.qa_id = ?
-                      )
+                  AND (pe.at_tester_id = ? OR pe.ft_tester_id = ? OR pe.qa_id = ?)
             )
             OR p.po_number = 'OFF-PROD-001'
       )
@@ -1515,6 +1697,7 @@ $projectsSql = "
 $projectsStmt = $db->prepare($projectsSql);
 $projectParams = [
     $userId,
+    $isAdmin ? 1 : 0, // Admin bypass
     $userId,
     $userId, $userId, $userId,
     $userId, $userId, $userId
@@ -1555,18 +1738,20 @@ include __DIR__ . '/../includes/header.php';
 
 <div class="container-fluid">
     <script>
-    (function () {
-        var toastData = <?php echo json_encode($myDailyToast, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
-        if (!toastData || !toastData.message) return;
-        function fireToast() {
-            if (typeof window.showToast !== 'function') return false;
-            window.showToast(toastData.message, toastData.type || 'info');
-            return true;
-        }
-        if (!fireToast()) {
-            setTimeout(fireToast, 120);
-        }
-    })();
+    window._dailyStatusConfig = {
+        toastData: <?php echo json_encode($myDailyToast, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>,
+        isPast: <?php echo $isPastDateReadonly ? 'true' : 'false'; ?>,
+        hasPending: <?php echo $hasPendingRequest ? 'true' : 'false'; ?>,
+        hasApprovedAccess: <?php echo $hasApprovedEditAccess ? 'true' : 'false'; ?>,
+        hasSubmittedPending: <?php echo $hasSubmittedPendingRequest ? 'true' : 'false'; ?>,
+        isWaitingApproval: <?php echo $hasWaitingApprovalRequest ? 'true' : 'false'; ?>,
+        editRequestStatus: <?php echo json_encode((string)($editReq['status'] ?? ''), JSON_HEX_TAG | JSON_HEX_AMP); ?>,
+        date: <?php echo json_encode($date, JSON_HEX_TAG | JSON_HEX_AMP); ?>,
+        baseDir: <?php echo json_encode($baseDir, JSON_HEX_TAG | JSON_HEX_AMP); ?>,
+        isAdmin: <?php echo $isAdmin ? 'true' : 'false'; ?>,
+        today: <?php echo json_encode(date('Y-m-d'), JSON_HEX_TAG | JSON_HEX_AMP); ?>,
+        assignedProjects: <?php echo json_encode(array_values(array_map(static function ($p) { return ['id' => (int)($p['id'] ?? 0), 'title' => (string)($p['title'] ?? '')]; }, $assignedProjects ?? [])), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT); ?>
+    };
     </script>
     <div class="d-flex justify-content-between align-items-center mb-3">
         <h2>Daily Status & Time Log</h2>
@@ -1585,6 +1770,7 @@ include __DIR__ . '/../includes/header.php';
                 </div>
                 <div class="card-body">
                     <form method="POST" id="statusForm">
+                        <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                         <div class="mb-3">
                             <label>Availability</label>
                             <select name="status" class="form-select" id="statusSelect" <?php echo $isPastDateReadonly ? 'disabled' : ''; ?>>
@@ -1608,15 +1794,20 @@ include __DIR__ . '/../includes/header.php';
                         </div>
 
                         <?php if ($isPastDateReadonly): ?>
-                            <?php if ($hasPendingRequest): ?>
-                                <div class="alert alert-warning">An edit request is pending for this date. Your pending changes will be shown once admin reviews.</div>
+                            <?php if ($hasSubmittedPendingRequest): ?>
+                                <div class="alert alert-warning">Pending changes for this date are submitted and waiting for admin review.</div>
+                            <?php elseif ($hasApprovedEditAccess): ?>
+                                <div class="alert alert-success">Edit access is approved for this date. You can add multiple changes and then submit them together for final review.</div>
+                            <?php elseif ($hasWaitingApprovalRequest): ?>
+                                <div class="alert alert-info">Edit access request is pending admin approval for this date.</div>
                             <?php else: ?>
-                                <div class="alert alert-secondary">This date is read-only. Click <button type="button" id="editToggleBtn" class="btn btn-sm btn-outline-primary">Edit</button> to make changes and submit an edit request to admins.</div>
+                                <div class="alert alert-secondary">This date is read-only. Click <button type="button" id="editToggleBtn" class="btn btn-sm btn-outline-primary">Request Edit Access</button> to ask admin for access.</div>
                             <?php endif; ?>
                         <?php endif; ?>
 
                         <button type="submit" name="update_status" id="updateStatusBtn" class="btn btn-info text-dark w-100" style="<?php echo $isPastDateReadonly ? 'display:none;' : ''; ?>">Update Status</button>
-                        <button type="button" id="saveRequestBtn" class="btn btn-warning text-dark w-100" style="display:none;">Save & Request Edit</button>
+                        <button type="button" id="saveRequestBtn" class="btn btn-warning text-dark w-100" style="display:<?php echo ($isPastDateReadonly && $hasApprovedEditAccess) ? 'block' : 'none'; ?>;">Save Pending Changes</button>
+                        <button type="button" id="submitPendingBtn" class="btn btn-primary w-100 mt-2" style="display:<?php echo ($isPastDateReadonly && $hasApprovedEditAccess) ? 'block' : 'none'; ?>;">Submit Pending Changes</button>
                     </form>
                 </div>
             </div>
@@ -1796,146 +1987,6 @@ include __DIR__ . '/../includes/header.php';
                             <button type="submit" id="logTimeBtn" name="log_time" class="btn btn-success w-100" <?php echo $isPastDateReadonly ? 'disabled' : ''; ?>>Log Hours</button>
                         </div>
                     </form>
-                    <script>
-                    (function(){
-                        const isPast = <?php echo $isPastDateReadonly ? 'true' : 'false'; ?>;
-                        const hasPending = <?php echo $hasPendingRequest ? 'true' : 'false'; ?>;
-                        if (!isPast) return;
-
-                        const editBtn = document.getElementById('editToggleBtn');
-                        const saveBtn = document.getElementById('saveRequestBtn');
-                        const updateBtn = document.getElementById('updateStatusBtn');
-                        const statusSelect = document.getElementById('statusSelect');
-                        const notesField = document.getElementById('notesField');
-                        const personalNote = document.getElementById('personal_note');
-
-                        function setEditable(on){
-                            if (statusSelect) statusSelect.disabled = !on;
-                            if (notesField) notesField.disabled = !on;
-                            if (personalNote) personalNote.disabled = !on;
-                            // Time-log fields
-                            var prodProj = document.querySelector('#logProductionHoursForm select[name="project_id"]');
-                            var pageSel = document.getElementById('productionPageSelect');
-                            var envSel = document.getElementById('productionEnvSelect');
-                            var testingSel = document.getElementById('testingTypeSelect');
-                            var issueSel = document.getElementById('productionIssueSelect');
-                            var hoursInput = document.getElementById('logHoursInput');
-                            var descInput = document.getElementById('logDescriptionInput');
-                            var logBtn = document.getElementById('logTimeBtn');
-                            if (prodProj) prodProj.disabled = !on;
-                            if (pageSel) pageSel.disabled = !on;
-                            if (envSel) envSel.disabled = !on;
-                            if (testingSel) testingSel.disabled = !on;
-                            if (issueSel) issueSel.disabled = !on;
-                            if (hoursInput) hoursInput.disabled = !on;
-                            if (descInput) descInput.disabled = !on;
-                            if (logBtn) logBtn.disabled = !on;
-                            if (on) {
-                                saveBtn.style.display = 'block';
-                                if (updateBtn) updateBtn.style.display = 'none';
-                                document.getElementById('personalNoteContainer').style.display = 'block';
-                            } else {
-                                saveBtn.style.display = 'none';
-                                if (updateBtn) updateBtn.style.display = 'none';
-                                document.getElementById('personalNoteContainer').style.display = 'none';
-                            }
-                        }
-
-                        if (hasPending) {
-                            // Load pending values via AJAX and show them read-only
-                            fetch(window.location.pathname + '?action=get_personal_note&date=' + encodeURIComponent('<?php echo $date; ?>'))
-                                .then(r => r.json())
-                                .then(data => {
-                                    if (data.success && data.is_pending) {
-                                        if (statusSelect) statusSelect.value = data.status || statusSelect.value;
-                                        if (notesField) notesField.value = data.notes || '';
-                                        if (personalNote) personalNote.value = data.personal_note || '';
-                                    }
-                                }).catch(()=>{});
-                            // leave fields disabled
-                            setEditable(false);
-                        } else {
-                            // No pending request; fields are readonly until Edit clicked
-                            setEditable(false);
-                        }
-
-                        if (editBtn) {
-                            editBtn.addEventListener('click', function(){
-                                setEditable(true);
-                                editBtn.style.display = 'none';
-                            });
-                        }
-
-                        if (saveBtn) {
-                            saveBtn.addEventListener('click', function(){
-                                // gather values and POST to save_pending then request_edit
-                                const fd = new FormData();
-                                fd.append('action','save_pending');
-                                fd.append('date','<?php echo $date; ?>');
-                                fd.append('status', statusSelect ? statusSelect.value : '');
-                                fd.append('notes', notesField ? notesField.value : '');
-                                fd.append('personal_note', personalNote ? personalNote.value : '');
-                                // capture current time-log form values as pending time log (single entry from the quick form)
-                                try {
-                                    var pendingLogs = [];
-                                    var proj = document.querySelector('#logProductionHoursForm select[name="project_id"]');
-                                    if (proj) {
-                                        var entry = {
-                                            project_id: proj.value || null,
-                                            task_type: document.querySelector('#logProductionHoursForm select[name="task_type"]')?.value || null,
-                                            page_ids: Array.from(document.querySelectorAll('#productionPageSelect option:checked')).map(o => o.value).filter(Boolean),
-                                            environment_ids: Array.from(document.querySelectorAll('#productionEnvSelect option:checked')).map(o => o.value).filter(Boolean),
-                                            testing_type: document.querySelector('#testingTypeSelect')?.value || null,
-                                            issue_id: document.querySelector('#productionIssueSelect')?.value || null,
-                                            hours: document.getElementById('logHoursInput') ? document.getElementById('logHoursInput').value : null,
-                                            description: document.getElementById('logDescriptionInput') ? document.getElementById('logDescriptionInput').value : null,
-                                            is_utilized: document.querySelector('#logProductionHoursForm input[name="is_utilized"]') ? (document.querySelector('#logProductionHoursForm input[name="is_utilized"]').checked ? 1 : 0) : 1
-                                        };
-                                        pendingLogs.push(entry);
-                                    }
-                                    fd.append('pending_time_logs', JSON.stringify(pendingLogs));
-                                } catch (e) { fd.append('pending_time_logs', '[]'); }
-
-                                saveBtn.disabled = true;
-                                saveBtn.textContent = 'Saving...';
-
-                                fetch(window.location.pathname + '?action=save_pending', {method:'POST', body: fd})
-                                .then(r => r.json())
-                                .then(resp => {
-                                    if (resp.success) {
-                                        // Now request admin approval
-                                        const fd2 = new FormData();
-                                        fd2.append('action','request_edit');
-                                        fd2.append('date','<?php echo $date; ?>');
-                                        fd2.append('reason','User requested edit via calendar');
-                                        return fetch(window.location.pathname + '?action=request_edit', {method:'POST', body: fd2});
-                                    } else {
-                                        throw new Error(resp.error || 'Failed to save pending');
-                                    }
-                                })
-                                .then(r => r.json())
-                                .then(resp2 => {
-                                    if (resp2.success) {
-                                            // Show confirmation and mark readonly
-                                            showToast('Edit request submitted to admins. You will be notified when approved.', 'success');
-                                            setEditable(false);
-                                            // show pending message
-                                            location.reload();
-                                        } else {
-                                            throw new Error(resp2.error || 'Failed to request edit');
-                                        }
-                                })
-                                .catch(err => {
-                                    showToast('Error: ' + (err.message || 'unknown'), 'danger');
-                                })
-                                .finally(()=>{
-                                    saveBtn.disabled = false;
-                                    saveBtn.textContent = 'Save & Request Edit';
-                                });
-                            });
-                        }
-                    })();
-                    </script>
                 </div>
             </div>
 
@@ -2181,1033 +2232,5 @@ include __DIR__ . '/../includes/header.php';
 </div>
 
 <?php include __DIR__ . '/../includes/footer.php'; ?>
-<script>
-document.addEventListener('DOMContentLoaded', function(){
-    // Production hours form handling
-    var productionProjectSelect = document.querySelector('#logProductionHoursForm select[name="project_id"]');
-    var taskTypeSelect = document.getElementById('taskTypeSelect');
-    var pageTestingContainer = document.getElementById('pageTestingContainer');
-    var projectPhaseContainer = document.getElementById('projectPhaseContainer');
-    var genericTaskContainer = document.getElementById('genericTaskContainer');
-    var regressionContainer = document.getElementById('regressionContainer');
-    
-    var productionPageSelect = document.getElementById('productionPageSelect');
-    var productionEnvSelect = document.getElementById('productionEnvSelect');
-    var productionIssueSelect = document.getElementById('productionIssueSelect');
-    var projectPhaseSelect = document.getElementById('projectPhaseSelect');
-    var genericCategorySelect = document.getElementById('genericCategorySelect');
-    var testingTypeSelect = document.getElementById('testingTypeSelect');
-    
-    var productionDescInput = document.querySelector('#logProductionHoursForm input[name="description"]');
+<script src="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/assets/js/my-daily-status.js?v=<?php echo filemtime(__DIR__ . '/../assets/js/my-daily-status.js'); ?>"></script>
 
-    // Bench hours form handling
-    var benchActivitySelect = document.querySelector('#logBenchHoursForm select[name="bench_activity"]');
-    var benchDescInput = document.querySelector('#logBenchHoursForm input[name="description"]');
-
-    function clearSelect(sel) {
-        if (sel) {
-            sel.innerHTML = '<option value="">Select</option>';
-        }
-    }
-
-    function hideAllTaskContainers() {
-        pageTestingContainer.style.display = 'none';
-        projectPhaseContainer.style.display = 'none';
-        genericTaskContainer.style.display = 'none';
-        if (regressionContainer) regressionContainer.style.display = 'none';
-    }
-
-    // Task type selection
-    if (taskTypeSelect) {
-        taskTypeSelect.addEventListener('change', function(){
-            var taskType = this.value;
-            var projectId = productionProjectSelect ? productionProjectSelect.value : '';
-            
-            hideAllTaskContainers();
-            
-            if (!projectId) {
-                showToast('Please select a project first', 'warning');
-                return;
-            }
-            
-            switch(taskType) {
-                case 'page_testing':
-                case 'page_qa':
-                    pageTestingContainer.style.display = 'block';
-                    loadProjectPages();
-                    break;
-                case 'regression_testing':
-                    regressionContainer.style.display = 'block';
-                    loadRegressionSummary();
-                    break;
-                case 'project_phase':
-                    projectPhaseContainer.style.display = 'block';
-                    loadProjectPhases();
-                    break;
-                case 'generic_task':
-                    genericTaskContainer.style.display = 'block';
-                    loadGenericCategories();
-                    break;
-            }
-        });
-    }
-
-    // Production project selection
-    if (productionProjectSelect) {
-        productionProjectSelect.addEventListener('change', function(){
-            var projectId = this.value;
-            var taskType = taskTypeSelect ? taskTypeSelect.value : '';
-            
-            clearSelect(productionPageSelect);
-            clearSelect(productionEnvSelect);
-            clearSelect(projectPhaseSelect);
-            
-            if (!projectId) {
-                hideAllTaskContainers();
-                return;
-            }
-            
-            // Show appropriate container based on selected task type
-            if (taskType === 'page_testing' || taskType === 'page_qa') {
-                pageTestingContainer.style.display = 'block';
-                loadProjectPages();
-            } else if (taskType === 'regression_testing') {
-                regressionContainer.style.display = 'block';
-                loadRegressionSummary();
-            } else if (taskType === 'project_phase') {
-                projectPhaseContainer.style.display = 'block';
-                loadProjectPhases();
-            } else if (taskType === 'generic_task') {
-                genericTaskContainer.style.display = 'block';
-                loadGenericCategories();
-            }
-        });
-    }
-
-    function loadProjectPages() {
-        var projectId = productionProjectSelect ? productionProjectSelect.value : '';
-        if (!projectId) return;
-        
-        // Show loading message
-        productionPageSelect.innerHTML = '<option value="">Loading pages...</option>';
-        
-        fetch('<?php echo $baseDir; ?>/api/tasks.php?project_id=' + encodeURIComponent(projectId), {
-            credentials: 'same-origin',
-            headers: {
-                'Accept': 'application/json',
-                'Content-Type': 'application/json'
-            }
-        })
-        .then(r => {
-            if (!r.ok) {
-                throw new Error('HTTP ' + r.status + ': ' + r.statusText);
-            }
-            return r.json();
-        })
-        .then(function(pages){
-            productionPageSelect.innerHTML = '';
-            if (pages && Array.isArray(pages) && pages.length > 0) {
-                pages.forEach(function(pg){
-                    var opt = document.createElement('option');
-                    opt.value = pg.id;
-                    // Show only page name, not tester names
-                    opt.textContent = pg.page_name || pg.title || pg.url || ('Page ' + pg.id);
-                    productionPageSelect.appendChild(opt);
-                });
-            } else if (pages && pages.error) {
-                var opt = document.createElement('option');
-                opt.value = '';
-                opt.textContent = 'Error: ' + pages.error;
-                productionPageSelect.appendChild(opt);
-            } else {
-                var opt = document.createElement('option');
-                opt.value = '';
-                opt.textContent = 'No pages found for this project';
-                productionPageSelect.appendChild(opt);
-            }
-        }).catch(function(error){ 
-            productionPageSelect.innerHTML = '<option value="">Error: ' + error.message + '</option>';
-        });
-    }
-
-    function loadProjectPhases() {
-        var projectId = productionProjectSelect ? productionProjectSelect.value : '';
-        if (!projectId) return;
-        function formatPhaseLabel(raw) {
-            var txt = String(raw || '').trim();
-            if (!txt) return '';
-            var known = {
-                'po_received': 'PO received',
-                'scoping_confirmation': 'Scoping confirmation',
-                'testing': 'Testing',
-                'regression': 'Regression',
-                'training': 'Training',
-                'vpat_acr': 'VPAT ACR'
-            };
-            if (known[txt]) return known[txt];
-            return txt
-                .replace(/[_-]+/g, ' ')
-                .split(/\s+/)
-                .map(function (w) {
-                    var lw = w.toLowerCase();
-                    if (lw === 'po') return 'PO';
-                    if (lw === 'qa') return 'QA';
-                    if (lw === 'uat') return 'UAT';
-                    if (lw === 'ui') return 'UI';
-                    if (lw === 'ux') return 'UX';
-                    if (lw === 'vpat') return 'VPAT';
-                    if (lw === 'acr') return 'ACR';
-                    return lw.charAt(0).toUpperCase() + lw.slice(1);
-                })
-                .join(' ');
-        }
-        
-        // Show loading message
-        projectPhaseSelect.innerHTML = '<option value="">Loading phases...</option>';
-        
-        fetch('<?php echo $baseDir; ?>/api/projects.php?action=get_phases&project_id=' + encodeURIComponent(projectId), {
-            credentials: 'same-origin',
-            headers: {
-                'Accept': 'application/json',
-                'Content-Type': 'application/json'
-            }
-        })
-        .then(function(res){
-            return res.text().then(function(txt){
-                if (!res.ok) throw new Error('HTTP ' + res.status + ': ' + txt);
-                try {
-                    return JSON.parse(txt);
-                } catch (e) {
-                    throw new Error('Invalid JSON response: ' + (txt.length > 500 ? txt.slice(0,500) + '...' : txt));
-                }
-            });
-        })
-        .then(function(phases){
-            projectPhaseSelect.innerHTML = '<option value="">Select project phase</option>';
-                if (phases && Array.isArray(phases) && phases.length > 0) {
-                phases.forEach(function(phase){
-                    var opt = document.createElement('option');
-                    opt.value = phase.id;
-                    var displayName = formatPhaseLabel(phase.phase_name || phase.name || phase.id);
-                    opt.textContent = displayName + ' (' + (phase.actual_hours || 0) + '/' + (phase.planned_hours || 0) + ' hrs)';
-                    projectPhaseSelect.appendChild(opt);
-                });
-            } else if (phases && phases.error) {
-                var opt = document.createElement('option');
-                opt.value = '';
-                opt.textContent = 'Error: ' + phases.error;
-                projectPhaseSelect.appendChild(opt);
-            } else {
-                var opt = document.createElement('option');
-                opt.value = '';
-                opt.textContent = 'No phases found for this project';
-                projectPhaseSelect.appendChild(opt);
-            }
-        }).catch(function(error){ 
-            projectPhaseSelect.innerHTML = '<option value="">Error: ' + (error.message || 'Unknown') + '</option>';
-        });
-    }
-
-    function loadRegressionSummary() {
-        function escapeHtml(s){ if(!s) return ''; return String(s).replace(/[&"'<>]/g, function (m) { return ({'&':'&amp;','"':'&quot;','\'':'&#39;','<':'&lt;','>':'&gt;'}[m]); }); }
-        var projectId = productionProjectSelect ? productionProjectSelect.value : '';
-        var container = document.getElementById('regressionSummary');
-        if (!container) return;
-        if (!projectId) { container.textContent = 'Select a project to view regression summary'; return; }
-        container.textContent = 'Loading...';
-        fetch('<?php echo $baseDir; ?>/api/regression_actions.php?action=get_stats&project_id=' + encodeURIComponent(projectId), { credentials: 'same-origin' })
-            .then(r => r.json())
-            .then(function(json){
-                if (!json || !json.success) {
-                    container.textContent = 'Error loading regression summary';
-                    return;
-                }
-                var s = json || {};
-                var total = s.issues_total || 0;
-                var statusCounts = s.status_counts || {};
-                var attemptedTotal = s.attempted_issues_total || 0;
-                var attemptedStatus = s.attempted_status_counts || {};
-
-                var html = '<div><strong>Total issues:</strong> ' + total + '</div>';
-                html += '<div><strong>Attempted during regression:</strong> ' + attemptedTotal + '</div>';
-                html += '<div class="mt-1"><strong>Attempted status breakdown:</strong><br/>';
-                if (Object.keys(attemptedStatus).length === 0) {
-                    html += '<small class="text-muted">No attempted issues logged yet</small>';
-                } else {
-                    for (var k in attemptedStatus) {
-                        html += '<div>' + k + ': ' + attemptedStatus[k] + '</div>';
-                    }
-                }
-                html += '</div>';
-
-                // also show regression task status counts
-                html += '<div class="mt-2"><strong>Regression tasks:</strong><br/>';
-                if (Object.keys(statusCounts).length === 0) html += '<small class="text-muted">No regression tasks</small>'; else {
-                    for (var st in statusCounts) {
-                        html += '<div>' + st + ': ' + statusCounts[st] + '</div>';
-                    }
-                }
-                html += '</div>';
-
-                // per-user attempted issues (if available)
-                var attemptsByUser = s.attempts_by_user || {};
-                var userCounts = s.user_counts || [];
-                var userMap = {};
-                userCounts.forEach(function(u){ userMap[u.id] = u.full_name || ('User '+u.id); });
-                html += '<div class="mt-2"><strong>Attempts by user:</strong><br/>';
-                if (Object.keys(attemptsByUser).length === 0) {
-                    html += '<small class="text-muted">No attempts recorded</small>';
-                } else {
-                    for (var uid in attemptsByUser) {
-                        var issues = attemptsByUser[uid] || [];
-                        var uname = userMap[uid] || (uid === '0' ? 'System' : ('User '+uid));
-                        html += '<div class="mt-1"><strong>' + escapeHtml(uname) + '</strong> — ' + issues.length + ' issue(s)';
-                        html += '<div class="ms-3">';
-                        issues.forEach(function(it){
-                            html += '<div><strong>' + escapeHtml(it.issue_key || ('#'+it.issue_id)) + '</strong> — ' + escapeHtml(it.last_status || '') + ' <small class="text-muted">' + escapeHtml(it.last_changed_at || '') + '</small></div>';
-                        });
-                        html += '</div></div>';
-                    }
-                }
-                html += '</div>';
-
-                container.innerHTML = html;
-            }).catch(function(){ container.textContent = 'Error loading regression summary'; });
-    }
-
-    function loadGenericCategories() {
-        // Show loading message
-        genericCategorySelect.innerHTML = '<option value="">Loading categories...</option>';
-        
-        fetch('<?php echo $baseDir; ?>/api/generic_tasks.php?action=get_categories', {
-            credentials: 'same-origin',
-            headers: {
-                'Accept': 'application/json',
-                'Content-Type': 'application/json'
-            }
-        })
-        .then(r => {
-            if (!r.ok) {
-                throw new Error('HTTP ' + r.status + ': ' + r.statusText);
-            }
-            return r.json();
-        })
-        .then(function(categories){
-            genericCategorySelect.innerHTML = '<option value="">Select category</option>';
-            if (categories && Array.isArray(categories) && categories.length > 0) {
-                categories.forEach(function(cat){
-                    var opt = document.createElement('option');
-                    opt.value = cat.id;
-                    opt.textContent = cat.name + (cat.description ? ' - ' + cat.description : '');
-                    genericCategorySelect.appendChild(opt);
-                });
-            } else if (categories && categories.error) {
-                var opt = document.createElement('option');
-                opt.value = '';
-                opt.textContent = 'Error: ' + categories.error;
-                genericCategorySelect.appendChild(opt);
-            } else {
-                var opt = document.createElement('option');
-                opt.value = '';
-                opt.textContent = 'No categories found';
-                genericCategorySelect.appendChild(opt);
-            }
-        }).catch(function(error){ 
-            genericCategorySelect.innerHTML = '<option value="">Error: ' + error.message + '</option>';
-        });
-    }
-
-    // Production page selection (multiple pages)
-    if (productionPageSelect) {
-        productionPageSelect.addEventListener('change', function(){
-            var selectedPages = Array.from(this.selectedOptions).map(option => option.value).filter(val => val !== '');
-            clearSelect(productionEnvSelect);
-            
-            if (selectedPages.length === 0) return;
-            
-            // If multiple pages selected, load environments from the first page
-            // (or we could load environments common to all selected pages)
-            var firstPageId = selectedPages[0];
-            
-            fetch('<?php echo $baseDir; ?>/api/tasks.php?page_id=' + encodeURIComponent(firstPageId), {credentials: 'same-origin'})
-                .then(r => r.json())
-                .then(function(page){
-                    productionEnvSelect.innerHTML = '';
-                    if (page.environments && page.environments.length > 0) {
-                        page.environments.forEach(function(env){
-                            var opt = document.createElement('option');
-                            opt.value = env.id;
-                            opt.textContent = env.name + (env.status ? ' ('+env.status+')' : '');
-                            productionEnvSelect.appendChild(opt);
-                        });
-                    } else {
-                        var opt = document.createElement('option');
-                        opt.value = '';
-                        opt.textContent = 'No environments found';
-                        productionEnvSelect.appendChild(opt);
-                    }
-                    
-                    // Pre-fill description with page names for convenience
-                    if (productionDescInput && (!productionDescInput.value || productionDescInput.value.trim() === '')) {
-                        if (selectedPages.length === 1) {
-                            productionDescInput.value = page.page_name || page.title || '';
-                        } else {
-                            productionDescInput.value = 'Multiple pages testing';
-                        }
-                    }
-                    // Load issues if regression selected
-                    if (testingTypeSelect && testingTypeSelect.value === 'regression') {
-                        loadProjectIssues(productionProjectSelect.value, firstPageId);
-                        var issueCont = document.getElementById('productionIssueContainer');
-                        if (issueCont) issueCont.style.display = 'block';
-                    } else {
-                        var issueCont = document.getElementById('productionIssueContainer');
-                        if (issueCont) issueCont.style.display = 'none';
-                    }
-                    // If regression testing type selected, load issues for this page
-                    if (testingTypeSelect && testingTypeSelect.value === 'regression') {
-                        loadProjectIssues(projectId, pageId);
-                    }
-                }).catch(function(error){ 
-                    productionEnvSelect.innerHTML = '<option value="">Error loading environments</option>';
-                });
-        });
-
-    function loadProjectIssues(projectId, pageId) {
-        if (!projectId) return;
-        if (!productionIssueSelect) return;
-        productionIssueSelect.innerHTML = '<option value="">Issues subsystem disabled</option>';
-        fetch('<?php echo $baseDir; ?>/api/regression_actions.php?action=get_project_issues&project_id=' + encodeURIComponent(projectId) + (pageId ? '&page_id='+encodeURIComponent(pageId) : ''), {credentials: 'same-origin'})
-            .then(r => r.json())
-            .then(function(data){
-                productionIssueSelect.innerHTML = '<option value="">Select issue (optional)</option>';
-                if (data && data.issues && Array.isArray(data.issues)) {
-                    data.issues.forEach(function(it){
-                        var opt = document.createElement('option');
-                        opt.value = it.id;
-                        opt.textContent = (it.issue_key ? (it.issue_key + ' - ') : '') + (it.title || ('Issue ' + it.id));
-                        productionIssueSelect.appendChild(opt);
-                    });
-                }
-            }).catch(function(){
-                productionIssueSelect.innerHTML = '<option value="">Issues subsystem disabled</option>';
-            });
-    }
-    }
-
-    // Bench activity selection
-    if (benchActivitySelect) {
-        benchActivitySelect.addEventListener('change', function(){
-            var activity = this.value;
-            if (benchDescInput && (!benchDescInput.value || benchDescInput.value.trim() === '')) {
-                // Pre-fill description based on activity type
-                var descriptions = {
-                    'training': 'Training session on ',
-                    'learning': 'Learning/Research on ',
-                    'documentation': 'Documentation work on ',
-                    'meetings': 'Meeting: ',
-                    'admin': 'Administrative task: ',
-                    'waiting': 'Waiting for assignment',
-                    'other': 'Other activity: '
-                };
-                benchDescInput.value = descriptions[activity] || '';
-            }
-        });
-    }
-
-    // Show/hide issue selector when testing type changes
-    if (testingTypeSelect) {
-        testingTypeSelect.addEventListener('change', function(){
-            var v = this.value;
-            var issueCont = document.getElementById('productionIssueContainer');
-            if (v === 'regression') {
-                if (issueCont) issueCont.style.display = 'block';
-                // Load issues for first selected page (if any)
-                var firstPage = productionPageSelect && productionPageSelect.selectedOptions && productionPageSelect.selectedOptions.length ? productionPageSelect.selectedOptions[0].value : null;
-                loadProjectIssues(productionProjectSelect.value, firstPage);
-            } else {
-                if (issueCont) issueCont.style.display = 'none';
-            }
-        });
-    }
-
-    function ensureLogPreviewModal() {
-        var existing = document.getElementById('logPreviewModal');
-        if (existing) return existing;
-        var wrap = document.createElement('div');
-        wrap.innerHTML = '' +
-            '<div class="modal fade" id="logPreviewModal" tabindex="-1" aria-hidden="true">' +
-            '  <div class="modal-dialog modal-dialog-centered">' +
-            '    <div class="modal-content">' +
-            '      <div class="modal-header">' +
-            '        <h5 class="modal-title">Confirm Log Submission</h5>' +
-            '        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>' +
-            '      </div>' +
-            '      <div class="modal-body">' +
-            '        <div id="logPreviewBody" class="small"></div>' +
-            '      </div>' +
-            '      <div class="modal-footer">' +
-            '        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>' +
-            '        <button type="button" class="btn btn-primary" id="logPreviewConfirmBtn">Confirm & Submit</button>' +
-            '      </div>' +
-            '    </div>' +
-            '  </div>' +
-            '</div>';
-        document.body.appendChild(wrap.firstChild);
-        return document.getElementById('logPreviewModal');
-    }
-
-    function escapeHtml(val) {
-        if (val === null || val === undefined) return '';
-        return String(val)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#39;');
-    }
-
-    function getSelectedText(form, selector, multiple) {
-        var el = form.querySelector(selector);
-        if (!el) return '';
-        if (multiple) {
-            var vals = Array.from(el.selectedOptions || []).map(function (o) { return o.textContent.trim(); }).filter(Boolean);
-            return vals.join(', ');
-        }
-        var opt = el.options && el.selectedIndex >= 0 ? el.options[el.selectedIndex] : null;
-        return opt ? opt.textContent.trim() : '';
-    }
-
-    function rowHtml(label, value) {
-        return '<tr><th class="pe-3 text-nowrap">' + escapeHtml(label) + '</th><td>' + escapeHtml(value || '-') + '</td></tr>';
-    }
-
-    function buildProductionPreview(form) {
-        var taskType = getSelectedText(form, 'select[name=\"task_type\"]', false);
-        var taskTypeValue = form.querySelector('select[name=\"task_type\"]')?.value || '';
-        
-        var html = '<table class="table table-sm mb-0"><tbody>';
-        html += rowHtml('Section', 'Log Production Hours');
-        html += rowHtml('Project', getSelectedText(form, 'select[name=\"project_id\"]', false));
-        html += rowHtml('Task Type', taskType);
-        
-        // Show fields based on task type
-        if (taskTypeValue === 'page_testing' || taskTypeValue === 'page_qa' || taskTypeValue === 'regression_testing') {
-            var pages = getSelectedText(form, '#productionPageSelect', true);
-            if (pages) html += rowHtml('Page/Screen', pages);
-            var envs = getSelectedText(form, '#productionEnvSelect', true);
-            if (envs) html += rowHtml('Environments', envs);
-            var testingType = getSelectedText(form, '#testingTypeSelect', false);
-            if (testingType) html += rowHtml('Testing Type', testingType);
-            var issueText = getSelectedText(form, '#productionIssueSelect', false);
-            if (issueText) html += rowHtml('Issue', issueText);
-        } else if (taskTypeValue === 'project_phase') {
-            var phaseText = getSelectedText(form, '#projectPhaseSelect', false);
-            if (phaseText) html += rowHtml('Project Phase', phaseText);
-            var phaseActivity = getSelectedText(form, 'select[name=\"phase_activity\"]', false);
-            if (phaseActivity) html += rowHtml('Phase Activity', phaseActivity);
-        } else if (taskTypeValue === 'generic_task') {
-            var genericCat = getSelectedText(form, '#genericCategorySelect', false);
-            if (genericCat) html += rowHtml('Task Category', genericCat);
-            var genericDetailEl = form.querySelector('input[name=\"generic_task_detail\"]');
-            if (genericDetailEl && genericDetailEl.value.trim()) html += rowHtml('Task Details', genericDetailEl.value.trim());
-        }
-        
-        var hoursEl = form.querySelector('input[name=\"hours_spent\"]');
-        html += rowHtml('Hours', hoursEl ? hoursEl.value : '');
-        var descEl = form.querySelector('input[name=\"description\"]');
-        html += rowHtml('Description', descEl ? descEl.value : '');
-        html += '</tbody></table>';
-        return html;
-    }
-
-    function buildBenchPreview(form) {
-        var html = '<table class="table table-sm mb-0"><tbody>';
-        html += rowHtml('Section', 'Log Off-Production/Bench Hours');
-        html += rowHtml('Activity Type', getSelectedText(form, 'select[name=\"bench_activity\"]', false));
-        var hoursEl = form.querySelector('input[name=\"hours_spent\"]');
-        html += rowHtml('Hours', hoursEl ? hoursEl.value : '');
-        var descEl = form.querySelector('input[name=\"description\"]');
-        html += rowHtml('Description', descEl ? descEl.value : '');
-        html += '</tbody></table>';
-        return html;
-    }
-
-    function setupLogPreview(form, mode) {
-        if (!form) return;
-        form.addEventListener('submit', function (e) {
-            if (form.dataset.previewApproved === '1') {
-                form.dataset.previewApproved = '';
-                return;
-            }
-            if (!form.checkValidity()) {
-                return;
-            }
-            e.preventDefault();
-            var modalEl = ensureLogPreviewModal();
-            var bodyEl = document.getElementById('logPreviewBody');
-            var confirmBtn = document.getElementById('logPreviewConfirmBtn');
-            if (!modalEl || !bodyEl || !confirmBtn) {
-                form.dataset.previewApproved = '1';
-                if (typeof form.requestSubmit === 'function') form.requestSubmit();
-                else form.submit();
-                return;
-            }
-            bodyEl.innerHTML = mode === 'bench' ? buildBenchPreview(form) : buildProductionPreview(form);
-            confirmBtn.disabled = false;
-            confirmBtn.onclick = function () {
-                confirmBtn.disabled = true;
-                form.dataset.previewApproved = '1';
-                try {
-                    var inst = bootstrap.Modal.getOrCreateInstance(modalEl);
-                    inst.hide();
-                } catch (err) {}
-                if (typeof form.requestSubmit === 'function') form.requestSubmit();
-                else form.submit();
-            };
-            try {
-                bootstrap.Modal.getOrCreateInstance(modalEl).show();
-            } catch (err) {
-                form.dataset.previewApproved = '1';
-                if (typeof form.requestSubmit === 'function') form.requestSubmit();
-                else form.submit();
-            }
-        });
-    }
-
-    setupLogPreview(document.getElementById('logProductionHoursForm'), 'production');
-    setupLogPreview(document.getElementById('logBenchHoursForm'), 'bench');
-});
-</script>
-
-<script>
-var reqEditProjects = <?php
-echo json_encode(
-    array_values(array_map(static function ($p) {
-        return [
-            'id' => (int)($p['id'] ?? 0),
-            'title' => (string)($p['title'] ?? '')
-        ];
-    }, $assignedProjects ?? [])),
-    JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT
-);
-?>;
-
-function handleDeleteLog(logId, dateStr) {
-    var isAdmin = <?php echo $isAdmin ? 'true' : 'false'; ?>;
-    var todayStr = '<?php echo date('Y-m-d'); ?>';
-    var isToday = String(dateStr || '') === todayStr;
-    var directDelete = isAdmin || isToday;
-    var msg = directDelete
-        ? 'Delete this log?'
-        : 'Log deletion requires admin approval. A request will be sent to admin. Do you still want to delete?';
-    confirmModal(msg, function() {
-        var key = directDelete ? 'delete_log' : 'delete_log_request';
-        window.location.href = '?date=' + encodeURIComponent(dateStr) + '&' + key + '=' + encodeURIComponent(logId);
-    }, {
-        title: directDelete ? 'Delete Log' : 'Request Deletion Approval',
-        confirmText: directDelete ? 'Delete' : 'Send Request',
-        confirmClass: directDelete ? 'btn-danger' : 'btn-primary'
-    });
-    return false;
-}
-
-function ensureEditRequestModal() {
-    var existing = document.getElementById('logEditRequestModal');
-    if (existing) return existing;
-    var wrap = document.createElement('div');
-    wrap.innerHTML = '' +
-        '<div class="modal fade" id="logEditRequestModal" tabindex="-1" aria-hidden="true">' +
-        '  <div class="modal-dialog modal-lg modal-dialog-scrollable">' +
-        '    <div class="modal-content">' +
-        '      <div class="modal-header">' +
-        '        <h5 class="modal-title">Request Log Edit Approval</h5>' +
-        '        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>' +
-        '      </div>' +
-        '      <div class="modal-body">' +
-        '        <div class="row g-2">' +
-        '          <div class="col-md-6"><label class="form-label">Project</label><select class="form-select" id="reqEditProject"></select></div>' +
-        '          <div class="col-md-6"><label class="form-label">Task Type</label><select class="form-select" id="reqEditTaskType"><option value="">Select Task Type</option><option value="page_testing">Page Testing</option><option value="page_qa">Page QA</option><option value="regression_testing">Regression Testing</option><option value="project_phase">Project Phase</option><option value="generic_task">Generic Task</option><option value="other">Other</option></select></div>' +
-        '          <div class="col-12" id="reqEditPageTestingWrap" style="display:none;"><div class="row g-2"><div class="col-md-4"><label class="form-label">Page/Screen</label><select class="form-select" id="reqEditPage"></select></div><div class="col-md-4"><label class="form-label">Environment</label><select class="form-select" id="reqEditEnvironment"></select></div><div class="col-md-4"><label class="form-label">Testing Type</label><select class="form-select" id="reqEditTestingType"><option value="at_testing">AT Testing</option><option value="ft_testing">FT Testing</option><option value="regression">Regression</option></select></div><div class="col-md-6" id="reqEditIssueWrap" style="display:none;"><label class="form-label">Issue (optional)</label><select class="form-select" id="reqEditIssue"></select></div></div></div>' +
-        '          <div class="col-12" id="reqEditPhaseWrap" style="display:none;"><div class="row g-2"><div class="col-md-6"><label class="form-label">Project Phase</label><select class="form-select" id="reqEditPhase"></select></div><div class="col-md-6"><label class="form-label">Phase Activity</label><select class="form-select" id="reqEditPhaseActivity"><option value="scoping">Scoping & Analysis</option><option value="setup">Setup & Configuration</option><option value="testing">Testing Activities</option><option value="review">Review & Documentation</option><option value="training">Training & Knowledge Transfer</option><option value="reporting">Reporting & VPAT</option></select></div></div></div>' +
-        '          <div class="col-12" id="reqEditGenericWrap" style="display:none;"><div class="row g-2"><div class="col-md-6"><label class="form-label">Task Category</label><select class="form-select" id="reqEditGenericCategory"></select></div><div class="col-md-6"><label class="form-label">Task Details</label><input type="text" class="form-control" id="reqEditGenericDetail" placeholder="Specific task details"></div></div></div>' +
-        '          <div class="col-md-4"><label class="form-label">Hours</label><input type="number" step="0.01" min="0.01" max="24" class="form-control" id="reqEditHours"></div>' +
-        '          <div class="col-md-8"><label class="form-label">Description</label><input type="text" class="form-control" id="reqEditDesc"></div>' +
-        '          <div class="col-12"><div class="small text-muted">Admin approval is required. This will send an edit request.</div></div>' +
-        '        </div>' +
-        '      </div>' +
-        '      <div class="modal-footer">' +
-        '        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>' +
-        '        <button type="button" class="btn btn-primary" id="reqEditSubmitBtn">Send Request</button>' +
-        '      </div>' +
-        '    </div>' +
-        '  </div>' +
-        '</div>';
-    document.body.appendChild(wrap.firstChild);
-    return document.getElementById('logEditRequestModal');
-}
-
-function reqEditClearSelect(sel, placeholder) {
-    if (!sel) return;
-    sel.innerHTML = '<option value="">' + (placeholder || 'Select') + '</option>';
-}
-
-function reqEditSetTaskContainers(taskType) {
-    var pageWrap = document.getElementById('reqEditPageTestingWrap');
-    var phaseWrap = document.getElementById('reqEditPhaseWrap');
-    var genericWrap = document.getElementById('reqEditGenericWrap');
-    if (pageWrap) pageWrap.style.display = (taskType === 'page_testing' || taskType === 'page_qa' || taskType === 'regression_testing') ? 'block' : 'none';
-    if (phaseWrap) phaseWrap.style.display = taskType === 'project_phase' ? 'block' : 'none';
-    if (genericWrap) genericWrap.style.display = taskType === 'generic_task' ? 'block' : 'none';
-}
-
-function reqEditFillProjectOptions(selectedProjectId) {
-    var projectSel = document.getElementById('reqEditProject');
-    if (!projectSel) return;
-    projectSel.innerHTML = '';
-    var hadOption = false;
-
-    if (Array.isArray(reqEditProjects) && reqEditProjects.length > 0) {
-        var placeholder = document.createElement('option');
-        placeholder.value = '';
-        placeholder.textContent = 'Select Project';
-        projectSel.appendChild(placeholder);
-        reqEditProjects.forEach(function (p) {
-            if (!p || !p.id) return;
-            var opt = document.createElement('option');
-            opt.value = String(p.id);
-            opt.textContent = p.title || ('Project #' + p.id);
-            projectSel.appendChild(opt);
-            if (String(p.id) === String(selectedProjectId || '')) {
-                hadOption = true;
-            }
-        });
-    } else {
-        var srcSel = document.querySelector('#logProductionHoursForm select[name="project_id"]');
-        if (!srcSel) return;
-        Array.prototype.forEach.call(srcSel.options, function (opt) {
-            var clone = document.createElement('option');
-            clone.value = opt.value;
-            clone.textContent = opt.textContent;
-            projectSel.appendChild(clone);
-            if (String(opt.value || '') === String(selectedProjectId || '')) {
-                hadOption = true;
-            }
-        });
-    }
-
-    if (selectedProjectId && !hadOption) {
-        var clone = document.createElement('option');
-        clone.value = String(selectedProjectId);
-        clone.textContent = 'Project #' + selectedProjectId;
-        projectSel.appendChild(clone);
-    }
-
-    projectSel.value = String(selectedProjectId || '');
-}
-
-function reqEditLoadPages(projectId, selectedPageId) {
-    var pageSel = document.getElementById('reqEditPage');
-    if (!pageSel || !projectId) return Promise.resolve();
-    pageSel.innerHTML = '<option value="">Loading pages...</option>';
-    return fetch('<?php echo $baseDir; ?>/api/tasks.php?project_id=' + encodeURIComponent(projectId), { credentials: 'same-origin' })
-        .then(function (r) { return r.json(); })
-        .then(function (pages) {
-            reqEditClearSelect(pageSel, 'Select page');
-            if (Array.isArray(pages)) {
-                pages.forEach(function (pg) {
-                    var opt = document.createElement('option');
-                    opt.value = pg.id;
-                    opt.textContent = pg.page_name || pg.title || pg.url || ('Page ' + pg.id);
-                    pageSel.appendChild(opt);
-                });
-            }
-            if (selectedPageId !== null && selectedPageId !== undefined && selectedPageId !== '') {
-                pageSel.value = String(selectedPageId);
-            }
-        })
-        .catch(function () { reqEditClearSelect(pageSel, 'No pages'); });
-}
-
-function reqEditLoadEnvironments(pageId, selectedEnvId) {
-    var envSel = document.getElementById('reqEditEnvironment');
-    if (!envSel || !pageId) {
-        reqEditClearSelect(envSel, 'Select environment');
-        return Promise.resolve();
-    }
-    envSel.innerHTML = '<option value="">Loading environments...</option>';
-    return fetch('<?php echo $baseDir; ?>/api/tasks.php?page_id=' + encodeURIComponent(pageId), { credentials: 'same-origin' })
-        .then(function (r) { return r.json(); })
-        .then(function (page) {
-            reqEditClearSelect(envSel, 'Select environment');
-            var envs = (page && page.environments) ? page.environments : [];
-            envs.forEach(function (env) {
-                var opt = document.createElement('option');
-                opt.value = env.id;
-                opt.textContent = env.name || ('Env ' + env.id);
-                envSel.appendChild(opt);
-            });
-            if (selectedEnvId !== null && selectedEnvId !== undefined && selectedEnvId !== '') {
-                envSel.value = String(selectedEnvId);
-            }
-        })
-        .catch(function () { reqEditClearSelect(envSel, 'No environments'); });
-}
-
-function reqEditLoadIssues(projectId, pageId, selectedIssueId) {
-    var issueWrap = document.getElementById('reqEditIssueWrap');
-    var issueSel = document.getElementById('reqEditIssue');
-    var testingTypeSel = document.getElementById('reqEditTestingType');
-    if (!issueWrap || !issueSel || !testingTypeSel) return Promise.resolve();
-    if (testingTypeSel.value !== 'regression') {
-        issueWrap.style.display = 'none';
-        reqEditClearSelect(issueSel, 'Select issue (optional)');
-        return Promise.resolve();
-    }
-    issueWrap.style.display = 'block';
-    issueSel.innerHTML = '<option value="">Loading issues...</option>';
-    var url = '<?php echo $baseDir; ?>/api/regression_actions.php?action=get_project_issues&project_id=' + encodeURIComponent(projectId || '');
-    if (pageId) url += '&page_id=' + encodeURIComponent(pageId);
-    return fetch(url, { credentials: 'same-origin' })
-        .then(function (r) { return r.json(); })
-        .then(function (data) {
-            reqEditClearSelect(issueSel, 'Select issue (optional)');
-            if (data && Array.isArray(data.issues)) {
-                data.issues.forEach(function (it) {
-                    var opt = document.createElement('option');
-                    opt.value = it.id;
-                    opt.textContent = (it.issue_key ? (it.issue_key + ' - ') : '') + (it.title || ('Issue ' + it.id));
-                    issueSel.appendChild(opt);
-                });
-            }
-            if (selectedIssueId !== null && selectedIssueId !== undefined && selectedIssueId !== '') {
-                issueSel.value = String(selectedIssueId);
-            }
-        })
-        .catch(function () { reqEditClearSelect(issueSel, 'Select issue (optional)'); });
-}
-
-function reqEditLoadPhases(projectId, selectedPhaseId) {
-    var phaseSel = document.getElementById('reqEditPhase');
-    if (!phaseSel || !projectId) {
-        reqEditClearSelect(phaseSel, 'Select project phase');
-        return Promise.resolve();
-    }
-    phaseSel.innerHTML = '<option value="">Loading phases...</option>';
-    return fetch('<?php echo $baseDir; ?>/api/projects.php?action=get_phases&project_id=' + encodeURIComponent(projectId), { credentials: 'same-origin' })
-        .then(function (r) { return r.text(); })
-        .then(function (txt) {
-            var phases = [];
-            try { phases = JSON.parse(txt); } catch (e) { phases = []; }
-            reqEditClearSelect(phaseSel, 'Select project phase');
-            if (Array.isArray(phases)) {
-                phases.forEach(function (phase) {
-                    var opt = document.createElement('option');
-                    opt.value = phase.id;
-                    opt.textContent = phase.phase_name || phase.name || ('Phase ' + phase.id);
-                    phaseSel.appendChild(opt);
-                });
-            }
-            if (selectedPhaseId !== null && selectedPhaseId !== undefined && selectedPhaseId !== '') {
-                phaseSel.value = String(selectedPhaseId);
-            }
-        })
-        .catch(function () { reqEditClearSelect(phaseSel, 'Select project phase'); });
-}
-
-function reqEditLoadGenericCategories(selectedCategoryId) {
-    var catSel = document.getElementById('reqEditGenericCategory');
-    if (!catSel) return Promise.resolve();
-    catSel.innerHTML = '<option value="">Loading categories...</option>';
-    return fetch('<?php echo $baseDir; ?>/api/generic_tasks.php?action=get_categories', { credentials: 'same-origin' })
-        .then(function (r) { return r.json(); })
-        .then(function (categories) {
-            reqEditClearSelect(catSel, 'Select category');
-            if (Array.isArray(categories)) {
-                categories.forEach(function (cat) {
-                    var opt = document.createElement('option');
-                    opt.value = cat.id;
-                    opt.textContent = cat.name + (cat.description ? (' - ' + cat.description) : '');
-                    catSel.appendChild(opt);
-                });
-            }
-            if (selectedCategoryId !== null && selectedCategoryId !== undefined && selectedCategoryId !== '') {
-                catSel.value = String(selectedCategoryId);
-            }
-        })
-        .catch(function () { reqEditClearSelect(catSel, 'Select category'); });
-}
-
-function reqEditWireEvents() {
-    var modalEl = document.getElementById('logEditRequestModal');
-    if (!modalEl || modalEl.dataset.eventsWired === '1') return;
-    modalEl.dataset.eventsWired = '1';
-
-    var projectSel = document.getElementById('reqEditProject');
-    var taskTypeSel = document.getElementById('reqEditTaskType');
-    var pageSel = document.getElementById('reqEditPage');
-    var testingTypeSel = document.getElementById('reqEditTestingType');
-
-    if (projectSel) {
-        projectSel.addEventListener('change', function () {
-            var projectId = this.value || '';
-            var taskType = taskTypeSel ? taskTypeSel.value : '';
-            if (!projectId) return;
-            if (taskType === 'page_testing' || taskType === 'page_qa' || taskType === 'regression_testing') {
-                reqEditLoadPages(projectId, null);
-                reqEditClearSelect(document.getElementById('reqEditEnvironment'), 'Select environment');
-                reqEditLoadIssues(projectId, null, null);
-            } else if (taskType === 'project_phase') {
-                reqEditLoadPhases(projectId, null);
-            } else if (taskType === 'generic_task') {
-                reqEditLoadGenericCategories(null);
-            }
-        });
-    }
-
-    if (taskTypeSel) {
-        taskTypeSel.addEventListener('change', function () {
-            var taskType = this.value;
-            var projectId = projectSel ? projectSel.value : '';
-            reqEditSetTaskContainers(taskType);
-            if (!projectId) return;
-            if (taskType === 'page_testing' || taskType === 'page_qa' || taskType === 'regression_testing') {
-                reqEditLoadPages(projectId, null);
-                reqEditClearSelect(document.getElementById('reqEditEnvironment'), 'Select environment');
-                reqEditLoadIssues(projectId, null, null);
-            } else if (taskType === 'project_phase') {
-                reqEditLoadPhases(projectId, null);
-            } else if (taskType === 'generic_task') {
-                reqEditLoadGenericCategories(null);
-            }
-        });
-    }
-
-    if (pageSel) {
-        pageSel.addEventListener('change', function () {
-            var pageId = this.value || '';
-            var projectId = projectSel ? projectSel.value : '';
-            reqEditLoadEnvironments(pageId, null);
-            reqEditLoadIssues(projectId, pageId, null);
-        });
-    }
-
-    if (testingTypeSel) {
-        testingTypeSel.addEventListener('change', function () {
-            var projectId = projectSel ? projectSel.value : '';
-            var pageId = pageSel ? pageSel.value : '';
-            reqEditLoadIssues(projectId, pageId, null);
-        });
-    }
-}
-
-function handleEditLogRequest(logId, dateStr, logData) {
-    var isAdmin = <?php echo $isAdmin ? 'true' : 'false'; ?>;
-    if (isAdmin) {
-        showToast('Admins can edit logs from admin tools.', 'info');
-        return false;
-    }
-    var modalEl = ensureEditRequestModal();
-    reqEditWireEvents();
-    var data = logData || {};
-    reqEditFillProjectOptions(data.project_id || '');
-
-    var projectSel = document.getElementById('reqEditProject');
-    var taskTypeSel = document.getElementById('reqEditTaskType');
-    var pageSel = document.getElementById('reqEditPage');
-    var envSel = document.getElementById('reqEditEnvironment');
-    var issueSel = document.getElementById('reqEditIssue');
-    var testingTypeSel = document.getElementById('reqEditTestingType');
-    var phaseSel = document.getElementById('reqEditPhase');
-    var phaseActivitySel = document.getElementById('reqEditPhaseActivity');
-    var genericCategorySel = document.getElementById('reqEditGenericCategory');
-    var genericDetailEl = document.getElementById('reqEditGenericDetail');
-    var hoursEl = document.getElementById('reqEditHours');
-    var descEl = document.getElementById('reqEditDesc');
-    var submitBtn = document.getElementById('reqEditSubmitBtn');
-    if (!modalEl || !projectSel || !taskTypeSel || !hoursEl || !descEl || !submitBtn) return false;
-
-    var rawTaskType = String(data.task_type || 'other');
-    if (rawTaskType === 'regression') rawTaskType = 'regression_testing';
-    taskTypeSel.value = rawTaskType;
-    reqEditSetTaskContainers(rawTaskType);
-
-    if (testingTypeSel) testingTypeSel.value = data.testing_type ? String(data.testing_type) : 'at_testing';
-    if (phaseActivitySel) phaseActivitySel.value = 'testing';
-    hoursEl.value = String(data.hours_spent || '');
-    descEl.value = String(data.description || '');
-    if (genericDetailEl) genericDetailEl.value = '';
-
-    var selectedProjectId = projectSel.value;
-    var selectedPageId = (data.page_id !== null && data.page_id !== undefined) ? data.page_id : null;
-    var selectedEnvId = (data.environment_id !== null && data.environment_id !== undefined) ? data.environment_id : null;
-    var selectedIssueId = (data.issue_id !== null && data.issue_id !== undefined) ? data.issue_id : null;
-    var selectedPhaseId = (data.phase_id !== null && data.phase_id !== undefined) ? data.phase_id : null;
-    var selectedCategoryId = (data.generic_category_id !== null && data.generic_category_id !== undefined) ? data.generic_category_id : null;
-
-    if (selectedProjectId && (rawTaskType === 'page_testing' || rawTaskType === 'page_qa' || rawTaskType === 'regression_testing')) {
-        reqEditLoadPages(selectedProjectId, selectedPageId).then(function () {
-            return reqEditLoadEnvironments(selectedPageId, selectedEnvId);
-        }).then(function () {
-            return reqEditLoadIssues(selectedProjectId, selectedPageId, selectedIssueId);
-        });
-    } else if (selectedProjectId && rawTaskType === 'project_phase') {
-        reqEditLoadPhases(selectedProjectId, selectedPhaseId);
-    } else if (rawTaskType === 'generic_task') {
-        reqEditLoadGenericCategories(selectedCategoryId);
-    } else {
-        reqEditClearSelect(pageSel, 'Select page');
-        reqEditClearSelect(envSel, 'Select environment');
-        reqEditClearSelect(issueSel, 'Select issue (optional)');
-        reqEditClearSelect(phaseSel, 'Select project phase');
-        reqEditClearSelect(genericCategorySel, 'Select category');
-    }
-
-    submitBtn.onclick = function () {
-        var projectId = projectSel.value || '';
-        var taskType = taskTypeSel.value || '';
-        var pageId = pageSel ? (pageSel.value || '') : '';
-        var environmentId = envSel ? (envSel.value || '') : '';
-        var issueId = issueSel ? (issueSel.value || '') : '';
-        var phaseId = phaseSel ? (phaseSel.value || '') : '';
-        var genericCategoryId = genericCategorySel ? (genericCategorySel.value || '') : '';
-        var testingType = testingTypeSel ? (testingTypeSel.value || '') : '';
-        var phaseActivity = phaseActivitySel ? (phaseActivitySel.value || '') : '';
-        var genericDetail = genericDetailEl ? (genericDetailEl.value || '').trim() : '';
-        var h = parseFloat(hoursEl.value || '0');
-        var d = (descEl.value || '').trim();
-        if (!projectId || !taskType || !(h > 0) || !d) {
-            showToast('Project, task type, hours and description are required.', 'warning');
-            return;
-        }
-        var url = '?date=' + encodeURIComponent(dateStr) +
-            '&edit_log_request=' + encodeURIComponent(logId) +
-            '&new_project_id=' + encodeURIComponent(projectId) +
-            '&new_task_type=' + encodeURIComponent(taskType) +
-            '&new_page_id=' + encodeURIComponent(pageId) +
-            '&new_environment_id=' + encodeURIComponent(environmentId) +
-            '&new_issue_id=' + encodeURIComponent(issueId) +
-            '&new_phase_id=' + encodeURIComponent(phaseId) +
-            '&new_generic_category_id=' + encodeURIComponent(genericCategoryId) +
-            '&new_testing_type=' + encodeURIComponent(testingType) +
-            '&new_phase_activity=' + encodeURIComponent(phaseActivity) +
-            '&new_generic_task_detail=' + encodeURIComponent(genericDetail) +
-            '&new_hours=' + encodeURIComponent(h) +
-            '&new_description=' + encodeURIComponent(d);
-        submitBtn.disabled = true;
-        submitBtn.textContent = 'Sending...';
-        try {
-            bootstrap.Modal.getOrCreateInstance(modalEl).hide();
-        } catch (e) {}
-        setTimeout(function () {
-            window.location.href = url;
-        }, 60);
-    };
-
-    try {
-        var modal = bootstrap.Modal.getOrCreateInstance(modalEl);
-        modal.show();
-    } catch (e) {}
-    return false;
-}
-</script>

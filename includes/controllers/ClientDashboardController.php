@@ -65,7 +65,7 @@ class ClientDashboardController {
             // Render dashboard
             $this->renderDashboard($clientUser, $assignedProjects, $dashboardData);
             
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             error_log("Dashboard error: " . $e->getMessage());
             $this->renderError("Unable to load dashboard. Please try again later.");
         }
@@ -74,25 +74,32 @@ class ClientDashboardController {
     /**
      * Individual project view
      */
-    public function projectView($projectId) {
+    public function projectView($projectIdentifier) {
         try {
-            // Validate input
-            $validation = $this->securityValidator->validateInput(
-                ['project_id' => $projectId],
-                ['project_id' => ['required' => true, 'type' => 'int']]
-            );
-            
-            if (!$validation['valid']) {
-                $this->renderError("Invalid project ID");
-                return;
-            }
-            
-            $projectId = $validation['data']['project_id'];
-            
             // Authenticate client
             $clientUser = $this->authenticateClient();
             if (!$clientUser) {
                 $this->redirectToLogin();
+                return;
+            }
+
+            $projectIdentifier = trim((string) $projectIdentifier);
+            $projectId = $this->accessControl->resolveProjectIdentifier($clientUser['id'], $projectIdentifier);
+
+            if (!$projectId) {
+                $this->renderError("Invalid project reference");
+                return;
+            }
+
+            $canonicalIdentifier = $this->accessControl->getCanonicalProjectIdentifier($clientUser['id'], $projectId);
+            if ($canonicalIdentifier && $projectIdentifier !== $canonicalIdentifier) {
+                $target = getBaseDir() . '/client/project/' . rawurlencode($canonicalIdentifier);
+                $queryString = trim((string) ($_SERVER['QUERY_STRING'] ?? ''));
+                if ($queryString !== '') {
+                    $target .= '?' . $queryString;
+                }
+
+                header('Location: ' . $target, true, 302);
                 return;
             }
             
@@ -101,7 +108,7 @@ class ClientDashboardController {
                 $this->auditLogger->logSecurityViolation(
                     $clientUser['id'],
                     'unauthorized_project_access',
-                    "Attempted to access project $projectId",
+                    "Attempted to access project {$projectIdentifier}",
                     'high'
                 );
                 $this->renderError("Access denied to this project");
@@ -125,7 +132,7 @@ class ClientDashboardController {
             // Render project view
             $this->renderProjectView($clientUser, $projectId, $projectAnalytics);
             
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             error_log("Project view error: " . $e->getMessage());
             file_put_contents(__DIR__ . '/../../debug_error.txt', date('Y-m-d H:i:s') . "\n" . $e->getMessage() . "\n" . $e->getTraceAsString() . "\n\n", FILE_APPEND);
             $this->renderError("Unable to load project analytics. Please try again later.");
@@ -184,7 +191,7 @@ class ClientDashboardController {
             header('Content-Type: application/json');
             echo json_encode($widgetData);
             
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             error_log("AJAX widget error: " . $e->getMessage());
             http_response_code(500);
             echo json_encode(['error' => 'Internal server error']);
@@ -333,4 +340,3 @@ class ClientDashboardController {
         );
     }
 }
-?>

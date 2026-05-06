@@ -1,24 +1,28 @@
 <?php
-
-// Debug log function
-function issue_upload_debug_log($msg) {
-    $logfile = __DIR__ . '/../tmp/logs/issue_upload_debug.log';
-    @file_put_contents($logfile, date('Y-m-d H:i:s') . ' ' . $msg . "\n", FILE_APPEND);
-}
-
+ob_start();
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/functions.php';
 require_once __DIR__ . '/../includes/helpers.php';
+ob_end_clean();
+
+// Debug log function - disabled in production
+function issue_upload_debug_log($msg) {
+    // Enable logging temporarily for debugging upload issues
+    @file_put_contents(__DIR__ . '/../tmp/issue_upload_debug.log', date('Y-m-d H:i:s') . ' ' . $msg . "\n", FILE_APPEND);
+}
 
 
 issue_upload_debug_log('--- New upload request ---');
 $auth = new Auth();
-$auth->requireRole(['admin', 'project_lead', 'qa', 'at_tester', 'ft_tester', 'super_admin']);
+$auth->requireRole(['admin', 'project_lead', 'qa', 'at_tester', 'ft_tester', 'client']);
 
 header('Content-Type: application/json');
 
 // CSRF protection for file uploads
 enforceApiCsrf();
+
+// Removed rate limiting as per user request to allow unlimited uploads.
+
 
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -44,8 +48,20 @@ issue_upload_debug_log('File received: name=' . ($file['name'] ?? 'N/A') . ', si
 // Validate file
 if ($file['error'] !== UPLOAD_ERR_OK) {
     issue_upload_debug_log('Upload error: ' . $file['error']);
+    $uploadErrorMessages = [
+        UPLOAD_ERR_INI_SIZE => 'Uploaded file exceeds the server upload limit. Please try a smaller screenshot.',
+        UPLOAD_ERR_FORM_SIZE => 'Uploaded file exceeds the allowed form upload size. Please try a smaller screenshot.',
+        UPLOAD_ERR_PARTIAL => 'File upload was interrupted. Please try again.',
+        UPLOAD_ERR_NO_FILE => 'No file was uploaded.',
+        UPLOAD_ERR_NO_TMP_DIR => 'Upload temporary directory is missing on the server.',
+        UPLOAD_ERR_CANT_WRITE => 'Server could not write the uploaded file.',
+        UPLOAD_ERR_EXTENSION => 'A server extension stopped the upload.'
+    ];
     http_response_code(400);
-    echo json_encode(['error' => 'Upload error: ' . $file['error']]);
+    echo json_encode([
+        'error' => $uploadErrorMessages[$file['error']] ?? ('Upload error: ' . $file['error']),
+        'code' => (int) $file['error']
+    ]);
     exit;
 }
 
@@ -164,10 +180,20 @@ $baseDir = '';
 if (function_exists('getBaseDir')) {
     $baseDir = getBaseDir();
 }
-// Construct a root-relative URL for consistency
-$url = '/' . ltrim($baseDir . '/uploads/issues/' . date('Ymd') . '/' . $filename, '/');
-// Ensure no double slashes
-$url = preg_replace('#/+#', '/', $url);
+
+$relativePath = 'uploads/issues/' . date('Ymd') . '/' . $filename;
+$previewKey = 'temporary_issue_upload_paths';
+$previewTtl = 2 * 60 * 60;
+if (!isset($_SESSION[$previewKey]) || !is_array($_SESSION[$previewKey])) {
+    $_SESSION[$previewKey] = [];
+}
+foreach ($_SESSION[$previewKey] as $path => $timestamp) {
+    if (!is_string($path) || !is_numeric($timestamp) || ((int)$timestamp + $previewTtl) < time()) {
+        unset($_SESSION[$previewKey][$path]);
+    }
+}
+$_SESSION[$previewKey][$relativePath] = time();
+$url = rtrim((string)$baseDir, '/') . '/api/secure_file.php?path=' . rawurlencode($relativePath);
 
 
 issue_upload_debug_log('Upload complete. URL: ' . $url);

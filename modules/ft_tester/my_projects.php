@@ -4,28 +4,25 @@ require_once __DIR__ . '/../../includes/functions.php';
 require_once __DIR__ . '/../../includes/helpers.php';
 
 $auth = new Auth();
-$auth->requireRole(['ft_tester', 'admin', 'super_admin']);
+$auth->requireRole(['ft_tester', 'admin']);
 
 $baseDir = getBaseDir();
 $db = Database::getInstance();
-$userId = $_SESSION['user_id'];
+$userId = (int)$_SESSION['user_id'];
 
-// Get ALL FT Tester's assigned projects (including completed)
-$assignedProjectsQuery = "
+// Fetch all projects where user is assigned via user_assignments table
+$assignedProjects = $db->prepare("
     SELECT DISTINCT p.id, p.title, p.po_number, p.status, p.project_type,
            COUNT(DISTINCT pp.id) as total_pages,
-           COUNT(DISTINCT CASE WHEN pe.ft_tester_id = ? THEN pp.id END) as assigned_pages,
-           COUNT(DISTINCT CASE WHEN pe.status = 'tested' AND pe.ft_tester_id = ? THEN pp.id END) as completed_pages
+           COUNT(DISTINCT CASE WHEN pp.ft_tester_id = ? THEN pp.id END) as assigned_pages,
+           0 as completed_pages
     FROM projects p
-    LEFT JOIN project_pages pp ON p.id = pp.project_id
-    LEFT JOIN page_environments pe ON pp.id = pe.page_id
-    WHERE (pe.ft_tester_id = ? OR pp.ft_tester_id = ?)
+    INNER JOIN user_assignments ua ON ua.project_id = p.id AND ua.user_id = ? AND (ua.is_removed IS NULL OR ua.is_removed = 0)
+    LEFT JOIN project_pages pp ON pp.project_id = p.id
     GROUP BY p.id, p.title, p.po_number, p.status, p.project_type
     ORDER BY p.created_at DESC
-";
-
-$assignedProjects = $db->prepare($assignedProjectsQuery);
-$assignedProjects->execute([$userId, $userId, $userId, $userId]);
+");
+$assignedProjects->execute([$userId, $userId]);
 $projects = $assignedProjects->fetchAll();
 
 include __DIR__ . '/../../includes/header.php';
@@ -43,7 +40,6 @@ include __DIR__ . '/../../includes/header.php';
         </div>
     </div>
 
-    <!-- All Projects Table with Filters -->
     <div class="card">
         <div class="card-header d-flex justify-content-between align-items-center">
             <h5 class="mb-0"><i class="fas fa-list"></i> All Assigned Projects</h5>
@@ -82,19 +78,16 @@ include __DIR__ . '/../../includes/header.php';
                                 <th>Type</th>
                                 <th>Status</th>
                                 <th>Assigned Pages</th>
-                                <th>Completed</th>
                                 <th>Progress</th>
                                 <th>Action</th>
                             </tr>
                         </thead>
                         <tbody>
                             <?php foreach ($projects as $project): ?>
-                            <tr data-status="<?php echo htmlspecialchars($project['status']); ?>" 
+                            <tr data-status="<?php echo htmlspecialchars($project['status']); ?>"
                                 data-type="<?php echo htmlspecialchars($project['project_type']); ?>"
                                 data-title="<?php echo htmlspecialchars(strtolower($project['title'])); ?>">
-                                <td>
-                                    <strong><?php echo htmlspecialchars($project['title']); ?></strong>
-                                </td>
+                                <td><strong><?php echo htmlspecialchars($project['title']); ?></strong></td>
                                 <td><?php echo htmlspecialchars($project['po_number']); ?></td>
                                 <td>
                                     <span class="badge bg-secondary">
@@ -103,26 +96,16 @@ include __DIR__ . '/../../includes/header.php';
                                 </td>
                                 <td>
                                     <?php
-                                    $statusColors = [
-                                        'planning' => 'secondary',
-                                        'in_progress' => 'primary',
-                                        'on_hold' => 'warning',
-                                        'completed' => 'success',
-                                        'cancelled' => 'danger'
-                                    ];
+                                    $statusColors = ['planning'=>'secondary','in_progress'=>'primary','on_hold'=>'warning','completed'=>'success','cancelled'=>'danger'];
                                     $statusColor = $statusColors[$project['status']] ?? 'secondary';
                                     ?>
                                     <span class="badge bg-<?php echo $statusColor; ?>">
                                         <?php echo formatProjectStatusLabel($project['status']); ?>
                                     </span>
                                 </td>
-                                <td><?php echo $project['assigned_pages']; ?></td>
-                                <td><?php echo $project['completed_pages']; ?></td>
+                                <td><?php echo (int)$project['assigned_pages']; ?></td>
                                 <td>
-                                    <?php 
-                                    $progress = $project['assigned_pages'] > 0 ? 
-                                        round(($project['completed_pages'] / $project['assigned_pages']) * 100) : 0;
-                                    ?>
+                                    <?php $progress = $project['assigned_pages'] > 0 ? round(($project['completed_pages'] / $project['assigned_pages']) * 100) : 0; ?>
                                     <div class="progress" style="height: 20px; min-width: 100px;">
                                         <div class="progress-bar bg-success" style="width: <?php echo $progress; ?>%">
                                             <?php echo $progress; ?>%
@@ -130,9 +113,9 @@ include __DIR__ . '/../../includes/header.php';
                                     </div>
                                 </td>
                                 <td>
-                                    <a href="<?php echo $baseDir; ?>/modules/at_tester/project_tasks.php?project_id=<?php echo $project['id']; ?>" 
+                                    <a href="<?php echo $baseDir; ?>/modules/projects/view.php?id=<?php echo $project['id']; ?>"
                                        class="btn btn-sm btn-primary">
-                                        <i class="fas fa-tasks"></i> View Tasks
+                                        <i class="fas fa-eye"></i> View
                                     </a>
                                 </td>
                             </tr>
@@ -145,33 +128,5 @@ include __DIR__ . '/../../includes/header.php';
     </div>
 </div>
 
-<script>
-// Project table filtering
-$(document).ready(function() {
-    function filterProjects() {
-        const statusFilter = $('#statusFilter').val().toLowerCase();
-        const typeFilter = $('#typeFilter').val().toLowerCase();
-        const searchText = $('#searchProject').val().toLowerCase();
-        
-        $('#projectsTable tbody tr').each(function() {
-            const row = $(this);
-            const status = row.data('status');
-            const type = row.data('type');
-            const title = row.data('title');
-            
-            let showRow = true;
-            
-            if (statusFilter && status !== statusFilter) showRow = false;
-            if (typeFilter && type !== typeFilter) showRow = false;
-            if (searchText && title.indexOf(searchText) === -1) showRow = false;
-            
-            row.toggle(showRow);
-        });
-    }
-    
-    $('#statusFilter, #typeFilter').on('change', filterProjects);
-    $('#searchProject').on('keyup', filterProjects);
-});
-</script>
-
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<script src="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/assets/js/my-projects-filter.js"></script>
+<?php include __DIR__ . '/../../includes/footer.php'; 

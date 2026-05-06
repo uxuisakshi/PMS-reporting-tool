@@ -36,22 +36,27 @@ if (!isset($baseDir)) {
                 <ul class="navbar-nav me-auto gap-1">
                     <!-- Dashboard -->
                     <li class="nav-item">
-                        <a class="nav-link" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/client/dashboard_unified.php" style="color: rgba(255, 255, 255, 0.9) !important; padding: 8px 12px !important; border-radius: 4px !important; transition: all 0.2s ease !important;">
+                        <a class="nav-link" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/client/dashboard" style="color: rgba(255, 255, 255, 0.9) !important; padding: 8px 12px !important; border-radius: 4px !important; transition: all 0.2s ease !important;">
                             <i class="fas fa-home me-1 opacity-50" style="color: white !important;"></i> <span style="color: white !important;">Dashboard</span>
                         </a>
                     </li>
 
-                    <!-- Projects -->
+                    <!-- Digital Assets -->
                     <li class="nav-item">
                         <a class="nav-link" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/client/projects.php" style="color: rgba(255, 255, 255, 0.9) !important; padding: 8px 12px !important; border-radius: 4px !important; transition: all 0.2s ease !important;">
-                            <i class="fas fa-folder-open me-1 opacity-50" style="color: white !important;"></i> <span style="color: white !important;">Projects</span>
+                            <i class="fas fa-folder-open me-1 opacity-50" style="color: white !important;"></i> <span style="color: white !important;">Digital Assets</span>
                         </a>
                     </li>
 
-                    <!-- Analytics -->
                     <li class="nav-item">
-                        <a class="nav-link" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/client/dashboard_unified.php?view=analytics" style="color: rgba(255, 255, 255, 0.9) !important; padding: 8px 12px !important; border-radius: 4px !important; transition: all 0.2s ease !important;">
+                        <a class="nav-link" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/client/dashboard" style="color: rgba(255, 255, 255, 0.9) !important; padding: 8px 12px !important; border-radius: 4px !important; transition: all 0.2s ease !important;">
                             <i class="fas fa-chart-line me-1 opacity-50" style="color: white !important;"></i> <span style="color: white !important;">Analytics</span>
+                        </a>
+                    </li>
+
+                    <li class="nav-item">
+                        <a class="nav-link" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/client/preferences.php" style="color: rgba(255, 255, 255, 0.9) !important; padding: 8px 12px !important; border-radius: 4px !important; transition: all 0.2s ease !important;">
+                            <i class="fas fa-sliders-h me-1 opacity-50" style="color: white !important;"></i> <span style="color: white !important;">Preferences</span>
                         </a>
                     </li>
                 </ul>
@@ -77,7 +82,7 @@ if (!isset($baseDir)) {
                             </li>
                             <li><a class="dropdown-item" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/profile.php" style="padding: 8px 16px !important; transition: all 0.2s ease !important; color: #212529 !important;"><i class="fas fa-user-circle me-2 text-muted"></i> Profile</a></li>
                             <li><hr class="dropdown-divider"></li>
-                            <li><a class="dropdown-item text-danger" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/auth/logout.php" style="padding: 8px 16px !important; transition: all 0.2s ease !important; color: #dc3545 !important;"><i class="fas fa-sign-out-alt me-2"></i> Logout</a></li>
+                            <li><a class="dropdown-item text-danger" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/auth/logout.php?csrf_token=<?php echo urlencode(generateCsrfToken()); ?>" style="padding: 8px 16px !important; transition: all 0.2s ease !important; color: #dc3545 !important;"><i class="fas fa-sign-out-alt me-2"></i> Logout</a></li>
                         </ul>
                     </li>
                 </ul>
@@ -85,7 +90,3 @@ if (!isset($baseDir)) {
         </div>
     </nav>
 </header>
-
-<script>
-
-</script>

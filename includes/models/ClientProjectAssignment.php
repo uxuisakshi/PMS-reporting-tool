@@ -411,7 +411,7 @@ class ClientProjectAssignment {
         try {
             $stmt = $this->db->prepare("
                 SELECT id FROM users 
-                WHERE id = ? AND role IN ('admin', 'super_admin') AND is_active = 1
+                WHERE id = ? AND role IN ('admin') AND is_active = 1
             ");
             $stmt->execute([$adminUserId]);
             return $stmt->fetchColumn() !== false;

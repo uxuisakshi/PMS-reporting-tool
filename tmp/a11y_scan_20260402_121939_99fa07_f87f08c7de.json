@@ -1,0 +1,4 @@
+{
+  "success": false,
+  "error": "TypeError: fetch failed\n    at node:internal/deps/undici/undici:16416:13\n    at async runAIDiscoveryAudit (C:\\xampp\\htdocs\\PMS\\scripts\\deep_a11y_scan.js:170:22)\n    at async run (C:\\xampp\\htdocs\\PMS\\scripts\\deep_a11y_scan.js:1303:16)"
+}

@@ -1,39 +1,39 @@
 <?php
 /**
- * Check if current user has admin privileges (admin or super_admin)
+ * Check if current user has admin privileges (admin or admin)
  * Admin users should have all rights of project leads, QA, and testers
  * 
  * @return bool True if user has admin privileges
  */
 function hasAdminPrivileges() {
-    return isset($_SESSION['role']) && in_array($_SESSION['role'], ['admin', 'super_admin']);
+    return isset($_SESSION['role']) && in_array($_SESSION['role'], ['admin']);
 }
 
 /**
- * Check if current user has project lead privileges (project_lead, admin, or super_admin)
+ * Check if current user has project lead privileges (project_lead, admin, or admin)
  * 
  * @return bool True if user has project lead privileges
  */
 function hasProjectLeadPrivileges() {
-    return isset($_SESSION['role']) && in_array($_SESSION['role'], ['project_lead', 'admin', 'super_admin']);
+    return isset($_SESSION['role']) && in_array($_SESSION['role'], ['project_lead', 'admin']);
 }
 
 /**
- * Check if current user has QA privileges (qa, admin, or super_admin)
+ * Check if current user has QA privileges (qa, admin, or admin)
  * 
  * @return bool True if user has QA privileges
  */
 function hasQAPrivileges() {
-    return isset($_SESSION['role']) && in_array($_SESSION['role'], ['qa', 'admin', 'super_admin']);
+    return isset($_SESSION['role']) && in_array($_SESSION['role'], ['qa', 'admin']);
 }
 
 /**
- * Check if current user has tester privileges (at_tester, ft_tester, admin, or super_admin)
+ * Check if current user has tester privileges (at_tester, ft_tester, admin, or admin)
  * 
  * @return bool True if user has tester privileges
  */
 function hasTesterPrivileges() {
-    return isset($_SESSION['role']) && in_array($_SESSION['role'], ['at_tester', 'ft_tester', 'admin', 'super_admin']);
+    return isset($_SESSION['role']) && in_array($_SESSION['role'], ['at_tester', 'ft_tester', 'admin']);
 }
 
 /**
@@ -152,6 +152,90 @@ function getBaseDir() {
     }
     
     return $baseDir;
+}
+
+function slugifyPathSegment($value) {
+    $value = trim((string) $value);
+    if ($value === '') {
+        return 'asset';
+    }
+
+    $asciiValue = @iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $value);
+    if ($asciiValue !== false && $asciiValue !== '') {
+        $value = $asciiValue;
+    }
+
+    $value = strtolower($value);
+    $value = preg_replace('/[^a-z0-9]+/', '-', $value);
+    $value = trim((string) $value, '-');
+
+    return $value !== '' ? $value : 'asset';
+}
+
+function getClientProjectRouteToken($projectId) {
+    static $secret = null;
+
+    if ($secret === null) {
+        $secretCandidates = [
+            (string) (getenv('APP_KEY') ?: ''),
+            (string) (getenv('APP_SECRET') ?: ''),
+            defined('DB_NAME') ? (string) DB_NAME : '',
+            'pms-client-project-route-v1'
+        ];
+
+        foreach ($secretCandidates as $candidate) {
+            if ($candidate !== '') {
+                $secret = $candidate;
+                break;
+            }
+        }
+    }
+
+    return substr(hash_hmac('sha256', 'client-project|' . (int) $projectId, $secret), 0, 12);
+}
+
+function getClientProjectRouteKey($projectId, $projectTitle = '', $projectCode = '') {
+    $token = getClientProjectRouteToken((int) $projectId);
+    $slugSource = trim((string) ($projectCode !== '' ? $projectCode : $projectTitle));
+
+    if ($slugSource === '') {
+        return $token;
+    }
+
+    return slugifyPathSegment($slugSource) . '-' . $token;
+}
+
+function buildClientProjectUrl($projectId, $projectTitle = '', $projectCode = '', array $query = []) {
+    $projectId = (int) $projectId;
+    $projectTitle = (string) $projectTitle;
+    $projectCode = (string) $projectCode;
+
+    if ($projectId > 0 && $projectCode === '' && class_exists('Database')) {
+        try {
+            $db = Database::getInstance();
+            $stmt = $db->prepare('SELECT title, project_code FROM projects WHERE id = ? LIMIT 1');
+            $stmt->execute([$projectId]);
+            $projectRow = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+
+            if ($projectTitle === '' && !empty($projectRow['title'])) {
+                $projectTitle = (string) $projectRow['title'];
+            }
+
+            if ($projectCode === '' && !empty($projectRow['project_code'])) {
+                $projectCode = (string) $projectRow['project_code'];
+            }
+        } catch (Throwable $e) {
+            error_log('buildClientProjectUrl metadata lookup failed: ' . $e->getMessage());
+        }
+    }
+
+    $url = getBaseDir() . '/client/project/' . rawurlencode(getClientProjectRouteKey($projectId, $projectTitle, $projectCode));
+
+    if (!empty($query)) {
+        $url .= '?' . http_build_query($query);
+    }
+
+    return $url;
 }
 
 /**
@@ -331,8 +415,45 @@ function redirect($path, $statusCode = 302) {
     exit;
 }
 
+function getSanitizedHttpHost() {
+    $rawHost = trim((string)($_SERVER['HTTP_HOST'] ?? ''));
+    if ($rawHost === '') {
+        return 'localhost';
+    }
+
+    $host = strtolower((string)(parse_url('http://' . $rawHost, PHP_URL_HOST) ?? ''));
+    if ($host === '' || !preg_match('/^[a-z0-9.-]+$/', $host)) {
+        return 'localhost';
+    }
+
+    $port = (int)(parse_url('http://' . $rawHost, PHP_URL_PORT) ?? 0);
+    if ($port > 0 && $port <= 65535) {
+        return $host . ':' . $port;
+    }
+
+    return $host;
+}
+
+function getConfiguredAppUrl() {
+    static $cached = null;
+    if ($cached !== null) {
+        return $cached;
+    }
+
+    $settings = @include(__DIR__ . '/../config/settings.php');
+    $appUrl = is_array($settings) ? trim((string)($settings['app_url'] ?? '')) : '';
+    if ($appUrl !== '' && preg_match('#^https?://#i', $appUrl)) {
+        return $cached = rtrim($appUrl, '/');
+    }
+
+    $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+    $baseDir = getBaseDir();
+    return $cached = rtrim($protocol . '://' . getSanitizedHttpHost() . $baseDir, '/');
+}
+
 /**
  * Generate CSRF token
+ * Token is rotated after each successful verification to prevent replay attacks.
  * 
  * @return string CSRF token
  */
@@ -344,7 +465,18 @@ function generateCsrfToken() {
 }
 
 /**
- * Verify CSRF token
+ * Generate a per-request CSP nonce for inline scripts.
+ * Stored in $_SERVER so it's consistent within one request.
+ */
+function generateCspNonce() {
+    if (!isset($_SERVER['_CSP_NONCE'])) {
+        $_SERVER['_CSP_NONCE'] = base64_encode(random_bytes(16));
+    }
+    return $_SERVER['_CSP_NONCE'];
+}
+
+/**
+ * Verify CSRF token and rotate it immediately after successful verification.
  * 
  * @param string $token The token to verify
  * @return bool True if token is valid
@@ -353,7 +485,11 @@ function verifyCsrfToken($token) {
     if (!isset($_SESSION['csrf_token'])) {
         return false;
     }
-    return hash_equals($_SESSION['csrf_token'], $token);
+    $valid = hash_equals($_SESSION['csrf_token'], $token);
+    // Token is NOT rotated after use — rotating causes race conditions on
+    // pages with multiple concurrent AJAX requests (second request gets stale token).
+    // The token remains valid for the session lifetime; new token is issued on login.
+    return $valid;
 }
 
 /**
@@ -366,11 +502,26 @@ function enforceApiCsrf() {
     if (in_array($method, ['GET', 'HEAD', 'OPTIONS'], true)) {
         return; // Safe methods don't need CSRF
     }
+
     $token = $_POST['csrf_token'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+    
+    // Check if token is missing but Content-Length is high (potential post_max_size issue)
+    if ($token === '' && empty($_POST) && ($contentLength = (int)($_SERVER['CONTENT_LENGTH'] ?? 0)) > 1024) {
+        $postMaxSize = ini_get('post_max_size');
+        http_response_code(413); // Payload Too Large preferred, or stay with 403 for security
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode(['error' => "Request body potentially exceeded 'post_max_size' ($postMaxSize). Please upload a smaller file or split the request."]);
+        exit;
+    }
+
     if (!verifyCsrfToken($token)) {
         http_response_code(403);
         header('Content-Type: application/json; charset=utf-8');
-        echo json_encode(['error' => 'Invalid or missing CSRF token']);
+        echo json_encode([
+            'error' => 'Invalid or missing CSRF token', 
+            'received' => ($token === '' ? 'none' : 'provided'),
+            'hint' => 'Ensure X-CSRF-Token header or csrf_token POST field is present.'
+        ]);
         exit;
     }
 }
@@ -381,15 +532,7 @@ function enforceApiCsrf() {
  * @return string Base URL
  */
 function getBaseUrl() {
-    $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-    $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
-    $script = dirname($_SERVER['SCRIPT_NAME']);
-    
-    if ($script === '/' || $script === '\\') {
-        $script = '';
-    }
-    
-    return $protocol . '://' . $host . $script;
+    return getConfiguredAppUrl();
 }
 
 /**
@@ -402,7 +545,6 @@ function getModuleDirectory($role) {
     $roleMapping = [
         'at_tester' => 'at_tester',
         'ft_tester' => 'ft_tester',
-        'super_admin' => 'admin',
         'admin' => 'admin',
         'project_lead' => 'project_lead',
         'qa' => 'qa',
@@ -950,9 +1092,20 @@ function renderQAEnvStatusDropdown($pageId, $envId, $currentStatus) {
  */
 function get_browser_info($ua) {
     $info = ['browser' => 'Unknown', 'browser_version' => '', 'platform' => 'Unknown'];
-    if (stripos($ua, 'Firefox') !== false) {
+
+    // Order matters — check specific browsers before generic ones
+    if (stripos($ua, 'Edg/') !== false || stripos($ua, 'Edge/') !== false) {
+        $info['browser'] = 'Edge';
+        if (preg_match('/Edg(?:e)?\/([0-9\.]+)/', $ua, $m)) $info['browser_version'] = $m[1];
+    } elseif (stripos($ua, 'OPR/') !== false || stripos($ua, 'Opera') !== false) {
+        $info['browser'] = 'Opera';
+        if (preg_match('/(?:OPR|Opera)\/([0-9\.]+)/', $ua, $m)) $info['browser_version'] = $m[1];
+    } elseif (stripos($ua, 'Firefox') !== false) {
         $info['browser'] = 'Firefox';
         if (preg_match('/Firefox\/([0-9\.]+)/', $ua, $m)) $info['browser_version'] = $m[1];
+    } elseif (stripos($ua, 'SamsungBrowser') !== false) {
+        $info['browser'] = 'Samsung Browser';
+        if (preg_match('/SamsungBrowser\/([0-9\.]+)/', $ua, $m)) $info['browser_version'] = $m[1];
     } elseif (stripos($ua, 'Chrome') !== false && stripos($ua, 'Safari') !== false) {
         $info['browser'] = 'Chrome';
         if (preg_match('/Chrome\/([0-9\.]+)/', $ua, $m)) $info['browser_version'] = $m[1];
@@ -961,13 +1114,15 @@ function get_browser_info($ua) {
         if (preg_match('/Version\/([0-9\.]+)/', $ua, $m)) $info['browser_version'] = $m[1];
     } elseif (stripos($ua, 'Trident') !== false || stripos($ua, 'MSIE') !== false) {
         $info['browser'] = 'Internet Explorer';
+        if (preg_match('/(?:MSIE |rv:)([0-9\.]+)/', $ua, $m)) $info['browser_version'] = $m[1];
     }
 
-    if (stripos($ua, 'Windows') !== false) $info['platform'] = 'Windows';
+    if (stripos($ua, 'Android') !== false) $info['platform'] = 'Android';
+    elseif (stripos($ua, 'iPhone') !== false) $info['platform'] = 'iOS (iPhone)';
+    elseif (stripos($ua, 'iPad') !== false) $info['platform'] = 'iOS (iPad)';
+    elseif (stripos($ua, 'Windows') !== false) $info['platform'] = 'Windows';
     elseif (stripos($ua, 'Mac OS X') !== false) $info['platform'] = 'macOS';
     elseif (stripos($ua, 'Linux') !== false) $info['platform'] = 'Linux';
-    elseif (stripos($ua, 'Android') !== false) $info['platform'] = 'Android';
-    elseif (stripos($ua, 'iPhone') !== false || stripos($ua, 'iPad') !== false) $info['platform'] = 'iOS';
 
     return $info;
 }
@@ -1001,4 +1156,28 @@ function get_geo_info($ip) {
         return [];
     }
 }
-?>
+
+/**
+ * Consistently resolves the display number for a project page.
+ * Prioritizes the database 'page_number' column.
+ * 
+ * @param array $pageRow Associative array containing at least 'page_number' and optionally 'page_name' or 'url'
+ * @return string The resolved display number (e.g., "Page 1", "Global 5")
+ */
+function resolvePageDisplayValue($pageRow) {
+    if (!is_array($pageRow)) return '-';
+    
+    $rawPageNumber = trim((string)($pageRow['page_number'] ?? ($pageRow['mapped_page_number'] ?? '')));
+    if ($rawPageNumber !== '' && $rawPageNumber !== '-') {
+        return $rawPageNumber;
+    }
+    
+    // Fallback: Check if page_name already contains the number (e.g. "Page 10")
+    $pageName = trim((string)($pageRow['page_name'] ?? ''));
+    if (preg_match('/^(Page|Global)\s+\d+/i', $pageName)) {
+        return $pageName;
+    }
+    
+    // Fallback to '-' or empty if we really can't determine it
+    return '-';
+}

@@ -21,7 +21,7 @@ class PageIssuesAnalytics extends AnalyticsEngine {
      * @return AnalyticsReport
      */
     public function generateReport($projectId = null, $clientId = null) {
-        $cacheKey = $this->generateCacheKey('page_issues', $projectId, $clientId);
+        $cacheKey = $this->generateCacheKey('page_issues_v3', $projectId, $clientId);
         
         if ($cached = $this->getCachedReport($cacheKey)) {
             return $cached;
@@ -45,7 +45,7 @@ class PageIssuesAnalytics extends AnalyticsEngine {
                 'primary_chart' => [
                     'type' => 'bar',
                     'data_key' => 'top_pages',
-                    'title' => 'Top 5 Pages with Most Issues',
+                    'title' => 'Pages by Issue Count',
                     'x_axis' => 'Page',
                     'y_axis' => 'Issue Count'
                 ],
@@ -73,8 +73,9 @@ class PageIssuesAnalytics extends AnalyticsEngine {
     private function analyzePageIssues($projectId = null, $clientId = null) {
         $issues = $this->getFilteredIssues($projectId, $clientId);
         
-        // Group issues by page
-        $pageGroups = $this->groupIssuesByPage($issues);
+        // Include every project page so zero-issue pages are visible in the client tab.
+        $pageGroups = $this->initializeProjectPageGroups($projectId, $clientId);
+        $pageGroups = $this->groupIssuesByPage($issues, $pageGroups);
         
         // Calculate page metrics
         $pageMetrics = $this->calculatePageMetrics($pageGroups);
@@ -97,7 +98,7 @@ class PageIssuesAnalytics extends AnalyticsEngine {
         }));
         
         $totalIssues = count($issues);
-        $avgIssuesPerPage = $pagesWithIssues > 0 ? round($totalIssues / $pagesWithIssues, 1) : 0;
+        $avgIssuesPerPage = $totalPages > 0 ? round($totalIssues / $totalPages, 1) : 0;
         
         return [
             'summary' => [
@@ -124,57 +125,169 @@ class PageIssuesAnalytics extends AnalyticsEngine {
      * @param array $issues
      * @return array
      */
-    private function groupIssuesByPage($issues) {
-        $pageGroups = [];
+    private function groupIssuesByPage($issues, array $pageGroups = []) {
         
         foreach ($issues as $issue) {
-            $pageUrl = $this->normalizePageUrl($issue['page_url'] ?? 'Unknown');
+            $pageId = (int) ($issue['page_id'] ?? 0);
+            $pageLabel = $this->buildPageLabel(
+                $issue['page_name'] ?? '',
+                $issue['page_number'] ?? '',
+                $issue['page_url'] ?? ''
+            );
+            $groupKey = $this->buildPageGroupKey($pageId, $pageLabel, $issue['page_url'] ?? '');
             
-            if (!isset($pageGroups[$pageUrl])) {
-                $pageGroups[$pageUrl] = [
-                    'url' => $pageUrl,
+            if (!isset($pageGroups[$groupKey])) {
+                $projectId = (int) ($issue['project_id'] ?? 0);
+                $issueId = (int) ($issue['id'] ?? 0);
+                $pageGroups[$groupKey] = [
+                    'url' => (string) ($issue['page_url'] ?? ''),
+                    'display_label' => $pageLabel,
                     'issues' => [],
                     'severities' => [],
                     'categories' => [],
-                    'statuses' => []
+                    'statuses' => [],
+                    'page_id' => $pageId,
+                    'project_id' => $projectId,
+                    'sample_issue_id' => $issueId,
+                    'page_name' => trim((string) ($issue['page_name'] ?? '')),
+                    'page_number' => trim((string) ($issue['page_number'] ?? '')),
                 ];
             }
             
-            $pageGroups[$pageUrl]['issues'][] = $issue;
-            $pageGroups[$pageUrl]['severities'][] = $issue['severity'] ?? 'Medium';
-            $pageGroups[$pageUrl]['categories'][] = $this->categorizeIssue($issue);
-            $pageGroups[$pageUrl]['statuses'][] = $issue['status'] ?? 'Open';
+            if (($pageGroups[$groupKey]['project_id'] ?? 0) <= 0) {
+                $pageGroups[$groupKey]['project_id'] = (int) ($issue['project_id'] ?? 0);
+            }
+            if (($pageGroups[$groupKey]['sample_issue_id'] ?? 0) <= 0) {
+                $pageGroups[$groupKey]['sample_issue_id'] = (int) ($issue['id'] ?? 0);
+            }
+
+            $pageGroups[$groupKey]['issues'][] = $issue;
+            $pageGroups[$groupKey]['severities'][] = $issue['severity'] ?? 'Medium';
+            $pageGroups[$groupKey]['categories'][] = $this->categorizeIssue($issue);
+            $pageGroups[$groupKey]['statuses'][] = $issue['status'] ?? 'Open';
         }
         
         return $pageGroups;
     }
     
     /**
-     * Normalize page URL for consistent grouping
-     * 
-     * @param string $url
-     * @return string
+     * Preload all project pages so the dashboard shows the complete page inventory.
      */
-    private function normalizePageUrl($url) {
-        if (empty($url) || $url === 'Unknown') {
-            return 'Unknown Page';
+    private function initializeProjectPageGroups($projectId = null, $clientId = null) {
+        $pageGroups = [];
+
+        foreach ($this->getProjectPages($projectId, $clientId) as $page) {
+            $pageId = (int) ($page['id'] ?? 0);
+            $pageLabel = $this->buildPageLabel(
+                $page['page_name'] ?? '',
+                $page['page_number'] ?? '',
+                $page['url'] ?? ''
+            );
+            $groupKey = $this->buildPageGroupKey($pageId, $pageLabel, $page['url'] ?? '');
+
+            $pageGroups[$groupKey] = [
+                'url' => trim((string) ($page['url'] ?? '')),
+                'display_label' => $pageLabel,
+                'issues' => [],
+                'severities' => [],
+                'categories' => [],
+                'statuses' => [],
+                'page_id' => $pageId,
+                'project_id' => (int) ($page['project_id'] ?? 0),
+                'sample_issue_id' => 0,
+                'page_name' => trim((string) ($page['page_name'] ?? '')),
+                'page_number' => trim((string) ($page['page_number'] ?? '')),
+            ];
         }
-        
-        // Remove protocol and www
-        $url = preg_replace('/^https?:\/\/(www\.)?/', '', $url);
-        
-        // Remove query parameters and fragments
-        $url = preg_replace('/[?#].*$/', '', $url);
-        
-        // Remove trailing slash
-        $url = rtrim($url, '/');
-        
-        // Limit length for display
-        if (strlen($url) > 80) {
-            $url = substr($url, 0, 77) . '...';
+
+        return $pageGroups;
+    }
+
+    /**
+     * Load project pages for the selected projects only.
+     */
+    private function getProjectPages($projectId = null, $clientId = null) {
+        if (!$this->pdo) {
+            return [];
         }
-        
-        return $url ?: 'Home Page';
+
+        try {
+            $projectIds = [];
+
+            if (is_array($projectId)) {
+                $projectIds = array_values(array_filter(array_map('intval', $projectId)));
+            } elseif ($projectId !== null) {
+                $projectIds = [(int) $projectId];
+            } elseif ($clientId !== null) {
+                $projectIds = array_values(array_filter(array_map('intval', $this->getAssignedProjects($clientId))));
+            }
+
+            if (empty($projectIds)) {
+                return [];
+            }
+
+            $placeholders = implode(',', array_fill(0, count($projectIds), '?'));
+            $sql = "SELECT id, project_id, page_name, page_number, url
+                    FROM project_pages
+                    WHERE project_id IN ($placeholders)
+                    ORDER BY project_id ASC,
+                             CASE WHEN page_number LIKE 'Global%' THEN 0 WHEN page_number LIKE 'Page%' THEN 1 ELSE 2 END,
+                             CAST(SUBSTRING_INDEX(SUBSTRING_INDEX(page_number, ' ', -1), ' ', 1) AS UNSIGNED),
+                             page_number,
+                             page_name,
+                             id ASC";
+
+            $stmt = $this->pdo->prepare($sql);
+            $stmt->execute($projectIds);
+
+            return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        } catch (Exception $e) {
+            error_log('Error fetching project pages for page analytics: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Build a stable display label that prefers the saved page name over URLs.
+     */
+    private function buildPageLabel($pageName = '', $pageNumber = '', $url = '') {
+        $pageName = trim((string) $pageName);
+        $pageNumber = trim((string) $pageNumber);
+        $url = trim((string) $url);
+
+        if ($pageName !== '') {
+            return $pageName;
+        }
+
+        if ($pageNumber !== '') {
+            return $pageNumber;
+        }
+
+        if ($url !== '' && strcasecmp($url, 'Unknown') !== 0) {
+            $url = preg_replace('/^https?:\/\/(www\.)?/', '', $url);
+            $url = preg_replace('/[?#].*$/', '', $url);
+            $url = rtrim($url, '/');
+            return $url !== '' ? $url : 'Home Page';
+        }
+
+        return 'Unknown Page';
+    }
+
+    /**
+     * Build a unique page group key.
+     */
+    private function buildPageGroupKey($pageId, $pageLabel, $url = '') {
+        $pageId = (int) $pageId;
+        if ($pageId > 0) {
+            return 'page_' . $pageId;
+        }
+
+        $fallback = trim((string) $pageLabel);
+        if ($fallback === '') {
+            $fallback = trim((string) $url);
+        }
+
+        return 'label_' . md5($fallback);
     }
     
     /**
@@ -189,8 +302,8 @@ class PageIssuesAnalytics extends AnalyticsEngine {
         foreach ($pageGroups as $pageUrl => $group) {
             $issues = $group['issues'];
             $issueCount = count($issues);
-            
-            if ($issueCount === 0) continue;
+            $pageLabel = (string) ($group['display_label'] ?? $pageUrl);
+            $rawUrl = trim((string) ($group['url'] ?? ''));
             
             $severityCounts = array_count_values($group['severities']);
             $categoryCounts = array_count_values($group['categories']);
@@ -200,7 +313,7 @@ class PageIssuesAnalytics extends AnalyticsEngine {
             $severityScore = $this->calculatePageSeverityScore($severityCounts, $issueCount);
             
             // Calculate complexity score
-            $complexityScore = $this->calculatePageComplexityScore($pageUrl, $categoryCounts);
+            $complexityScore = $this->calculatePageComplexityScore($pageLabel, $categoryCounts);
             
             // Calculate issue density
             $issueDensity = $this->calculateIssueDensity($issueCount, $complexityScore);
@@ -211,7 +324,13 @@ class PageIssuesAnalytics extends AnalyticsEngine {
             
             $pageMetrics[] = [
                 'url' => $pageUrl,
-                'display_url' => $this->getDisplayUrl($pageUrl),
+                'raw_url' => $rawUrl,
+                'display_url' => $this->getDisplayUrl($pageLabel),
+                'project_id' => (int) ($group['project_id'] ?? 0),
+                'page_id' => (int) ($group['page_id'] ?? 0),
+                'sample_issue_id' => (int) ($group['sample_issue_id'] ?? 0),
+                'page_name' => (string) ($group['page_name'] ?? ''),
+                'page_number' => (string) ($group['page_number'] ?? ''),
                 'issue_count' => $issueCount,
                 'severity_score' => $severityScore,
                 'complexity_score' => $complexityScore,
@@ -221,7 +340,7 @@ class PageIssuesAnalytics extends AnalyticsEngine {
                 'category_breakdown' => $categoryCounts,
                 'status_breakdown' => $statusCounts,
                 'priority_score' => $this->calculatePagePriorityScore($issueCount, $severityScore, $resolutionRate),
-                'page_type' => $this->identifyPageType($pageUrl),
+                'page_type' => $this->identifyPageType($rawUrl !== '' ? $rawUrl : $pageLabel),
                 'unique_categories' => count($categoryCounts)
             ];
         }
@@ -250,7 +369,7 @@ class PageIssuesAnalytics extends AnalyticsEngine {
         $weightedScore = 0;
         
         foreach ($severityCounts as $severity => $count) {
-            $weight = $weights[strtolower($severity)] ?? 2;
+            $weight = $weights[$this->normalizeLowerText($severity)] ?? 2;
             $weightedScore += $weight * $count;
         }
         
@@ -281,7 +400,7 @@ class PageIssuesAnalytics extends AnalyticsEngine {
         $pageTypeComplexity = 0;
         $complexPageTypes = ['form', 'checkout', 'dashboard', 'admin', 'search', 'cart'];
         foreach ($complexPageTypes as $type) {
-            if (strpos(strtolower($pageUrl), $type) !== false) {
+            if (strpos($this->normalizeLowerText($pageUrl), $type) !== false) {
                 $pageTypeComplexity += 5;
                 break;
             }
@@ -317,6 +436,10 @@ class PageIssuesAnalytics extends AnalyticsEngine {
      * @return float
      */
     private function calculatePagePriorityScore($issueCount, $severityScore, $resolutionRate) {
+        if ($issueCount <= 0) {
+            return 0;
+        }
+
         // Higher issue count and severity = higher priority
         // Lower resolution rate = higher priority
         $priorityScore = ($issueCount * 0.4) + ($severityScore * 0.4) + ((100 - $resolutionRate) * 0.2);
@@ -331,7 +454,7 @@ class PageIssuesAnalytics extends AnalyticsEngine {
      * @return string
      */
     private function identifyPageType($pageUrl) {
-        $url = strtolower($pageUrl);
+        $url = $this->normalizeLowerText($pageUrl);
         
         $pageTypes = [
             'Home Page' => ['', 'home', 'index', 'main'],
@@ -364,7 +487,7 @@ class PageIssuesAnalytics extends AnalyticsEngine {
      * @return string
      */
     private function categorizeIssue($issue) {
-        $content = strtolower(($issue['title'] ?? '') . ' ' . ($issue['description'] ?? ''));
+        $content = $this->normalizeLowerText(($issue['title'] ?? '') . ' ' . ($issue['description'] ?? ''));
         
         $categories = [
             'Navigation' => ['navigation', 'menu', 'link', 'breadcrumb'],
@@ -496,10 +619,16 @@ class PageIssuesAnalytics extends AnalyticsEngine {
         });
         
         $topPages = [];
-        foreach (array_slice($pageMetrics, 0, 5) as $index => $page) {
+        foreach ($pageMetrics as $index => $page) {
             $topPages[] = [
                 'rank' => $index + 1,
                 'url' => $page['display_url'],
+            'raw_url' => $page['raw_url'] ?? '',
+                'display_url' => $page['display_url'],
+                'project_id' => (int) ($page['project_id'] ?? 0),
+                'page_id' => (int) ($page['page_id'] ?? 0),
+                'sample_issue_id' => (int) ($page['sample_issue_id'] ?? 0),
+            'page_number' => (string) ($page['page_number'] ?? ''),
                 'issue_count' => $page['issue_count'],
                 'severity_score' => $page['severity_score'],
                 'issue_density' => $page['issue_density'],

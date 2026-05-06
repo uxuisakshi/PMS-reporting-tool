@@ -5,7 +5,7 @@ require_once __DIR__ . '/../../includes/helpers.php';
 require_once __DIR__ . '/../../includes/project_permissions.php';
 
 $auth = new Auth();
-$auth->requireRole(['admin', 'super_admin']);
+$auth->requireRole(['admin']);
 
 $db = Database::getInstance();
 $userId = (int)($_SESSION['user_id'] ?? 0);
@@ -14,6 +14,11 @@ $baseDir = getBaseDir();
 ensureQaStatusPermissionsTable($db);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error'] = 'Invalid request. Please try again.';
+        header('Location: qa_status_permissions.php');
+        exit;
+    }
     try {
         if (isset($_POST['grant_project_scope'])) {
             $targetUserId = (int)($_POST['user_id'] ?? 0);
@@ -127,6 +132,7 @@ include __DIR__ . '/../../includes/header.php';
                 <div class="card-header"><strong>Grant Project Scope</strong></div>
                 <div class="card-body">
                     <form method="post" id="grantProjectQaPermissionForm">
+                        <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                         <input type="hidden" name="grant_project_scope" value="1">
                         <div class="mb-2">
                             <label class="form-label">User</label>
@@ -168,6 +174,7 @@ include __DIR__ . '/../../includes/header.php';
                 <div class="card-header"><strong>Grant Client Scope</strong></div>
                 <div class="card-body">
                     <form method="post" id="grantClientQaPermissionForm">
+                        <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                         <input type="hidden" name="grant_client_scope" value="1">
                         <div class="mb-2">
                             <label class="form-label">User</label>
@@ -237,6 +244,7 @@ include __DIR__ . '/../../includes/header.php';
                                     <td><?php echo htmlspecialchars((string)($r['granted_by_name'] ?: 'System')); ?></td>
                                     <td>
                                         <form method="post" class="d-inline" id="revokeQaPermissionForm_<?php echo (int)$r['id']; ?>">
+                                            <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                                             <input type="hidden" name="permission_id" value="<?php echo (int)$r['id']; ?>">
                                             <input type="hidden" name="revoke_permission" value="1">
                                             <button type="button" class="btn btn-sm btn-outline-danger"
@@ -254,4 +262,4 @@ include __DIR__ . '/../../includes/header.php';
         </div>
     </div>
 </div>
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<?php include __DIR__ . '/../../includes/footer.php'; 

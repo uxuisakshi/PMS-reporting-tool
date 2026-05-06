@@ -1,7 +1,9 @@
 <?php
+ob_start();
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/functions.php';
 require_once __DIR__ . '/../includes/helpers.php';
+ob_end_clean();
 
 header('Content-Type: application/json');
 
@@ -37,7 +39,7 @@ if (!$phaseId || !$projectId || !$field) {
 
 // Security: Only Admin, PL (if assigned), or QA can update phase status
 $canUpdate = false;
-if (in_array($userRole, ['admin', 'super_admin', 'qa'])) {
+if (in_array($userRole, ['admin', 'qa'])) {
     $canUpdate = true;
 } elseif ($userRole === 'project_lead') {
     $stmt = $db->prepare("SELECT id FROM projects WHERE id = ? AND project_lead_id = ?");
@@ -70,4 +72,3 @@ try {
     error_log("Phase Update API Error: " . $e->getMessage());
     echo json_encode(['success' => false, 'message' => 'Database error']);
 }
-?>

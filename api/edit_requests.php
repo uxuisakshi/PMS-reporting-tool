@@ -1,6 +1,8 @@
 <?php
+ob_start();
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/functions.php';
+ob_end_clean();
 
 header('Content-Type: application/json');
 
@@ -29,7 +31,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
 try {
     if ($action === 'get_pending') {
             // Only admin can view edit requests
-            if (!in_array($userRole, ['admin', 'super_admin'])) {
+            if (!in_array($userRole, ['admin'])) {
                 echo json_encode(['success' => false, 'message' => 'Permission denied']);
                 exit;
             }

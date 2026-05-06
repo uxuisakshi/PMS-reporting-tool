@@ -4,28 +4,38 @@ require_once __DIR__ . '/../../includes/functions.php';
 require_once __DIR__ . '/../../includes/helpers.php';
 
 $auth = new Auth();
-$auth->requireRole(['qa', 'admin', 'super_admin']);
+$auth->requireRole(['qa', 'admin']);
 
 $baseDir = getBaseDir();
 $db = Database::getInstance();
 $userId = $_SESSION['user_id'];
 
-// Get ALL QA's assigned projects (including completed)
+// Get QA-visible projects (assignments + created projects + explicit permissions)
 $assignedProjectsQuery = "
     SELECT DISTINCT p.id, p.title, p.po_number, p.status, p.project_type,
            COUNT(DISTINCT pp.id) as total_pages,
            COUNT(DISTINCT CASE WHEN pp.qa_id = ? THEN pp.id END) as assigned_pages,
            COUNT(DISTINCT CASE WHEN pp.status = 'completed' AND pp.qa_id = ? THEN pp.id END) as completed_pages
     FROM projects p
-    JOIN user_assignments ua ON p.id = ua.project_id
+    LEFT JOIN user_assignments ua ON p.id = ua.project_id
+    LEFT JOIN client_permissions cp ON cp.project_id = p.id
+        AND cp.user_id = ?
+        AND cp.is_active = 1
+        AND (cp.expires_at IS NULL OR cp.expires_at > NOW())
+        AND cp.permission_type IN ('view_project', 'edit_project')
     LEFT JOIN project_pages pp ON p.id = pp.project_id
-    WHERE ua.user_id = ? AND ua.role = 'qa'
+    WHERE (
+        (ua.user_id = ? AND (ua.is_removed IS NULL OR ua.is_removed = 0))
+        OR pp.qa_id = ?
+        OR p.created_by = ?
+        OR cp.id IS NOT NULL
+    )
     GROUP BY p.id, p.title, p.po_number, p.status, p.project_type
     ORDER BY p.created_at DESC
 ";
 
 $assignedProjects = $db->prepare($assignedProjectsQuery);
-$assignedProjects->execute([$userId, $userId, $userId]);
+$assignedProjects->execute([$userId, $userId, $userId, $userId, $userId, $userId]);
 $projects = $assignedProjects->fetchAll();
 
 include __DIR__ . '/../../includes/header.php';
@@ -130,10 +140,18 @@ include __DIR__ . '/../../includes/header.php';
                                     </div>
                                 </td>
                                 <td>
-                                    <a href="<?php echo $baseDir; ?>/modules/qa/qa_tasks.php?project_id=<?php echo $project['id']; ?>" 
-                                       class="btn btn-sm btn-primary">
-                                        <i class="fas fa-tasks"></i> View Tasks
-                                    </a>
+                                    <div class="d-flex gap-2 flex-wrap">
+                                        <a href="<?php echo $baseDir; ?>/modules/projects/view.php?id=<?php echo (int)$project['id']; ?>" 
+                                           class="btn btn-sm btn-primary">
+                                            <i class="fas fa-eye"></i> View Project
+                                        </a>
+                                        <?php if ((int)$project['assigned_pages'] > 0): ?>
+                                            <a href="<?php echo $baseDir; ?>/modules/qa/qa_tasks.php?project_id=<?php echo (int)$project['id']; ?>" 
+                                               class="btn btn-sm btn-outline-secondary">
+                                                <i class="fas fa-tasks"></i> QA Tasks
+                                            </a>
+                                        <?php endif; ?>
+                                    </div>
                                 </td>
                             </tr>
                             <?php endforeach; ?>
@@ -145,33 +163,6 @@ include __DIR__ . '/../../includes/header.php';
     </div>
 </div>
 
-<script>
-// Project table filtering
-$(document).ready(function() {
-    function filterProjects() {
-        const statusFilter = $('#statusFilter').val().toLowerCase();
-        const typeFilter = $('#typeFilter').val().toLowerCase();
-        const searchText = $('#searchProject').val().toLowerCase();
-        
-        $('#projectsTable tbody tr').each(function() {
-            const row = $(this);
-            const status = row.data('status');
-            const type = row.data('type');
-            const title = row.data('title');
-            
-            let showRow = true;
-            
-            if (statusFilter && status !== statusFilter) showRow = false;
-            if (typeFilter && type !== typeFilter) showRow = false;
-            if (searchText && title.indexOf(searchText) === -1) showRow = false;
-            
-            row.toggle(showRow);
-        });
-    }
-    
-    $('#statusFilter, #typeFilter').on('change', filterProjects);
-    $('#searchProject').on('keyup', filterProjects);
-});
-</script>
+<script src="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/assets/js/my-projects-filter.js"></script>
 
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<?php include __DIR__ . '/../../includes/footer.php'; 

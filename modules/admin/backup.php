@@ -1,14 +1,20 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
 require_once __DIR__ . '/../../includes/backup.php';
+require_once __DIR__ . '/../../includes/helpers.php';
 
 $auth = new Auth();
-$auth->requireRole(['admin', 'super_admin']);
+$auth->requireRole(['admin']);
 
 $backupManager = new BackupManager();
 
 // Handle actions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error'] = 'Invalid request. Please try again.';
+        header('Location: backup.php');
+        exit;
+    }
     if (isset($_POST['create_backup'])) {
         $filename = $backupManager->createBackup();
         if ($filename) {
@@ -49,6 +55,7 @@ include __DIR__ . '/../../includes/header.php';
         </div>
         <div class="card-body">
             <form method="POST">
+                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                 <p>Click the button below to create a complete backup of the database.</p>
                 <button type="submit" name="create_backup" class="btn btn-primary">
                     <i class="fas fa-database"></i> Create Backup Now
@@ -69,6 +76,7 @@ include __DIR__ . '/../../includes/header.php';
             </div>
             <?php else: ?>
             <form id="restoreBackupForm" method="POST">
+                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                 <input type="hidden" name="restore_backup" value="1">
                 <div class="mb-3">
                     <label>Select Backup File</label>

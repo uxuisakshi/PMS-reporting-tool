@@ -22,7 +22,7 @@ $accessControl = new ClientAccessControlManager();
 
 // Get client user ID
 $clientUserId = $userId;
-if (in_array($userRole, ['admin', 'super_admin']) && isset($_GET['client_id'])) {
+if (in_array($userRole, ['admin']) && isset($_GET['client_id'])) {
     $clientUserId = intval($_GET['client_id']);
 }
 
@@ -30,7 +30,7 @@ if (in_array($userRole, ['admin', 'super_admin']) && isset($_GET['client_id'])) 
 $assignedProjects = $accessControl->getAssignedProjects($clientUserId);
 
 // Set page title
-$pageTitle = 'My Projects - Client Portal';
+$pageTitle = 'My Digital Assets';
 
 // Ensure baseDir is set
 if (!isset($baseDir)) {
@@ -53,12 +53,12 @@ if (!isset($baseDir)) {
                 <nav aria-label="breadcrumb">
                     <ol class="breadcrumb">
                         <li class="breadcrumb-item">
-                            <a href="<?php echo $baseDir; ?>/modules/client/dashboard.php">
+                            <a href="<?php echo $baseDir; ?>/client/dashboard">
                                 <i class="fas fa-tachometer-alt"></i> Dashboard
                             </a>
                         </li>
                         <li class="breadcrumb-item active" aria-current="page">
-                            <i class="fas fa-folder-open"></i> Projects
+                            <i class="fas fa-folder-open"></i> Digital Assets
                         </li>
                     </ol>
                 </nav>
@@ -66,11 +66,8 @@ if (!isset($baseDir)) {
                 <div class="header-content">
                     <h1 class="page-title">
                         <i class="fas fa-folder-open text-primary"></i>
-                        My Projects
+                        My Digital Assets
                     </h1>
-                    <p class="page-subtitle">
-                        Browse and analyze your assigned projects
-                    </p>
                 </div>
             </div>
         </div>
@@ -78,79 +75,71 @@ if (!isset($baseDir)) {
 
     <?php if (!empty($assignedProjects)): ?>
     
-    <!-- Projects Grid -->
-    <div class="row">
-        <?php foreach ($assignedProjects as $project): 
-            // Get project statistics
-            $projectStats = $accessControl->getProjectStatistics($clientUserId, $project['id']);
-        ?>
-        <div class="col-lg-6 col-xl-4 mb-4">
-            <div class="project-card">
-                <div class="project-header">
-                    <h3 class="project-title">
-                        <?php echo htmlspecialchars($project['title']); ?>
-                    </h3>
-                    <span class="project-status badge bg-<?php 
-                        echo $project['status'] === 'completed' ? 'success' : 
-                             ($project['status'] === 'in_progress' ? 'primary' : 'secondary');
-                    ?>">
-                        <?php echo ucfirst(str_replace('_', ' ', $project['status'])); ?>
-                    </span>
-                </div>
-                
-                <div class="project-stats">
-                    <div class="stat-row">
-                        <div class="stat-item">
-                            <span class="stat-label">Total Issues</span>
-                            <span class="stat-value"><?php echo $projectStats['client_ready_issues'] ?? 0; ?></span>
+    <div class="table-responsive projects-table-wrap">
+        <table class="table table-hover align-middle projects-table mb-0">
+            <thead>
+                <tr>
+                    <th>Digital Asset</th>
+                    <th>Status</th>
+                    <th class="text-end">Total Issues</th>
+                    <th class="text-end">Open Issues</th>
+                    <th class="text-end">Resolved</th>
+                    <th class="text-end">Compliance</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php foreach ($assignedProjects as $project): 
+                    $projectStats = $accessControl->getProjectStatistics($clientUserId, $project['id']);
+                ?>
+                <tr>
+                    <td>
+                        <div class="project-name-cell">
+                            <div class="project-name"><?php echo htmlspecialchars($project['title']); ?></div>
                         </div>
-                        <div class="stat-item">
-                            <span class="stat-label">Open Issues</span>
-                            <span class="stat-value text-warning"><?php echo $projectStats['open_issues'] ?? 0; ?></span>
+                    </td>
+                    <td>
+                        <span class="badge bg-<?php 
+                            echo $project['status'] === 'completed' ? 'success' : 
+                                 ($project['status'] === 'in_progress' ? 'primary' : 'secondary');
+                        ?>">
+                            <?php echo ucfirst(str_replace('_', ' ', $project['status'])); ?>
+                        </span>
+                    </td>
+                    <td class="text-end fw-semibold"><?php echo (int) ($projectStats['client_ready_issues'] ?? 0); ?></td>
+                    <td class="text-end text-warning fw-semibold"><?php echo (int) ($projectStats['open_issues'] ?? 0); ?></td>
+                    <td class="text-end text-success fw-semibold"><?php echo (int) ($projectStats['resolved_issues'] ?? 0); ?></td>
+                    <td class="text-end text-info fw-semibold"><?php echo round((float) ($projectStats['compliance_score'] ?? 0), 1); ?>%</td>
+                    <td>
+                        <div class="project-actions">
+                            <a href="<?php echo htmlspecialchars(buildClientProjectUrl((int) $project['id'], (string) ($project['title'] ?? ''), (string) ($project['project_code'] ?? '')), ENT_QUOTES, 'UTF-8'); ?>" class="btn btn-primary btn-sm">
+                                <i class="fas fa-chart-line"></i> Analytics
+                            </a>
+                            <a href="<?php echo htmlspecialchars(buildClientProjectUrl((int) $project['id'], (string) ($project['title'] ?? ''), (string) ($project['project_code'] ?? '')), ENT_QUOTES, 'UTF-8'); ?>" class="btn btn-outline-secondary btn-sm">
+                                <i class="fas fa-eye"></i> Overview
+                            </a>
                         </div>
-                    </div>
-                    <div class="stat-row">
-                        <div class="stat-item">
-                            <span class="stat-label">Resolved</span>
-                            <span class="stat-value text-success"><?php echo $projectStats['resolved_issues'] ?? 0; ?></span>
-                        </div>
-                        <div class="stat-item">
-                            <span class="stat-label">Compliance</span>
-                            <span class="stat-value text-info"><?php echo round($projectStats['compliance_score'] ?? 0, 1); ?>%</span>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="project-actions">
-                    <a href="<?php echo $baseDir; ?>/modules/client/project_dashboard.php?id=<?php echo $project['id']; ?>" 
-                       class="btn btn-primary btn-sm">
-                        <i class="fas fa-chart-line"></i> View Analytics
-                    </a>
-                    <a href="<?php echo $baseDir; ?>/modules/projects/view.php?id=<?php echo $project['id']; ?>" 
-                       class="btn btn-outline-secondary btn-sm">
-                        <i class="fas fa-eye"></i> Project Details
-                    </a>
-                </div>
-            </div>
-        </div>
-        <?php endforeach; ?>
+                    </td>
+                </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
     </div>
     
     <?php else: ?>
     
-    <!-- No Projects State -->
+    <!-- No Digital Assets State -->
     <div class="row">
         <div class="col-12">
             <div class="no-projects-state">
                 <div class="no-projects-icon">
                     <i class="fas fa-folder-open fa-4x text-muted"></i>
                 </div>
-                <h3>No Projects Assigned</h3>
+                <h3>No Digital Assets Assigned</h3>
                 <p class="text-muted">
-                    You don't have any projects assigned to your account yet. 
-                    Please contact your administrator to get started.
+                    No digital assets are available yet.
                 </p>
-                <a href="<?php echo $baseDir; ?>/modules/client/dashboard.php" class="btn btn-primary">
+                <a href="<?php echo $baseDir; ?>/client/dashboard" class="btn btn-primary">
                     <i class="fas fa-tachometer-alt"></i> Return to Dashboard
                 </a>
             </div>
@@ -198,78 +187,43 @@ if (!isset($baseDir)) {
     margin: 0;
 }
 
-.project-card {
+.projects-table-wrap {
     background: #fff;
     border: 1px solid #e9ecef;
     border-radius: 12px;
-    padding: 24px;
-    height: 100%;
-    transition: all 0.3s ease;
+    overflow: hidden;
     box-shadow: 0 2px 4px rgba(0,0,0,0.05);
 }
 
-.project-card:hover {
-    transform: translateY(-4px);
-    box-shadow: 0 8px 25px rgba(0,0,0,0.15);
-    border-color: #2563eb;
+.projects-table thead th {
+    background: #f8f9fa;
+    color: #495057;
+    font-size: 0.85rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    border-bottom: 1px solid #dee2e6;
+    padding: 14px 16px;
 }
 
-.project-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    margin-bottom: 20px;
-    gap: 12px;
+.projects-table tbody td {
+    padding: 16px;
+    border-color: #eef2f7;
+    vertical-align: middle;
 }
 
-.project-title {
-    font-size: 1.25rem;
+.projects-table tbody tr:hover {
+    background: #f8fbff;
+}
+
+.project-name {
+    font-size: 1rem;
     font-weight: 600;
     color: #2c3e50;
-    margin: 0;
-    line-height: 1.3;
-    flex: 1;
 }
 
-.project-status {
-    font-size: 0.8rem;
-    padding: 4px 8px;
-    flex-shrink: 0;
-}
-
-.project-stats {
-    margin-bottom: 20px;
-}
-
-.stat-row {
-    display: flex;
-    justify-content: space-between;
-    margin-bottom: 12px;
-}
-
-.stat-row:last-child {
-    margin-bottom: 0;
-}
-
-.stat-item {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    text-align: center;
-    flex: 1;
-}
-
-.stat-label {
-    font-size: 0.8rem;
-    color: #6c757d;
-    margin-bottom: 4px;
-    font-weight: 500;
-}
-
-.stat-value {
-    font-size: 1.1rem;
-    font-weight: 700;
-    color: #2c3e50;
+.project-meta {
+    margin-top: 4px;
 }
 
 .project-actions {
@@ -322,22 +276,9 @@ if (!isset($baseDir)) {
         font-size: 1.5rem;
     }
     
-    .project-card {
-        padding: 20px;
-    }
-    
-    .project-header {
-        flex-direction: column;
-        align-items: stretch;
-        gap: 8px;
-    }
-    
-    .project-status {
-        align-self: flex-start;
-    }
-    
-    .stat-row {
-        margin-bottom: 16px;
+    .projects-table thead th,
+    .projects-table tbody td {
+        padding: 12px;
     }
     
     .project-actions {
@@ -353,13 +294,9 @@ if (!isset($baseDir)) {
     .page-title {
         font-size: 1.25rem;
     }
-    
-    .project-card {
-        padding: 16px;
-    }
-    
-    .project-title {
-        font-size: 1.1rem;
+
+    .project-name {
+        font-size: 0.95rem;
     }
     
     .no-projects-state {

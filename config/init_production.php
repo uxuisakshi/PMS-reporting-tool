@@ -248,6 +248,7 @@ class ProductionInitializer {
         
         // Check database connection
         try {
+            /** @var PDO $db */
             $db = Database::getInstance();
             $db->query('SELECT 1');
             $health['checks']['database'] = 'OK';

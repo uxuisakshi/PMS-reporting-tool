@@ -1,4 +1,4 @@
--- Migration: Add client dashboard access
+﻿-- Migration: Add client dashboard access
 -- Description: Adds client_id to users table and creates client role for dashboard access
 -- Date: 2026-03-03
 
@@ -69,7 +69,7 @@ SET @current_enum = (
 SET @preparedStatement = (SELECT IF(
   LOCATE('client', @current_enum) > 0,
   'SELECT 1',
-  'ALTER TABLE `users` MODIFY COLUMN `role` ENUM(''admin'', ''super_admin'', ''project_lead'', ''qa'', ''at_tester'', ''ft_tester'', ''client'') NOT NULL DEFAULT ''at_tester'''
+  'ALTER TABLE `users` MODIFY COLUMN `role` ENUM(''admin'', ''admin'', ''project_lead'', ''qa'', ''at_tester'', ''ft_tester'', ''client'') NOT NULL DEFAULT ''at_tester'''
 ));
 PREPARE alterIfNotExists FROM @preparedStatement;
 EXECUTE alterIfNotExists;

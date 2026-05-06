@@ -1,13 +1,14 @@
-﻿<?php
+<?php
 /**
  * Availability Status Master Management
  */
 
 require_once __DIR__ . '/../../includes/auth.php';
 require_once __DIR__ . '/../../includes/functions.php';
+require_once __DIR__ . '/../../includes/helpers.php';
 
 $auth = new Auth();
-$auth->requireRole(['admin', 'super_admin']);
+$auth->requireRole(['admin']);
 
 $baseDir = getBaseDir();
 $db = Database::getInstance();
@@ -15,6 +16,11 @@ $db = Database::getInstance();
 ensureAvailabilityStatusMaster($db);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error'] = 'Invalid request. Please try again.';
+        header('Location: ' . $_SERVER['PHP_SELF']);
+        exit;
+    }
     $action = $_POST['action'] ?? '';
 
     if ($action === 'add') {
@@ -196,6 +202,7 @@ include __DIR__ . '/../../includes/header.php';
     <div class="modal-dialog">
         <div class="modal-content">
             <form method="POST">
+                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                 <input type="hidden" name="action" value="add">
                 <div class="modal-header">
                     <h5 class="modal-title">Add Availability Status</h5>
@@ -245,6 +252,7 @@ include __DIR__ . '/../../includes/header.php';
     <div class="modal-dialog">
         <div class="modal-content">
             <form method="POST">
+                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                 <input type="hidden" name="action" value="edit">
                 <input type="hidden" name="id" id="edit_id">
                 <div class="modal-header">
@@ -295,37 +303,11 @@ include __DIR__ . '/../../includes/header.php';
 </div>
 
 <form id="deleteStatusForm" method="POST" class="d-none">
+    <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
     <input type="hidden" name="action" value="delete">
     <input type="hidden" name="id" id="delete_id">
 </form>
 
-<script>
-function editStatus(status) {
-    document.getElementById('edit_id').value = status.id || '';
-    document.getElementById('edit_status_key').value = status.status_key || '';
-    document.getElementById('edit_status_label').value = status.status_label || '';
-    document.getElementById('edit_badge_color').value = status.badge_color || 'secondary';
-    document.getElementById('edit_display_order').value = status.display_order || 0;
-    document.getElementById('edit_description').value = status.description || '';
+<script src="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/assets/js/admin-availability-status.js"></script>
 
-    var activeInput = document.getElementById('edit_is_active');
-    activeInput.checked = String(status.is_active) === '1';
-    activeInput.disabled = (status.status_key === 'not_updated');
-
-    bootstrap.Modal.getOrCreateInstance(document.getElementById('editStatusModal')).show();
-}
-
-function deleteStatus(id, label) {
-    if (!id) return;
-    confirmModal('Delete availability status "' + label + '"?', function () {
-        document.getElementById('delete_id').value = id;
-        document.getElementById('deleteStatusForm').submit();
-    }, {
-        title: 'Delete Availability Status',
-        confirmText: 'Delete',
-        confirmClass: 'btn-danger'
-    });
-}
-</script>
-
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<?php include __DIR__ . '/../../includes/footer.php'; 

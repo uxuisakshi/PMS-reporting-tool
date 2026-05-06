@@ -282,7 +282,7 @@ function showCredentialModal(cred = null) {
                                     <div class="mb-3">
                                         <label class="form-label"><i class="fas fa-lock"></i> Password ${isEdit ? '(leave blank to keep current)' : '*'}</label>
                                         <div class="input-group">
-                                            <input type="password" class="form-control" name="password" id="credPassword" ${!isEdit ? 'required' : ''} placeholder="Enter password">
+                                            <input type="password" autocomplete="off" class="form-control" name="password" id="credPassword" ${!isEdit ? 'required' : ''} placeholder="Enter password">
                                             <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('credPassword')">
                                                 <i class="fas fa-eye"></i>
                                             </button>

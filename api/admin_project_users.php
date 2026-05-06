@@ -3,7 +3,7 @@ require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/functions.php';
 
 $auth = new Auth();
-$auth->requireRole(['admin', 'super_admin']);
+$auth->requireRole(['admin']);
 
 header('Content-Type: application/json');
 
@@ -91,7 +91,7 @@ $sql = "SELECT
                 )
             ) > 0
            AND qsm.is_active = 1
-        WHERE u.role NOT IN ('admin', 'super_admin') 
+        WHERE u.role NOT IN ('admin') 
           AND i.id IS NOT NULL 
           AND ($whereSql)
         GROUP BY u.id, u.full_name, u.username

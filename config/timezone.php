@@ -23,4 +23,3 @@ if (!defined('APP_TIMEZONE')) {
 if (!defined('APP_TIMEZONE_OFFSET')) {
     define('APP_TIMEZONE_OFFSET', '+05:30');
 }
-?>

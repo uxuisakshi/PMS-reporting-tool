@@ -4,6 +4,7 @@ require_once __DIR__ . '/../../includes/functions.php';
 require_once __DIR__ . '/../../includes/helpers.php';
 require_once __DIR__ . '/../../includes/hours_validation.php';
 require_once __DIR__ . '/../../includes/client_permissions.php';
+require_once __DIR__ . '/../../includes/project_permissions.php';
 
 $auth = new Auth();
 $auth->requireLogin(); // Allow any logged-in user, we'll check specific permissions after loading the project
@@ -21,9 +22,10 @@ function isProjectPagesView($db) {
 }
 
 function ensureProjectPagesTable($db) {
+    // [DISABLED] This migration was found to be destructive if the view was scoped.
+    return;
+    /*
     if (!isProjectPagesView($db)) {
-        return;
-    }
 
     $db->exec("
         CREATE TABLE IF NOT EXISTS project_pages_tmp_no_view (
@@ -73,8 +75,7 @@ function ensureProjectPagesTable($db) {
         WHERE t.id IS NULL
     ");
 
-    $db->exec("DROP VIEW project_pages");
-    $db->exec("RENAME TABLE project_pages_tmp_no_view TO project_pages");
+    */
 }
 
 $db = Database::getInstance();
@@ -101,7 +102,8 @@ if (!$projectId) {
             SELECT DISTINCT p.id, p.title 
             FROM projects p
             JOIN user_assignments ua ON p.id = ua.project_id
-            WHERE ua.user_id = ? AND ua.role = 'qa' AND p.status != 'cancelled'
+            WHERE ua.user_id = ? AND p.status != 'cancelled'
+            AND (ua.is_removed IS NULL OR ua.is_removed = 0)
         ");
         $projects->execute([$userId]);
         $projects = $projects->fetchAll();
@@ -138,7 +140,7 @@ if (!$projectId) {
     // Check if user has permission to manage this project's team
     $canManageTeam = hasAdminPrivileges() || 
                      ($userRole === 'project_lead' && $project['project_lead_id'] == $userId) ||
-                     ($userRole === 'qa');
+                     ($userRole === 'qa' && hasProjectAccess($db, $userId, $projectId));
     
     // Also check client permissions for edit access
     if (!$canManageTeam) {
@@ -159,6 +161,13 @@ if (!$projectId) {
     ");
     $activeAllocatedStmtForTeam->execute([$projectId]);
     $activeAllocatedHoursForTeam = (float)$activeAllocatedStmtForTeam->fetchColumn();
+
+    // CSRF check for all POST actions on this page
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && !verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error'] = 'Invalid request. Please try again.';
+        header('Location: ' . getBaseDir() . '/modules/projects/manage_assignments.php?id=' . $projectId);
+        exit;
+    }
 
     // Handle Team Assignment (Add/Remove) - Users with manage team permission
     if ($canManageTeam) {
@@ -670,12 +679,67 @@ if (!$projectId) {
         ]);
 
         $_SESSION['success'] = "Page assignment updated.";
+        // Validate return_to to prevent open redirect — only allow relative paths on same host
+        $safeReturnTo = '';
         if (!empty($returnTo)) {
-            $sep = (strpos($returnTo, '?') === false) ? '?' : '&';
-            header("Location: {$returnTo}{$sep}tab=pages&subtab=project_pages_sub&focus_assign_btn=$pageId");
+            $parsed = parse_url($returnTo);
+            // Allow only if no host (relative path) and starts with /
+            if (!isset($parsed['host']) && !isset($parsed['scheme']) && isset($parsed['path']) && strpos($parsed['path'], '/') === 0) {
+                $safeReturnTo = $returnTo;
+            }
+        }
+        if (!empty($safeReturnTo)) {
+            $sep = (strpos($safeReturnTo, '?') === false) ? '?' : '&';
+            header("Location: {$safeReturnTo}{$sep}tab=pages&subtab=project_pages_sub&focus_assign_btn=$pageId");
         } else {
             header("Location: manage_assignments.php?project_id=$projectId&tab=pages&focus_page_id=$pageId");
         }
+        exit;
+    }
+
+    // Handle Edit Page Metadata
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['edit_page_metadata'])) {
+        $pageId = (int)$_POST['page_id'];
+        $pageName = trim($_POST['page_name'] ?? '');
+        $pageNumber = trim($_POST['page_number'] ?? '');
+        $url = trim($_POST['url'] ?? '');
+        $screenName = trim($_POST['screen_name'] ?? '');
+        $notes = trim($_POST['notes'] ?? '');
+
+        if ($pageId > 0 && !empty($pageName)) {
+            try {
+                // Get old values for logging
+                $oldStmt = $db->prepare("SELECT page_name, page_number, url, screen_name, notes FROM project_pages WHERE id = ?");
+                $oldStmt->execute([$pageId]);
+                $oldData = $oldStmt->fetch(PDO::FETCH_ASSOC);
+
+                if ($oldData) {
+                    $upd = $db->prepare("UPDATE project_pages SET page_name = ?, page_number = ?, url = ?, screen_name = ?, notes = ? WHERE id = ?");
+                    $upd->execute([$pageName, $pageNumber, $url, $screenName, $notes, $pageId]);
+
+                    logActivity($db, $userId, 'edit_page_metadata', 'page', $pageId, [
+                        'project_id' => $projectId,
+                        'old' => $oldData,
+                        'new' => [
+                            'page_name' => $pageName,
+                            'page_number' => $pageNumber,
+                            'url' => $url,
+                            'screen_name' => $screenName,
+                            'notes' => $notes
+                        ]
+                    ]);
+
+                    $_SESSION['success'] = "Page metadata updated successfully.";
+                } else {
+                    $_SESSION['error'] = "Page not found.";
+                }
+            } catch (Exception $e) {
+                $_SESSION['error'] = "Update failed: " . $e->getMessage();
+            }
+        } else {
+            $_SESSION['error'] = "Page ID and Name are required.";
+        }
+        header("Location: manage_assignments.php?project_id=$projectId&tab=pages");
         exit;
     }
 
@@ -755,19 +819,25 @@ if (!$projectId) {
             $maxRow = $maxStmt->fetch(PDO::FETCH_ASSOC);
             $nextN = (int)($maxRow['maxn'] ?? 0) + 1;
             $pageNumber = 'Page ' . $nextN;
-            
-            $stmt = $db->prepare("INSERT INTO project_pages (project_id, page_name, page_number, url, screen_name, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, NOW())");
-            $stmt->execute([$projectId, $pageName, $pageNumber, $url, $screenName, $userId]);
-            $newPageId = $db->lastInsertId();
-            
-            // Log Activity
-            logActivity($db, $userId, 'quick_add_page', 'page', $newPageId, [
-                'project_id' => $projectId,
-                'page_name' => $pageName,
-                'page_number' => $pageNumber
-            ]);
-            
-            $_SESSION['success'] = "Page '$pageName' added successfully as $pageNumber.";
+            // Check for existing page with same name or URL in same project
+            $checkStmt = $db->prepare("SELECT id FROM project_pages WHERE project_id = ? AND (page_name = ? OR (url IS NOT NULL AND url = ?)) LIMIT 1");
+            $checkStmt->execute([$projectId, $pageName, $url ?: null]);
+            if ($checkStmt->fetch()) {
+                $_SESSION['error'] = "A page with this name or URL already exists in this project.";
+            } else {
+                $stmt = $db->prepare("INSERT INTO project_pages (project_id, page_name, page_number, url, screen_name, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, NOW())");
+                $stmt->execute([$projectId, $pageName, $pageNumber, $url, $screenName, $userId]);
+                $newPageId = $db->lastInsertId();
+                
+                // Log Activity
+                logActivity($db, $userId, 'quick_add_page', 'page', $newPageId, [
+                    'project_id' => $projectId,
+                    'page_name' => $pageName,
+                    'page_number' => $pageNumber
+                ]);
+                
+                $_SESSION['success'] = "Page '$pageName' added successfully as $pageNumber.";
+            }
         } else {
             $_SESSION['error'] = "Page Name is required.";
         }
@@ -872,7 +942,7 @@ if (!$projectId) {
         if (!empty($pageIds)) {
             try {
                 // Ensure project_pages is a table, not a view
-                ensureProjectPagesTable($db);
+                // ensureProjectPagesTable($db);
                 
                 // Check if pages exist before deletion
                 $placeholders = implode(',', array_fill(0, count($pageIds), '?'));
@@ -909,9 +979,9 @@ if (!$projectId) {
                 $delChatMessages = $db->prepare("DELETE FROM chat_messages WHERE page_id IN ($validPlaceholders)");
                 $delChatMessages->execute($validPageIds);
                 
-                // Delete project_time_logs
-                $delTimeLogs = $db->prepare("DELETE FROM project_time_logs WHERE page_id IN ($validPlaceholders)");
-                $delTimeLogs->execute($validPageIds);
+                // Preserve production hours by detaching logs from deleted pages.
+                $detachTimeLogs = $db->prepare("UPDATE project_time_logs SET page_id = NULL WHERE page_id IN ($validPlaceholders)");
+                $detachTimeLogs->execute($validPageIds);
                 
                 // Delete page_environments
                 $deleteEnvStmt = $db->prepare("DELETE FROM page_environments WHERE page_id IN ($validPlaceholders)");
@@ -1155,8 +1225,7 @@ if (!$projectId) {
     $syncUniqueToProjectPages->execute([$userId, $projectId]);
     */
 
-    // Ensure project_pages is a table, not a view (required for deletions)
-    ensureProjectPagesTable($db);
+    // ensureProjectPagesTable($db);
 
     // Fetch pages for this project (now using only project_pages table)
     // Order: Global pages first (Global 1, Global 2, ...), then Page pages (Page 1, Page 2, ..., Page 10, ...)
@@ -1189,7 +1258,7 @@ if (!$projectId) {
         FROM users u
         JOIN user_assignments ua ON u.id = ua.user_id
         WHERE ua.project_id = ? 
-        AND u.role IN ('qa', 'at_tester', 'ft_tester') 
+        AND u.role IN ('qa', 'at_tester', 'ft_tester', 'project_lead') 
         AND u.is_active = 1 
         AND (ua.is_removed IS NULL OR ua.is_removed = 0)
         ORDER BY u.full_name
@@ -1201,7 +1270,7 @@ if (!$projectId) {
     $allAvailableUsers = $db->prepare("
         SELECT DISTINCT u.id, u.full_name, u.role 
         FROM users u
-        WHERE u.role IN ('qa', 'at_tester', 'ft_tester') 
+        WHERE u.role IN ('qa', 'at_tester', 'ft_tester', 'project_lead') 
         AND u.is_active = 1
         AND u.id NOT IN (
             SELECT user_id 
@@ -1389,17 +1458,17 @@ include __DIR__ . '/../../includes/header.php';
                                 <?php endif; ?>
                                 
                                 <form method="POST" id="teamAssignForm" action="manage_assignments.php?project_id=<?php echo (int)$projectId; ?>&tab=team">
+                                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars(generateCsrfToken()); ?>">
                                     <input type="hidden" name="project_id" value="<?php echo (int)$projectId; ?>">
                                     <div class="mb-3">
                                         <label class="form-label">Select Users</label>
-                                        <select name="user_ids[]" class="form-select" multiple size="10" required>
+                                        <select name="user_ids[]" id="teamUserSelect" class="form-select" multiple required>
                                             <?php foreach ($allAvailableUsers as $au): ?>
                                                 <option value="<?php echo $au['id']; ?>">
                                                     <?php echo htmlspecialchars($au['full_name']); ?> (<?php echo ucfirst(str_replace('_', ' ', $au['role'])); ?>)
                                                 </option>
                                             <?php endforeach; ?>
                                         </select>
-                                        <small class="text-muted">Hold Ctrl to select multiple</small>
                                     </div>
                                     <div class="mb-3">
                                         <label class="form-label">Allocated Hours</label>
@@ -1847,8 +1916,22 @@ include __DIR__ . '/../../includes/header.php';
                                             </span>
                                         </td>
                                         <td class="text-center">
+                                            <button type="button" class="btn btn-sm btn-outline-info" 
+                                                    data-bs-toggle="modal" 
+                                                    data-bs-target="#editMetadataModal" 
+                                                    onclick="populateEditMetadataModal(<?php echo htmlspecialchars(json_encode([
+                                                        'id' => $p['id'],
+                                                        'page_name' => $p['page_name'],
+                                                        'page_number' => $p['page_number'],
+                                                        'url' => $p['url'],
+                                                        'screen_name' => $p['screen_name'],
+                                                        'notes' => $p['notes'] ?? ''
+                                                    ])); ?>)"
+                                                    title="Edit page info (Name, Number, etc.)">
+                                                <i class="fas fa-info-circle"></i>
+                                            </button>
                                             <button type="button" class="btn btn-sm btn-outline-primary" data-page-edit-id="<?php echo $p['id']; ?>" data-bs-toggle="modal" data-bs-target="#pageModal<?php echo $p['id']; ?>" title="Edit assignments">
-                                                <i class="fas fa-edit"></i>
+                                                <i class="fas fa-user-edit"></i>
                                             </button>
                                             <?php if ($canManageTeam): ?>
                                                 <a href="?project_id=<?php echo $projectId; ?>&remove_page=<?php echo $p['id']; ?>" class="btn btn-sm btn-outline-danger ms-1" title="Delete page" onclick="confirmModal('Delete this page and its environment links? This cannot be undone.', function(){ window.location.href='?project_id=<?php echo $projectId; ?>&remove_page=<?php echo $p['id']; ?>'; }); return false;">
@@ -1971,6 +2054,7 @@ include __DIR__ . '/../../includes/header.php';
                     </div>
                     <div class="card-body">
                         <form method="POST">
+                            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars(generateCsrfToken()); ?>">
                             <div class="row">
                                 <div class="col-md-6">
                                     <h6 class="mb-3">Select Pages</h6>
@@ -2007,7 +2091,7 @@ include __DIR__ . '/../../includes/header.php';
                                                     <option value="">-- Don't Change --</option>
                                                     <?php foreach ($teamMembers as $tm): 
                                                         $currentRole = $tm['user_role'] ?? $tm['role'];
-                                                        if ($currentRole === 'at_tester'): ?>
+                                                        if ($currentRole === 'at_tester' || $currentRole === 'project_lead'): ?>
                                                         <option value="<?php echo $tm['user_id']; ?>"><?php echo htmlspecialchars($tm['full_name']); ?></option>
                                                     <?php endif; endforeach; ?>
                                                 </select>
@@ -2019,7 +2103,7 @@ include __DIR__ . '/../../includes/header.php';
                                                     <option value="">-- Don't Change --</option>
                                                     <?php foreach ($teamMembers as $tm): 
                                                         $currentRole = $tm['user_role'] ?? $tm['role'];
-                                                        if ($currentRole === 'ft_tester'): ?>
+                                                        if ($currentRole === 'ft_tester' || $currentRole === 'project_lead'): ?>
                                                         <option value="<?php echo $tm['user_id']; ?>"><?php echo htmlspecialchars($tm['full_name']); ?></option>
                                                     <?php endif; endforeach; ?>
                                                 </select>
@@ -2031,7 +2115,7 @@ include __DIR__ . '/../../includes/header.php';
                                                     <option value="">-- Don't Change --</option>
                                                     <?php foreach ($teamMembers as $tm): 
                                                         $currentRole = $tm['user_role'] ?? $tm['role'];
-                                                        if ($currentRole === 'qa'): ?>
+                                                        if ($currentRole === 'qa' || $currentRole === 'project_lead'): ?>
                                                         <option value="<?php echo $tm['user_id']; ?>"><?php echo htmlspecialchars($tm['full_name']); ?></option>
                                                     <?php endif; endforeach; ?>
                                                 </select>
@@ -2088,6 +2172,10 @@ include __DIR__ . '/../../includes/header.php';
         </div>
     <?php endif; ?>
 </div>
+
+<!-- Select2 -->
+<link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
 
 <style>
 .badge {
@@ -2157,390 +2245,43 @@ include __DIR__ . '/../../includes/header.php';
 }
 </style>
 
-<script>
-// Keep selected tab on page refresh
-document.addEventListener('DOMContentLoaded', function() {
-    const flashSuccess = <?php echo json_encode($flashSuccess); ?>;
-    const flashError = <?php echo json_encode($flashError); ?>;
-
-    function ensureNoticeWrap() {
-        let wrap = document.getElementById('pmsAssignNoticeWrap');
-        if (!wrap) {
-            wrap = document.createElement('div');
-            wrap.id = 'pmsAssignNoticeWrap';
-            wrap.className = 'pms-assign-notice-wrap';
-            document.body.appendChild(wrap);
-        }
-        return wrap;
-    }
-
-    function showAssignmentNotice(message, type) {
-        if (!message) return;
-        const wrap = ensureNoticeWrap();
-        const notice = document.createElement('div');
-        notice.className = 'pms-assign-notice ' + (type === 'error' ? 'error' : 'success');
-
-        const icon = type === 'error' ? 'fa-exclamation-circle text-danger' : 'fa-check-circle text-success';
-        notice.innerHTML =
-            '<i class="fas ' + icon + ' mt-1"></i>' +
-            '<div class="msg">' + message.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</div>' +
-            '<button type="button" class="close-btn" aria-label="Close">&times;</button>';
-
-        const removeNotice = function() {
-            if (notice.parentNode) {
-                notice.parentNode.removeChild(notice);
-            }
-        };
-
-        notice.querySelector('.close-btn').addEventListener('click', removeNotice);
-        wrap.appendChild(notice);
-        setTimeout(removeNotice, 5500);
-    }
-
-    function notifyAssignmentResult(message, type) {
-        if (!message) return;
-        const variant = type === 'error' ? 'danger' : 'success';
-        if (typeof window.showToast === 'function') {
-            window.showToast(message, variant, 5500);
-            return;
-        }
-        showAssignmentNotice(message, type);
-    }
-
-    if (flashSuccess) {
-        notifyAssignmentResult(flashSuccess, 'success');
-    }
-    if (flashError) {
-        notifyAssignmentResult(flashError, 'error');
-    }
-
-    const activeTab = '<?php echo $activeTab; ?>';
-    if (activeTab === 'pages') {
-        var someTabTriggerEl = document.querySelector('#pills-pages-tab')
-        var tab = new bootstrap.Tab(someTabTriggerEl)
-        tab.show()
-    } else if (activeTab === 'bulk') {
-        var someTabTriggerEl = document.querySelector('#pills-bulk-tab')
-        var tab = new bootstrap.Tab(someTabTriggerEl)
-        tab.show()
-    }
-    
-    // Auto-open modal or restore focus after assign
-    const params = new URLSearchParams(window.location.search);
-    const openPageId = params.get('open_page_id');
-    if (openPageId) {
-        const modalEl = document.getElementById('pageModal' + openPageId);
-        if (modalEl) {
-            const modal = new bootstrap.Modal(modalEl);
-            modal.show();
-        }
-    }
-    const focusPageId = params.get('focus_page_id');
-    if (focusPageId) {
-        const btn = document.querySelector('[data-page-edit-id="' + focusPageId + '"]');
-        if (btn) {
-            btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            btn.focus();
-        }
-    }
-
-    // Hours validation for team assignment
-    const hoursInput = document.getElementById('hoursInput');
-    const hoursValidation = document.getElementById('hoursValidation');
-    const availableForAllocation = <?php echo $availableForAllocation; ?>;
-    
-    if (hoursInput && hoursValidation) {
-        hoursInput.addEventListener('input', function() {
-            const inputValue = parseFloat(this.value) || 0;
-            
-            if (inputValue > availableForAllocation) {
-                hoursValidation.innerHTML = '<small class="text-danger"><i class="fas fa-exclamation-triangle"></i> Exceeds available allocation (' + availableForAllocation + ' hours)</small>';
-                this.classList.add('is-invalid');
-                document.querySelector('button[name="assign_team"]').disabled = true;
-            } else if (inputValue < 0) {
-                hoursValidation.innerHTML = '<small class="text-danger"><i class="fas fa-exclamation-triangle"></i> Hours cannot be negative</small>';
-                this.classList.add('is-invalid');
-                document.querySelector('button[name="assign_team"]').disabled = true;
-            } else {
-                hoursValidation.innerHTML = '<small class="text-success"><i class="fas fa-check"></i> Valid allocation</small>';
-                this.classList.remove('is-invalid');
-                this.classList.add('is-valid');
-                document.querySelector('button[name="assign_team"]').disabled = false;
-            }
-        });
-    }
-
-    // Team assignment submit: require at least one selection and allow direct submit
-    const teamAssignForm = document.getElementById('teamAssignForm');
-    if (teamAssignForm) {
-        teamAssignForm.addEventListener('submit', function(e) {
-            const selectedUsers = Array.from(teamAssignForm.querySelectorAll('select[name="user_ids[]"] option:checked'));
-            const selectedCount = selectedUsers.length;
-            if (selectedCount === 0) {
-                e.preventDefault();
-                if (typeof window.showToast === 'function') {
-                    showToast('Select at least one user to add.', 'warning');
-                }
-            }
-        });
-    }
-
-    const editTeamHoursModalEl = document.getElementById('editTeamHoursModal');
-    const editTeamHoursForm = document.getElementById('editTeamHoursForm');
-    const editHoursInputEl = document.getElementById('editMemberNewHours');
-    const saveTeamHoursBtn = document.getElementById('saveTeamHoursBtn');
-    const memberNameEl = document.getElementById('editMemberName');
-    const memberCurrentEl = document.getElementById('editMemberCurrentHours');
-    const memberUtilizedEl = document.getElementById('editMemberUtilizedHours');
-    const memberMaxEl = document.getElementById('editMemberMaxHours');
-    const memberHintEl = document.getElementById('editMemberHoursHint');
-    const memberAssignmentIdEl = document.getElementById('editMemberAssignmentId');
-
-    function validateEditHoursInput() {
-        if (!editHoursInputEl) return true;
-        const current = parseFloat(editHoursInputEl.dataset.current || '0') || 0;
-        const minHours = parseFloat(editHoursInputEl.dataset.min || '0') || 0;
-        const maxHours = parseFloat(editHoursInputEl.dataset.max || '0') || 0;
-        const overAllocated = String(editHoursInputEl.dataset.overAllocated || '0') === '1';
-        const value = parseFloat(editHoursInputEl.value);
-
-        if (!Number.isFinite(value)) {
-            editHoursInputEl.setCustomValidity('Please enter valid hours.');
-            if (saveTeamHoursBtn) saveTeamHoursBtn.disabled = true;
-            if (memberHintEl) memberHintEl.textContent = 'Enter hours to continue.';
-            return false;
-        }
-
-        if (value < minHours) {
-            editHoursInputEl.setCustomValidity('Hours cannot be lower than utilized hours.');
-            if (saveTeamHoursBtn) saveTeamHoursBtn.disabled = true;
-            if (memberHintEl) memberHintEl.textContent = `Minimum allowed: ${minHours.toFixed(1)}h`;
-            return false;
-        }
-
-        if (value > maxHours) {
-            editHoursInputEl.setCustomValidity('Hours exceed allowed maximum.');
-            if (saveTeamHoursBtn) saveTeamHoursBtn.disabled = true;
-            if (memberHintEl) {
-                memberHintEl.textContent = overAllocated
-                    ? `Project over-allocated. Only decrease allowed. Max: ${maxHours.toFixed(1)}h`
-                    : `Maximum allowed: ${maxHours.toFixed(1)}h`;
-            }
-            return false;
-        }
-
-        editHoursInputEl.setCustomValidity('');
-        if (saveTeamHoursBtn) saveTeamHoursBtn.disabled = false;
-        if (memberHintEl) {
-            if (overAllocated && maxHours <= current + 0.0001) {
-                memberHintEl.textContent = 'Project is over-allocated; you can decrease or keep current hours.';
-            } else {
-                memberHintEl.textContent = `Allowed range: ${minHours.toFixed(1)}h to ${maxHours.toFixed(1)}h`;
-            }
-        }
-        return true;
-    }
-
-    document.querySelectorAll('.edit-team-hours-btn').forEach(function(btn) {
-        btn.addEventListener('click', function() {
-            if (!editTeamHoursModalEl || !window.bootstrap) return;
-            const assignmentId = btn.getAttribute('data-assignment-id') || '';
-            const memberName = btn.getAttribute('data-user-name') || 'Member';
-            const currentHours = parseFloat(btn.getAttribute('data-current-hours') || '0') || 0;
-            const utilizedHours = parseFloat(btn.getAttribute('data-utilized-hours') || '0') || 0;
-            const maxHours = parseFloat(btn.getAttribute('data-max-hours') || '0') || 0;
-            const overAllocated = btn.getAttribute('data-over-allocated') === '1';
-
-            if (memberAssignmentIdEl) memberAssignmentIdEl.value = assignmentId;
-            if (memberNameEl) memberNameEl.textContent = memberName;
-            if (memberCurrentEl) memberCurrentEl.textContent = `Current: ${currentHours.toFixed(1)}h`;
-            if (memberUtilizedEl) memberUtilizedEl.textContent = `Utilized: ${utilizedHours.toFixed(1)}h`;
-            if (memberMaxEl) memberMaxEl.textContent = `Max: ${maxHours.toFixed(1)}h`;
-
-            if (editHoursInputEl) {
-                editHoursInputEl.value = currentHours.toFixed(1);
-                editHoursInputEl.min = utilizedHours.toFixed(1);
-                editHoursInputEl.max = maxHours.toFixed(1);
-                editHoursInputEl.dataset.current = currentHours.toFixed(1);
-                editHoursInputEl.dataset.min = utilizedHours.toFixed(1);
-                editHoursInputEl.dataset.max = maxHours.toFixed(1);
-                editHoursInputEl.dataset.overAllocated = overAllocated ? '1' : '0';
-            }
-
-            validateEditHoursInput();
-            bootstrap.Modal.getOrCreateInstance(editTeamHoursModalEl).show();
-        });
-    });
-
-    if (editHoursInputEl) {
-        editHoursInputEl.addEventListener('input', validateEditHoursInput);
-    }
-
-    if (editTeamHoursForm) {
-        editTeamHoursForm.addEventListener('submit', function(e) {
-            if (!validateEditHoursInput()) {
-                e.preventDefault();
-            }
-        });
-    }
-});
-
-// Bulk assignment helper functions
-function selectAllPages() {
-    document.querySelectorAll('.page-checkbox').forEach(checkbox => {
-        checkbox.checked = true;
-    });
-    updateBulkPreview();
-}
-
-function clearAllPages() {
-    document.querySelectorAll('.page-checkbox').forEach(checkbox => {
-        checkbox.checked = false;
-    });
-    updateBulkPreview();
-}
-
-function selectAllEnvs() {
-    document.querySelectorAll('.env-checkbox').forEach(checkbox => {
-        checkbox.checked = true;
-    });
-    updateBulkPreview();
-}
-
-function clearAllEnvs() {
-    document.querySelectorAll('.env-checkbox').forEach(checkbox => {
-        checkbox.checked = false;
-    });
-    updateBulkPreview();
-}
-
-function updateBulkPreview() {
-    const selectedPages = document.querySelectorAll('.page-checkbox:checked');
-    const selectedEnvs = document.querySelectorAll('.env-checkbox:checked');
-    const atTester = document.querySelector('select[name="bulk_at_tester"]').selectedOptions[0]?.text || 'None';
-    const ftTester = document.querySelector('select[name="bulk_ft_tester"]').selectedOptions[0]?.text || 'None';
-    const qa = document.querySelector('select[name="bulk_qa"]').selectedOptions[0]?.text || 'None';
-    
-    const previewDiv = document.getElementById('bulk-preview');
-    
-    if (selectedPages.length === 0 || selectedEnvs.length === 0) {
-        previewDiv.innerHTML = '<span class="text-muted">Select pages, testers/QA, and environments to see preview...</span>';
-        return;
-    }
-    
-    let html = '<div class="row">';
-    html += '<div class="col-md-6">';
-    html += '<h6>Selected Pages (' + selectedPages.length + '):</h6>';
-    html += '<ul class="list-unstyled small">';
-    selectedPages.forEach(page => {
-        const label = page.nextElementSibling.querySelector('strong').textContent;
-        html += '<li>• ' + label + '</li>';
-    });
-    html += '</ul></div>';
-    
-    html += '<div class="col-md-6">';
-    html += '<h6>Assignment Details:</h6>';
-    html += '<p class="small mb-1"><strong>AT Tester:</strong> ' + atTester + '</p>';
-    html += '<p class="small mb-1"><strong>FT Tester:</strong> ' + ftTester + '</p>';
-    html += '<p class="small mb-1"><strong>QA:</strong> ' + qa + '</p>';
-    html += '<p class="small mb-1"><strong>Environments (' + selectedEnvs.length + '):</strong></p>';
-    html += '<ul class="list-unstyled small">';
-    selectedEnvs.forEach(env => {
-        const label = env.nextElementSibling.textContent;
-        html += '<li>• ' + label + '</li>';
-    });
-    html += '</ul></div></div>';
-    
-    previewDiv.innerHTML = html;
-}
-
-// Add event listeners for real-time preview updates
-document.addEventListener('DOMContentLoaded', function() {
-    // Ensure modals are mounted under body to avoid hidden/stacking issues
-    document.querySelectorAll('.modal').forEach(modalEl => {
-        if (modalEl.parentElement !== document.body) {
-            document.body.appendChild(modalEl);
-        }
-    });
-
-    // Page checkboxes
-    document.querySelectorAll('.page-checkbox').forEach(checkbox => {
-        checkbox.addEventListener('change', updateBulkPreview);
-    });
-    
-    // Environment checkboxes
-    document.querySelectorAll('.env-checkbox').forEach(checkbox => {
-        checkbox.addEventListener('change', updateBulkPreview);
-    });
-    
-    // Tester/QA selects
-    document.querySelectorAll('select[name^="bulk_"]').forEach(select => {
-        select.addEventListener('change', updateBulkPreview);
-    });
-});
-
-function showQuickAssignModal() {
-    var modal = new bootstrap.Modal(document.getElementById('quickAssignModal'));
-    modal.show();
-}
-
-function selectAllQuickEnvs() {
-    document.querySelectorAll('.quick-env-checkbox').forEach(checkbox => {
-        checkbox.checked = true;
-    });
-}
-
-function clearAllQuickEnvs() {
-    document.querySelectorAll('.quick-env-checkbox').forEach(checkbox => {
-        checkbox.checked = false;
-    });
-}
-
-function toggleRowDetails(pageId, context = 'main') {
-    const detailsRowId = context === 'nested' ? 'details-nested-' + pageId : 'details-' + pageId;
-    const detailsRow = document.getElementById(detailsRowId);
-    const eyeIcon = document.getElementById('eye-' + (context === 'nested' ? 'nested-' : '') + pageId);
-    
-    if (!detailsRow) {
-        console.error('Details row not found:', detailsRowId);
-        return;
-    }
-    
-    if (detailsRow.classList.contains('show')) {
-        detailsRow.classList.remove('show');
-        // Update both eye icons if they exist
-        const mainEyeIcon = document.getElementById('eye-' + pageId);
-        const nestedEyeIcon = document.getElementById('eye-nested-' + pageId);
-        
-        if (mainEyeIcon) {
-            mainEyeIcon.classList.remove('fa-eye-slash');
-            mainEyeIcon.classList.add('fa-eye');
-        }
-        if (nestedEyeIcon) {
-            nestedEyeIcon.classList.remove('fa-eye-slash');
-            nestedEyeIcon.classList.add('fa-eye');
-        }
-    } else {
-        // Hide all other details first (both main and nested)
-        document.querySelectorAll('[id^="details-"]').forEach(row => {
-            row.classList.remove('show');
-        });
-        document.querySelectorAll('[id^="eye-"]').forEach(icon => {
-            icon.classList.remove('fa-eye-slash');
-            icon.classList.add('fa-eye');
-        });
-        
-        // Show this row's details
-        detailsRow.classList.add('show');
-        
-        // Update the clicked eye icon
-        if (eyeIcon) {
-            eyeIcon.classList.remove('fa-eye');
-            eyeIcon.classList.add('fa-eye-slash');
-        }
-    }
-}
+<script nonce="<?php echo $cspNonce ?? ''; ?>">
+// Config for manage-assignments.js
+window._manageAssignFlash = {
+    success: <?php echo json_encode($flashSuccess); ?>,
+    error:   <?php echo json_encode($flashError); ?>
+};
+window._manageAssignConfig = {
+    activeTab: '<?php echo $activeTab; ?>',
+    projectId: <?php echo (int)$projectId; ?>,
+    availableForAllocation: <?php echo $availableForAllocation; ?>
+};
 </script>
+<script src="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/assets/js/manage-assignments.js?v=<?php echo $assetVersion ?? time(); ?>"></script>
+<!-- manage-assignments.js handles all JS logic above -->
+
+<script nonce="<?php echo $cspNonce ?? ''; ?>">
+jQuery(function ($) {
+    $('#teamUserSelect').select2({
+        width: '100%',
+        placeholder: 'Search and select users...',
+        allowClear: true,
+        closeOnSelect: false
+    }).on('select2:select select2:unselect', function () {
+        var $el = $(this);
+        setTimeout(function () {
+            // Clear search text
+            var $search = $el.data('select2').$container.find('.select2-search__field');
+            if ($search.length) $search.val('');
+            // Re-open with empty search to refresh results
+            $el.select2('close');
+            $el.select2('open');
+        }, 10);
+    });
+});
+</script>
+
+
 
 <!-- Quick Add Page Modal -->
 <div class="modal fade" id="addPageModal" tabindex="-1">
@@ -2552,7 +2293,8 @@ function toggleRowDetails(pageId, context = 'main') {
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
-                    <div class="mb-3">
+                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars(generateCsrfToken()); ?>">
+                    <input type="hidden" name="quick_add_page" value="1">
                         <label class="form-label">Page Name *</label>
                         <input type="text" name="page_name" class="form-control" required placeholder="e.g. Login Page">
                     </div>
@@ -2584,6 +2326,7 @@ function toggleRowDetails(pageId, context = 'main') {
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
+                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars(generateCsrfToken()); ?>">
                     <input type="hidden" name="assignment_id" id="editMemberAssignmentId" value="">
                     <input type="hidden" name="project_id" value="<?php echo (int)$projectId; ?>">
 
@@ -2622,6 +2365,7 @@ function toggleRowDetails(pageId, context = 'main') {
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
+                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars(generateCsrfToken()); ?>">
                     <div class="alert alert-info">
                         <i class="fas fa-info-circle"></i> This will assign the selected tester/QA and environments to ALL pages in this project at once.
                     </div>
@@ -2658,7 +2402,7 @@ function toggleRowDetails(pageId, context = 'main') {
                                     <option value="">-- Keep Current --</option>
                                     <?php foreach ($teamMembers as $tm): 
                                         $currentRole = $tm['user_role'] ?? $tm['role'];
-                                        if ($currentRole === 'qa'): ?>
+                                        if ($currentRole === 'qa' || $currentRole === 'project_lead'): ?>
                                         <option value="<?php echo $tm['user_id']; ?>"><?php echo htmlspecialchars($tm['full_name']); ?></option>
                                     <?php endif; endforeach; ?>
                                 </select>
@@ -2708,6 +2452,7 @@ function toggleRowDetails(pageId, context = 'main') {
     <div class="modal-dialog">
         <div class="modal-content text-start">
             <form method="POST">
+                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars(generateCsrfToken()); ?>">
                 <input type="hidden" name="page_id" value="<?php echo $p['id']; ?>">
                 <input type="hidden" name="return_to" value="<?php echo htmlspecialchars($_GET['return_to'] ?? ''); ?>">
                 <div class="modal-header">
@@ -2723,7 +2468,7 @@ function toggleRowDetails(pageId, context = 'main') {
                             <option value="">-- None --</option>
                             <?php foreach ($teamMembers as $tm): 
                                 $currentRole = $tm['user_role'] ?? $tm['role'];
-                                if ($currentRole === 'at_tester'): ?>
+                                if ($currentRole === 'at_tester' || $currentRole === 'project_lead'): ?>
                                 <option value="<?php echo $tm['user_id']; ?>" <?php echo $p['at_tester_id'] == $tm['user_id'] ? 'selected' : ''; ?>><?php echo htmlspecialchars($tm['full_name']); ?></option>
                             <?php endif; endforeach; ?>
                         </select>
@@ -2734,7 +2479,7 @@ function toggleRowDetails(pageId, context = 'main') {
                             <option value="">-- None --</option>
                             <?php foreach ($teamMembers as $tm): 
                                 $currentRole = $tm['user_role'] ?? $tm['role'];
-                                if ($currentRole === 'ft_tester'): ?>
+                                if ($currentRole === 'ft_tester' || $currentRole === 'project_lead'): ?>
                                 <option value="<?php echo $tm['user_id']; ?>" <?php echo $p['ft_tester_id'] == $tm['user_id'] ? 'selected' : ''; ?>><?php echo htmlspecialchars($tm['full_name']); ?></option>
                             <?php endif; endforeach; ?>
                         </select>
@@ -2745,7 +2490,7 @@ function toggleRowDetails(pageId, context = 'main') {
                             <option value="">-- None --</option>
                             <?php foreach ($teamMembers as $tm): 
                                 $currentRole = $tm['user_role'] ?? $tm['role'];
-                                if ($currentRole === 'qa'): ?>
+                                if ($currentRole === 'qa' || $currentRole === 'project_lead'): ?>
                                 <option value="<?php echo $tm['user_id']; ?>" <?php echo $p['qa_id'] == $tm['user_id'] ? 'selected' : ''; ?>><?php echo htmlspecialchars($tm['full_name']); ?></option>
                             <?php endif; endforeach; ?>
                         </select>
@@ -2824,103 +2569,66 @@ function toggleRowDetails(pageId, context = 'main') {
 <?php endforeach; ?>
 <?php endif; ?>
 
-<script>
-// Multiselect delete functionality for pages tab
-$(document).ready(function() {
-    // Select all checkbox
-    $('#selectAllPages').on('change', function() {
-        $('.page-select').prop('checked', $(this).prop('checked'));
-        updateSelectedPagesCount();
-    });
-    
-    // Individual checkbox
-    $('.page-select').on('change', function() {
-        updateSelectedPagesCount();
-        // Update select all checkbox state
-        const total = $('.page-select').length;
-        const checked = $('.page-select:checked').length;
-        $('#selectAllPages').prop('checked', total === checked);
-    });
-    
-    // Update count and enable/disable delete button
-    function updateSelectedPagesCount() {
-        const count = $('.page-select:checked').length;
-        $('#selectedPagesCount').text(count);
-        $('#bulkDeletePagesBtn').prop('disabled', count === 0);
-    }
-    
-    // Bulk delete button click
-    $('#bulkDeletePagesBtn').on('click', function() {
-        const selectedIds = [];
-        $('.page-select:checked').each(function() {
-            selectedIds.push($(this).val());
-        });
-        
-        if (selectedIds.length === 0) {
-            return;
-        }
-        
-        const message = `Are you sure you want to delete ${selectedIds.length} page(s)? This will also delete all environment assignments and cannot be undone.`;
-        
-        if (typeof confirmModal === 'function') {
-            confirmModal(message, function() {
-                // Create form and submit
-                const form = $('<form>', {
-                    method: 'POST',
-                    action: window.location.href
-                });
-                
-                form.append($('<input>', {
-                    type: 'hidden',
-                    name: 'bulk_delete_pages',
-                    value: '1'
-                }));
-                
-                form.append($('<input>', {
-                    type: 'hidden',
-                    name: 'project_id',
-                    value: '<?php echo $projectId; ?>'
-                }));
-                
-                form.append($('<input>', {
-                    type: 'hidden',
-                    name: 'page_ids',
-                    value: selectedIds.join(',')
-                }));
-                
-                $('body').append(form);
-                form.submit();
-            });
-        } else if (confirm(message)) {
-            // Fallback to regular confirm
-            const form = $('<form>', {
-                method: 'POST',
-                action: window.location.href
-            });
-            
-            form.append($('<input>', {
-                type: 'hidden',
-                name: 'bulk_delete_pages',
-                value: '1'
-            }));
-            
-            form.append($('<input>', {
-                type: 'hidden',
-                name: 'project_id',
-                value: '<?php echo $projectId; ?>'
-            }));
-            
-            form.append($('<input>', {
-                type: 'hidden',
-                name: 'page_ids',
-                value: selectedIds.join(',')
-            }));
-            
-            $('body').append(form);
-            form.submit();
-        }
-    });
-});
+<!-- Edit Page Metadata Modal -->
+<div class="modal fade" id="editMetadataModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="POST" id="editMetadataForm">
+                <div class="modal-header">
+                    <h5 class="modal-title">Edit Page Information</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars(generateCsrfToken()); ?>">
+                    <input type="hidden" name="page_id" id="edit_page_id">
+                    <input type="hidden" name="edit_page_metadata" value="1">
+                    
+                    <div class="mb-3">
+                        <label class="form-label">Page Name *</label>
+                        <input type="text" name="page_name" id="edit_page_name" class="form-control" required>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">Page Number</label>
+                        <input type="text" name="page_number" id="edit_page_number" class="form-control" placeholder="e.g. Page 1">
+                        <small class="text-muted">Use 'Page X' format for consistent sorting.</small>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">URL / Screen ID</label>
+                        <input type="text" name="url" id="edit_page_url" class="form-control">
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">Screen Name (Optional)</label>
+                        <input type="text" name="screen_name" id="edit_screen_name" class="form-control">
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">Notes</label>
+                        <textarea name="notes" id="edit_page_notes" class="form-control" rows="3"></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save Changes</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script nonce="<?php echo $cspNonce ?? ''; ?>">
+function populateEditMetadataModal(data) {
+    document.getElementById('edit_page_id').value = data.id || '';
+    document.getElementById('edit_page_name').value = data.page_name || '';
+    document.getElementById('edit_page_number').value = data.page_number || '';
+    document.getElementById('edit_page_url').value = data.url || '';
+    document.getElementById('edit_screen_name').value = data.screen_name || '';
+    document.getElementById('edit_page_notes').value = data.notes || '';
+}
 </script>
 
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<!-- manage-assignments.js handles multiselect delete -->
+
+<?php include __DIR__ . '/../../includes/footer.php'; 

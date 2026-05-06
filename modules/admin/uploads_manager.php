@@ -4,7 +4,7 @@ require_once __DIR__ . '/../../includes/helpers.php';
 require_once __DIR__ . '/../../includes/functions.php';
 
 $auth = new Auth();
-$auth->requireRole(['admin', 'super_admin']);
+$auth->requireRole(['admin']);
 
 $db = Database::getInstance();
 $baseDir = getBaseDir();
@@ -52,7 +52,52 @@ function isWithinRoot(string $root, string $candidate): bool {
 
 $roots = buildUploadRoots();
 
+// AJAX: preview cleanup count before actual delete
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['action']) && $_GET['action'] === 'preview_cleanup') {
+    header('Content-Type: application/json');
+    $scopeType = trim((string)($_GET['scope_type'] ?? ''));
+    $projectId = (int)($_GET['project_id'] ?? 0);
+    $userId    = (int)($_GET['user_id'] ?? 0);
+
+    $where  = ["asset_type = 'file'", "file_path IS NOT NULL", "file_path LIKE 'assets/uploads/%'"];
+    $params = [];
+    $label  = '';
+
+    if ($scopeType === 'project' && $projectId > 0) {
+        $where[]  = 'project_id = ?';
+        $params[] = $projectId;
+        $proj = $db->prepare("SELECT title FROM projects WHERE id = ? LIMIT 1");
+        $proj->execute([$projectId]);
+        $label = 'Project: ' . ($proj->fetchColumn() ?: '#' . $projectId);
+    } elseif ($scopeType === 'user' && $userId > 0) {
+        $where[]  = 'created_by = ?';
+        $params[] = $userId;
+        $usr = $db->prepare("SELECT full_name, email FROM users WHERE id = ? LIMIT 1");
+        $usr->execute([$userId]);
+        $urow = $usr->fetch(PDO::FETCH_ASSOC);
+        $label = $urow ? $urow['full_name'] . ' (' . $urow['email'] . ')' : '#' . $userId;
+    } else {
+        echo json_encode(['success' => false, 'message' => 'Invalid scope or missing selection.']);
+        exit;
+    }
+
+    $countStmt = $db->prepare('SELECT COUNT(*) FROM project_assets WHERE ' . implode(' AND ', $where));
+    $countStmt->execute($params);
+    $count = (int)$countStmt->fetchColumn();
+
+    echo json_encode(['success' => true, 'count' => $count, 'label' => $label, 'scope_type' => $scopeType]);
+    exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    // CSRF protection for all state-changing POST actions
+    $csrfToken = $_POST['csrf_token'] ?? '';
+    if (!verifyCsrfToken($csrfToken)) {
+        $_SESSION['error'] = 'Invalid CSRF token.';
+        header('Location: ' . $baseDir . '/modules/admin/uploads_manager.php');
+        exit;
+    }
+
     if (isset($_POST['cleanup_action']) && $_POST['cleanup_action'] === 'purge_project_assets_scope') {
         $scopeType = trim((string)($_POST['scope_type'] ?? ''));
         $projectId = (int)($_POST['project_id'] ?? 0);
@@ -140,6 +185,71 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
+    if (isset($_POST['bulk_delete']) && $_POST['bulk_delete'] === '1') {
+        $selectedFiles = $_POST['selected_files'] ?? [];
+        if (!is_array($selectedFiles) || empty($selectedFiles)) {
+            $_SESSION['error'] = 'No files selected for deletion.';
+            header('Location: ' . $baseDir . '/modules/admin/uploads_manager.php');
+            exit;
+        }
+
+        $redirectQuery = (string)($_POST['redirect_query'] ?? '');
+        $deletedCount  = 0;
+        $failedCount   = 0;
+
+        foreach ($selectedFiles as $encoded) {
+            // Each entry is "storageKey::relativePath" base64-encoded
+            $decoded = base64_decode((string)$encoded, true);
+            if ($decoded === false || strpos($decoded, '::') === false) {
+                $failedCount++;
+                continue;
+            }
+            [$storageKey, $relativePath] = explode('::', $decoded, 2);
+            $storageKey   = trim($storageKey);
+            $relativePath = trim($relativePath);
+
+            if (!isset($roots[$storageKey]) || $relativePath === '' || strpos($relativePath, "\0") !== false) {
+                $failedCount++;
+                continue;
+            }
+
+            $rootPath   = $roots[$storageKey];
+            $targetPath = realpath($rootPath . DIRECTORY_SEPARATOR . $relativePath);
+
+            if ($targetPath === false || !is_file($targetPath) || !isWithinRoot($rootPath, $targetPath)) {
+                $failedCount++;
+                continue;
+            }
+
+            $relativeUnix = ltrim(str_replace('\\', '/', $relativePath), '/');
+            if (@unlink($targetPath)) {
+                $deletedCount++;
+                if ($storageKey === 'assets_uploads') {
+                    $dbPath = 'assets/uploads/' . $relativeUnix;
+                    $db->prepare('DELETE FROM project_assets WHERE file_path = ?')->execute([$dbPath]);
+                }
+            } else {
+                $failedCount++;
+            }
+        }
+
+        try {
+            logActivity($db, (int)$_SESSION['user_id'], 'admin_bulk_delete_uploads', 'file', 0, [
+                'deleted' => $deletedCount,
+                'failed'  => $failedCount,
+            ]);
+        } catch (Throwable $_) {}
+
+        $_SESSION['success'] = $deletedCount . ' file(s) deleted successfully.' . ($failedCount > 0 ? ' ' . $failedCount . ' failed.' : '');
+        $target = $baseDir . '/modules/admin/uploads_manager.php';
+        if ($redirectQuery !== '') {
+            $redirectQuery = preg_replace('/[\r\n]/', '', $redirectQuery);
+            $target .= '?' . ltrim($redirectQuery, '?');
+        }
+        header('Location: ' . $target);
+        exit;
+    }
+
     if (isset($_POST['delete_upload']) && $_POST['delete_upload'] === '1') {
         $storageKey = trim((string)($_POST['storage_key'] ?? ''));
         $relativePath = trim((string)($_POST['relative_path'] ?? ''));
@@ -173,19 +283,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     if ($storageKey === 'uploads') {
                         $dbPath = 'uploads/' . $relativeUnix;
-                        if (strpos($relativeUnix, 'pdf_export_templates/') === 0) {
-                            $cfgPath = __DIR__ . '/../../storage/pdf_export_template.json';
-                            if (is_file($cfgPath)) {
-                                $raw = @file_get_contents($cfgPath);
-                                $cfg = $raw ? json_decode($raw, true) : null;
-                                if (is_array($cfg) && (string)($cfg['logo_url'] ?? '') === $dbPath) {
-                                    $cfg['logo_url'] = '';
-                                    $cfg['logo_alt'] = '';
-                                    @file_put_contents($cfgPath, json_encode($cfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-                                    $cleanupNotes[] = 'cleared PDF template logo reference';
-                                }
-                            }
-                        }
                     }
 
                     $msg = 'File deleted successfully.';
@@ -207,6 +304,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $target = $baseDir . '/modules/admin/uploads_manager.php';
         if ($redirectQuery !== '') {
+            // Sanitize redirectQuery - strip CRLF to prevent header injection
+            $redirectQuery = preg_replace('/[\r\n]/', '', $redirectQuery);
             $target .= '?' . ltrim($redirectQuery, '?');
         }
         header('Location: ' . $target);
@@ -217,11 +316,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $q = trim((string)($_GET['q'] ?? ''));
 $locationFilter = trim((string)($_GET['location'] ?? 'all'));
 $sort = trim((string)($_GET['sort'] ?? 'newest'));
+$filterProject = (int)($_GET['filter_project'] ?? 0);
+$filterUser    = (int)($_GET['filter_user'] ?? 0);
 $page = max(1, (int)($_GET['page'] ?? 1));
 $perPage = (int)($_GET['per_page'] ?? 50);
 if ($perPage <= 0 || $perPage > 500) {
     $perPage = 50;
 }
+
+$projects = $db->query("SELECT id, title FROM projects ORDER BY title ASC")->fetchAll(PDO::FETCH_ASSOC);
+$users = $db->query("SELECT id, full_name, email FROM users ORDER BY full_name ASC")->fetchAll(PDO::FETCH_ASSOC);
 
 $files = [];
 $totalSize = 0;
@@ -254,18 +358,64 @@ foreach ($roots as $storageKey => $rootPath) {
         $urlPath = $baseDir . '/api/secure_file.php?path=' . rawurlencode($rawPath);
 
         $files[] = [
-            'storage_key' => $storageKey,
+            'storage_key'   => $storageKey,
             'storage_label' => $storageKey === 'uploads' ? 'uploads/' : 'assets/uploads/',
             'relative_path' => $relativePath,
-            'name' => $item->getFilename(),
-            'extension' => strtolower(pathinfo($item->getFilename(), PATHINFO_EXTENSION)),
-            'size' => $size,
-            'mtime' => $mtime,
+            'name'          => $item->getFilename(),
+            'extension'     => strtolower(pathinfo($item->getFilename(), PATHINFO_EXTENSION)),
+            'size'          => $size,
+            'mtime'         => $mtime,
             'mtime_display' => date('Y-m-d H:i:s', $mtime),
-            'url' => $urlPath
+            'url'           => $urlPath,
+            'raw_path'      => $rawPath,
         ];
         $totalSize += $size;
     }
+}
+
+// Build full asset meta map for ALL scanned files (needed for project/user filter)
+$allAssetPaths = [];
+foreach ($files as $f) {
+    if ($f['storage_key'] === 'assets_uploads') {
+        $allAssetPaths[] = $f['raw_path'];
+    }
+}
+$fullMetaMap = [];
+if (!empty($allAssetPaths)) {
+    $allAssetPaths = array_values(array_unique($allAssetPaths));
+    $ph = implode(',', array_fill(0, count($allAssetPaths), '?'));
+    $metaStmt = $db->prepare("
+        SELECT pa.file_path, pa.project_id, pa.created_by,
+               p.title AS project_title, u.full_name AS uploader_name
+        FROM project_assets pa
+        LEFT JOIN projects p ON p.id = pa.project_id
+        LEFT JOIN users u ON u.id = pa.created_by
+        WHERE pa.file_path IN ($ph)
+    ");
+    $metaStmt->execute($allAssetPaths);
+    foreach ($metaStmt->fetchAll(PDO::FETCH_ASSOC) as $m) {
+        $fullMetaMap[(string)$m['file_path']] = $m;
+    }
+}
+
+// Apply project/user filter using meta map
+if ($filterProject > 0 || $filterUser > 0) {
+    $files = array_values(array_filter($files, function ($f) use ($filterProject, $filterUser, $fullMetaMap) {
+        $meta = $fullMetaMap[$f['raw_path']] ?? null;
+        if ($meta === null) {
+            // File not in project_assets — cannot match project/user filter
+            return false;
+        }
+        if ($filterProject > 0 && (int)($meta['project_id'] ?? 0) !== $filterProject) {
+            return false;
+        }
+        if ($filterUser > 0 && (int)($meta['created_by'] ?? 0) !== $filterUser) {
+            return false;
+        }
+        return true;
+    }));
+    // Recalculate total size after filter
+    $totalSize = array_sum(array_column($files, 'size'));
 }
 
 usort($files, function (array $a, array $b) use ($sort): int {
@@ -295,32 +445,7 @@ if ($page > $totalPages) {
 $offset = ($page - 1) * $perPage;
 $rows = array_slice($files, $offset, $perPage);
 
-$projects = $db->query("SELECT id, title FROM projects ORDER BY title ASC")->fetchAll(PDO::FETCH_ASSOC);
-$users = $db->query("SELECT id, full_name, email FROM users ORDER BY full_name ASC")->fetchAll(PDO::FETCH_ASSOC);
-
-$assetMetaMap = [];
-$assetPaths = [];
-foreach ($rows as $r) {
-    if ($r['storage_key'] === 'assets_uploads') {
-        $assetPaths[] = 'assets/uploads/' . $r['relative_path'];
-    }
-}
-if (!empty($assetPaths)) {
-    $assetPaths = array_values(array_unique($assetPaths));
-    $ph = implode(',', array_fill(0, count($assetPaths), '?'));
-    $metaSql = "
-        SELECT pa.file_path, pa.project_id, pa.created_by, p.title AS project_title, u.full_name AS uploader_name
-        FROM project_assets pa
-        LEFT JOIN projects p ON p.id = pa.project_id
-        LEFT JOIN users u ON u.id = pa.created_by
-        WHERE pa.file_path IN ($ph)
-    ";
-    $metaStmt = $db->prepare($metaSql);
-    $metaStmt->execute($assetPaths);
-    foreach ($metaStmt->fetchAll(PDO::FETCH_ASSOC) as $m) {
-        $assetMetaMap[(string)$m['file_path']] = $m;
-    }
-}
+$assetMetaMap = $fullMetaMap;
 
 $queryForForms = $_GET;
 unset($queryForForms['page']);
@@ -368,7 +493,8 @@ require_once __DIR__ . '/../../includes/header.php';
         <div class="card-body py-3">
             <div class="fw-semibold mb-2">Project/User Wise Upload Cleanup</div>
             <div class="small text-muted mb-2">This cleanup targets mapped uploads from <code>project_assets.file_path</code> only.</div>
-            <form method="post" class="row g-2 align-items-end" data-confirm="Delete uploads for the selected scope?">
+            <form method="post" id="cleanupForm" class="row g-2 align-items-end">
+                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                 <input type="hidden" name="cleanup_action" value="purge_project_assets_scope">
                 <div class="col-md-2">
                     <label class="form-label form-label-sm">Scope</label>
@@ -403,7 +529,7 @@ require_once __DIR__ . '/../../includes/header.php';
     </div>
 
     <form method="get" class="row g-2 mb-3">
-        <div class="col-md-4">
+        <div class="col-md-3">
             <input type="text" class="form-control form-control-sm" name="q" value="<?php echo htmlspecialchars($q); ?>" placeholder="Search by file name or path">
         </div>
         <div class="col-md-2">
@@ -414,6 +540,26 @@ require_once __DIR__ . '/../../includes/header.php';
             </select>
         </div>
         <div class="col-md-2">
+            <select name="filter_project" class="form-select form-select-sm">
+                <option value="">All Projects</option>
+                <?php foreach ($projects as $p): ?>
+                    <option value="<?php echo (int)$p['id']; ?>"<?php if ($filterProject === (int)$p['id']) echo ' selected'; ?>>
+                        <?php echo htmlspecialchars((string)$p['title']); ?>
+                    </option>
+                <?php endforeach; ?>
+            </select>
+        </div>
+        <div class="col-md-2">
+            <select name="filter_user" class="form-select form-select-sm">
+                <option value="">All Users</option>
+                <?php foreach ($users as $u): ?>
+                    <option value="<?php echo (int)$u['id']; ?>"<?php if ($filterUser === (int)$u['id']) echo ' selected'; ?>>
+                        <?php echo htmlspecialchars((string)$u['full_name']); ?>
+                    </option>
+                <?php endforeach; ?>
+            </select>
+        </div>
+        <div class="col-md-1">
             <select name="sort" class="form-select form-select-sm">
                 <option value="newest"<?php if ($sort === 'newest') echo ' selected'; ?>>Newest</option>
                 <option value="oldest"<?php if ($sort === 'oldest') echo ' selected'; ?>>Oldest</option>
@@ -423,22 +569,69 @@ require_once __DIR__ . '/../../includes/header.php';
                 <option value="name_desc"<?php if ($sort === 'name_desc') echo ' selected'; ?>>Name Z-A</option>
             </select>
         </div>
-        <div class="col-md-2">
+        <div class="col-md-1">
             <select name="per_page" class="form-select form-select-sm">
                 <?php foreach ([25, 50, 100, 200] as $pp): ?>
                     <option value="<?php echo $pp; ?>"<?php if ($perPage === $pp) echo ' selected'; ?>><?php echo $pp; ?>/page</option>
                 <?php endforeach; ?>
             </select>
         </div>
-        <div class="col-md-2">
-            <button class="btn btn-sm btn-primary w-100">Apply</button>
+        <div class="col-md-1 d-flex gap-1">
+            <button class="btn btn-sm btn-primary flex-grow-1">Apply</button>
+            <?php if ($q || $locationFilter !== 'all' || $filterProject || $filterUser): ?>
+                <a href="<?php echo htmlspecialchars($baseDir . '/modules/admin/uploads_manager.php'); ?>" class="btn btn-sm btn-outline-secondary" title="Reset filters"><i class="fas fa-times"></i></a>
+            <?php endif; ?>
         </div>
     </form>
 
+    <?php if ($filterProject > 0 || $filterUser > 0): ?>
+    <div class="alert alert-info py-2 mb-3">
+        <i class="fas fa-filter me-1"></i>
+        Showing uploads filtered by:
+        <?php if ($filterProject > 0):
+            $fp = array_filter($projects, fn($p) => (int)$p['id'] === $filterProject);
+            $fpTitle = $fp ? reset($fp)['title'] : '#' . $filterProject;
+        ?>
+            <strong>Project:</strong> <?php echo htmlspecialchars($fpTitle); ?>
+        <?php endif; ?>
+        <?php if ($filterUser > 0):
+            $fu = array_filter($users, fn($u) => (int)$u['id'] === $filterUser);
+            $fuName = $fu ? reset($fu)['full_name'] : '#' . $filterUser;
+        ?>
+            <?php if ($filterProject > 0) echo ' &amp; '; ?>
+            <strong>User:</strong> <?php echo htmlspecialchars($fuName); ?>
+        <?php endif; ?>
+        &mdash; <strong><?php echo number_format($totalFiles); ?></strong> file<?php echo $totalFiles !== 1 ? 's' : ''; ?> found
+        (<?php echo htmlspecialchars(formatBytesAdminUpload($totalSize)); ?>)
+    </div>
+    <?php endif; ?>
+
     <div class="table-responsive">
-        <table class="table table-striped table-sm align-middle">
+        <!-- Bulk action bar (hidden until selection) -->
+        <div id="umBulkBar" class="d-none alert alert-warning py-2 mb-2 d-flex align-items-center gap-3">
+            <span id="umBulkCount" class="fw-semibold"></span>
+            <button type="button" class="btn btn-sm btn-danger" id="umBulkDeleteBtn">
+                <i class="fas fa-trash me-1"></i> Delete Selected
+            </button>
+            <button type="button" class="btn btn-sm btn-outline-secondary" id="umBulkClearBtn">
+                Clear Selection
+            </button>
+        </div>
+
+        <!-- Hidden bulk delete form -->
+        <form method="post" id="umBulkForm">
+            <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
+            <input type="hidden" name="bulk_delete" value="1">
+            <input type="hidden" name="redirect_query" value="<?php echo htmlspecialchars($redirectQuery); ?>">
+            <div id="umBulkInputs"></div>
+        </form>
+
+        <table class="table table-striped table-sm align-middle" id="umTable">
             <thead>
                 <tr>
+                    <th style="width:36px;">
+                        <input type="checkbox" id="umSelectAll" class="form-check-input" title="Select all on this page">
+                    </th>
                     <th>File</th>
                     <th>Location</th>
                     <th>Project</th>
@@ -451,14 +644,20 @@ require_once __DIR__ . '/../../includes/header.php';
             </thead>
             <tbody>
                 <?php if (empty($rows)): ?>
-                    <tr><td colspan="8" class="text-muted">No files found for current filters.</td></tr>
+                    <tr><td colspan="9" class="text-muted">No files found for current filters.</td></tr>
                 <?php else: ?>
                     <?php foreach ($rows as $r): ?>
                         <?php
-                        $metaKey = $r['storage_key'] === 'assets_uploads' ? ('assets/uploads/' . $r['relative_path']) : '';
-                        $meta = $metaKey !== '' && isset($assetMetaMap[$metaKey]) ? $assetMetaMap[$metaKey] : null;
+                        $metaKey  = $r['storage_key'] === 'assets_uploads' ? ('assets/uploads/' . $r['relative_path']) : '';
+                        $meta     = $metaKey !== '' && isset($assetMetaMap[$metaKey]) ? $assetMetaMap[$metaKey] : null;
+                        $fileToken = base64_encode($r['storage_key'] . '::' . $r['relative_path']);
                         ?>
                         <tr>
+                            <td>
+                                <input type="checkbox" class="form-check-input um-row-check"
+                                       value="<?php echo htmlspecialchars($fileToken, ENT_QUOTES, 'UTF-8'); ?>"
+                                       data-name="<?php echo htmlspecialchars($r['name'], ENT_QUOTES, 'UTF-8'); ?>">
+                            </td>
                             <td>
                                 <div class="fw-semibold"><?php echo htmlspecialchars($r['name']); ?></div>
                                 <div class="small text-muted"><?php echo htmlspecialchars($r['extension'] ?: 'no-extension'); ?></div>
@@ -472,7 +671,8 @@ require_once __DIR__ . '/../../includes/header.php';
                             <td>
                                 <div class="d-flex gap-1">
                                     <a href="<?php echo htmlspecialchars($r['url']); ?>" class="btn btn-sm btn-outline-primary" target="_blank" rel="noopener">Open</a>
-                                    <form method="post" class="d-inline" data-confirm="Delete this file?">
+                                    <form method="post" class="d-inline um-delete-form" data-filename="<?php echo htmlspecialchars($r['name'], ENT_QUOTES, 'UTF-8'); ?>">
+                                        <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                                         <input type="hidden" name="delete_upload" value="1">
                                         <input type="hidden" name="storage_key" value="<?php echo htmlspecialchars($r['storage_key']); ?>">
                                         <input type="hidden" name="relative_path" value="<?php echo htmlspecialchars($r['relative_path']); ?>">
@@ -489,57 +689,63 @@ require_once __DIR__ . '/../../includes/header.php';
     </div>
 
     <nav aria-label="Uploads pages">
-        <ul class="pagination pagination-sm">
+        <ul class="pagination pagination-sm flex-wrap">
             <?php
             $qs = $_GET;
             unset($qs['page']);
             $baseQs = http_build_query($qs);
             $baseUrl = strtok($_SERVER['REQUEST_URI'], '?');
-            for ($p = 1; $p <= $totalPages; $p++) {
-                $activeClass = $p === $page ? ' active' : '';
-                $href = $baseUrl . '?' . ($baseQs !== '' ? $baseQs . '&' : '') . 'page=' . $p;
-                echo '<li class="page-item' . $activeClass . '"><a class="page-link" href="' . htmlspecialchars($href) . '">' . $p . '</a></li>';
+
+            $buildHref = function(int $p) use ($baseUrl, $baseQs): string {
+                return $baseUrl . '?' . ($baseQs !== '' ? $baseQs . '&' : '') . 'page=' . $p;
+            };
+
+            // Prev button
+            if ($page > 1) {
+                echo '<li class="page-item"><a class="page-link" href="' . htmlspecialchars($buildHref($page - 1)) . '">&laquo;</a></li>';
+            } else {
+                echo '<li class="page-item disabled"><span class="page-link">&laquo;</span></li>';
+            }
+
+            // Smart page numbers with ellipsis
+            $pagesToShow = [];
+            if ($totalPages <= 9) {
+                // Show all if 9 or fewer
+                for ($i = 1; $i <= $totalPages; $i++) $pagesToShow[] = $i;
+            } else {
+                $pagesToShow[] = 1;
+                if ($page > 4) $pagesToShow[] = '...';
+                for ($i = max(2, $page - 2); $i <= min($totalPages - 1, $page + 2); $i++) {
+                    $pagesToShow[] = $i;
+                }
+                if ($page < $totalPages - 3) $pagesToShow[] = '...';
+                $pagesToShow[] = $totalPages;
+            }
+
+            foreach ($pagesToShow as $p) {
+                if ($p === '...') {
+                    echo '<li class="page-item disabled"><span class="page-link">…</span></li>';
+                } else {
+                    $activeClass = $p === $page ? ' active' : '';
+                    echo '<li class="page-item' . $activeClass . '"><a class="page-link" href="' . htmlspecialchars($buildHref((int)$p)) . '">' . $p . '</a></li>';
+                }
+            }
+
+            // Next button
+            if ($page < $totalPages) {
+                echo '<li class="page-item"><a class="page-link" href="' . htmlspecialchars($buildHref($page + 1)) . '">&raquo;</a></li>';
+            } else {
+                echo '<li class="page-item disabled"><span class="page-link">&raquo;</span></li>';
             }
             ?>
         </ul>
     </nav>
+    <div class="text-muted small mt-1">
+        Page <?php echo $page; ?> of <?php echo $totalPages; ?> &mdash;
+        <?php echo number_format($totalFiles); ?> file<?php echo $totalFiles !== 1 ? 's' : ''; ?> total
+    </div>
 </div>
 
-<script>
-(function() {
-    var scopeType = document.getElementById('uploadScopeType');
-    var projectWrap = document.getElementById('uploadScopeProjectWrap');
-    var userWrap = document.getElementById('uploadScopeUserWrap');
-    if (!scopeType || !projectWrap || !userWrap) return;
-    function syncScope() {
-        if (scopeType.value === 'user') {
-            projectWrap.classList.add('d-none');
-            userWrap.classList.remove('d-none');
-        } else {
-            userWrap.classList.add('d-none');
-            projectWrap.classList.remove('d-none');
-        }
-    }
-    scopeType.addEventListener('change', syncScope);
-    syncScope();
-})();
+<script src="<?php echo getBaseDir(); ?>/assets/js/uploads-manager.js?v=<?php echo time(); ?>"></script>
 
-document.querySelectorAll('form[data-confirm]').forEach(function(form) {
-    form.addEventListener('submit', function(e) {
-        var msg = form.getAttribute('data-confirm') || 'Are you sure?';
-        e.preventDefault();
-        if (typeof window.confirmModal === 'function') {
-            window.confirmModal(msg, function() {
-                form.submit();
-            });
-            return;
-        }
-        var confirmFn = (typeof window._origConfirm === 'function') ? window._origConfirm : window.confirm;
-        if (confirmFn(msg)) {
-            form.submit();
-        }
-    });
-});
-</script>
-
-<?php require_once __DIR__ . '/../../includes/footer.php'; ?>
+<?php require_once __DIR__ . '/../../includes/footer.php'; 

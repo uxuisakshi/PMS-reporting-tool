@@ -1,0 +1,1558 @@
+{
+  "success": true,
+  "url": "https://www.icclindia.com/Static/investor_relations/corp_govreport.aspx",
+  "summary": {
+    "issues": 6,
+    "critical": 0,
+    "serious": 3,
+    "moderate": 3,
+    "minor": 0
+  },
+  "findings": [
+    {
+      "rule_id": "color-contrast",
+      "title": "Elements must meet minimum color contrast ratio thresholds",
+      "severity": "serious",
+      "needs_review_severity": "Critical",
+      "wcag_sc": [
+        "1.4.3"
+      ],
+      "wcag_name": "Contrast (Minimum)",
+      "wcag_level": "AA",
+      "actual_results": "URL: https://www.icclindia.com/Static/investor_relations/corp_govreport.aspx\n\nElement has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1\n- \"CGR31\" in \"About Us\"\n- \"CGR30\" in \"About Us\"\n- \"CGR30jne\" in \"About Us\"\n- \"CGR31march\" in \"About Us\"\n- \"CGR31dec\" in \"About Us\"\n- \"CGR30sept\" in \"About Us\"\n- \"CGR3019\" in \"About Us\"\n- \"CGR312019\" in \"About Us\"\n- \"CGR3118\" in \"About Us\"\n- \"CGR3018\" in \"About Us\"\n- \"CGR3006\" in \"About Us\"\n- \"CGR3106\" in \"About Us\"\n- \"CGR3117\" in \"About Us\"\n- \"CGR3017\" in \"About Us\"\n- \"CGR301706\" in \"About Us\"\n- \"CGR31017\" in \"About Us\"\n",
+      "incorrect_code": "<a href=\"/downloads/Corporate_Governance_Report_December312025.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report December 31,2025</a>\n\n<a href=\"/downloads/ICCL_Integrated_Filing_Governance_Sept_30_2025.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report September 30, 2025</a>\n\n<a href=\"/downloads/Corporate_Governance_Report_June_30_2025.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report June 30, 2025</a>\n\n<a href=\"/downloads/Integrated_Filing_Governance_March_31_2025.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report March 31, 2025</a>\n\n<a href=\"/downloads/ICCL_Integrated_Filing_Governance_for_quarter_ended_December_31_2024.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report December 31, 2024</a>\n\n<a href=\"/downloads/Corporate_Governance_Report_September30_2024.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\"> Corporate Governance Report September 30, 2024</a>\n\n<a href=\"/downloads/Corporate_Governance_Report_June30_2024.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\"> Corporate Governance Report June 30, 2024</a>\n\n<a href=\"/downloads/Corporate_Governance_Report_March_31_2024.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report March 31, 2024</a>\n\n<a href=\"/downloads/Corporate_Governance_Report_December_31_2023.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report December 31, 2023</a>\n\n<a href=\"/downloads/Corp_Gov_Report_September_30_2023.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report September 30, 2023</a>\n\n<a href=\"/downloads/Corporate_Governance_Report_June_30_2023.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report June 30, 2023</a>\n\n<a href=\"/downloads/Corporate_Governance_Report_March_31_2023.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report March 31, 2023</a>\n\n<a href=\"/downloads/Corporate_Governance_Report_December31_2022.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report December 31, 2022</a>\n\n<a href=\"/downloads/Corporate_Governance_Report_September30_2022.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report September 30, 2022</a>\n\n<a href=\"/downloads/Corporate_Governance_Report_June30_2022.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report June 30, 2022</a>\n\n<a href=\"/downloads/Corporate_Governance_Report_Mar31_2022.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report March 31, 2022</a>\n\n<a href=\"/downloads/Corporate_Governance_Report_Dec31_2021.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report December 31, 2021</a>\n\n<a href=\"/downloads/Corporate_Governance_Report_sept30_2021.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report September 30, 2021</a>\n\n<a href=\"/downloads/Corporate_Governance_Report_jun30_2021.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report June 30, 2021</a>\n\n<a href=\"/downloads/Corporate_Governance_Report_Mar31_2021.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report March 31, 2021</a>\n\n<a href=\"/downloads/Corporate_Governance_Report_Dec31_2020.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report December 31, 2020</a>\n\n<a href=\"/downloads/Corporate_Governance_Report_Sep30_2020.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR30\">Corporate Governance Report September 30, 2020</a>\n\n<a href=\"/downloads/Corporate_Governance_Report_June30_2020.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR30jne\">Corporate Governance Report June 30, 2020</a>\n\n<a href=\"/downloads/Corporate_Governance_Report_March31_2020.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31march\">Corporate Governance Report March 31, 2020</a>\n\n<a href=\"/downloads/Corporate_Governance_Report_Dec31_2019.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31dec\">Corporate Governance Report December 31, 2019</a>\n\n<a href=\"/downloads/Corporate_Governance_Report_Sep_30_2019.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR30sept\">Corporate Governance Report September 30, 2019</a>\n\n<a href=\"/downloads/Corporate_Governance_Report_June_30_2019.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR3019\">Corporate Governance Report June 30, 2019</a>\n\n<a href=\"/downloads/Corporate_Governance_Report_Mar_31_2019.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR312019\">Corporate Governance Report March 31, 2019</a>\n\n<a href=\"/downloads/Corporate_Governance_Report_Dec_31_2018.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR3118\">Corporate Governance Report December 31, 2018 </a>\n\n<a href=\"/downloads/Corporate_Governance_Report_Sept_30_2018.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR3018\">Corporate Governance Report September  30, 2018 </a>\n\n<a href=\"/downloads/Corporate_Governance_Report_Jun_30_2018.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR3006\">Corporate Governance Report June 30, 2018 </a>\n\n<a href=\"/downloads/Corporate_Governance_Report_Mar_31_2018.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR3106\">Corporate Governance Report March 31, 2018</a>\n\n<a href=\"/downloads/Corporate_Governance_Report_Dec_31_2017.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR3117\">Corporate Governance Report December 31, 2017</a>\n\n<a href=\"/downloads/Corporate_Governance_Report_Sept_30_2017.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR3017\">Corporate Governance Report September 30, 2017</a>\n\n<a href=\"/downloads/Corporate_Governance_Report_June_30_2017.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR301706\">Corporate Governance Report June 30, 2017</a>\n\n<a href=\"/downloads/Corporate_Governance_Report_March_31_2017.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31017\">Corporate Governance Report March 31, 2017 </a>",
+      "screenshots": [
+        "1774289066271_color-contrast_1.png",
+        "1774289066576_color-contrast_2.png"
+      ],
+      "recommendation": "Adjust foreground/background colors so text and interactive controls meet WCAG 2 AA contrast thresholds (minimum 4.5:1 for normal text, 3:1 for large text).\n- Adjust text/background colors until contrast reaches at least 4.5:1 for normal text and 3:1 for large text.\n- Re-check hover/focus/visited states of links and buttons to keep contrast compliant in all states.",
+      "correct_code": "/* Adjust colors so text contrast meets WCAG AA */\n.text-on-bg {\n  color: #1a1a1a;\n  background-color: #ffffff;\n}\n\n/* Reference failing detail: Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1 */",
+      "help_url": "",
+      "occurrence_count": 36,
+      "raw_nodes": [
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_December312025.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report December 31,2025</a>",
+          "target": [
+            "li:nth-child(1) > .mainlink[name=\"CGR31\"][role=\"link\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/ICCL_Integrated_Filing_Governance_Sept_30_2025.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report September 30, 2025</a>",
+          "target": [
+            "li:nth-child(2) > .mainlink[name=\"CGR31\"][role=\"link\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_June_30_2025.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report June 30, 2025</a>",
+          "target": [
+            "li:nth-child(3) > .mainlink[name=\"CGR31\"][role=\"link\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Integrated_Filing_Governance_March_31_2025.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report March 31, 2025</a>",
+          "target": [
+            "li:nth-child(4) > .mainlink[name=\"CGR31\"][role=\"link\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/ICCL_Integrated_Filing_Governance_for_quarter_ended_December_31_2024.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report December 31, 2024</a>",
+          "target": [
+            "li:nth-child(5) > .mainlink[name=\"CGR31\"][role=\"link\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_September30_2024.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\"> Corporate Governance Report September 30, 2024</a>",
+          "target": [
+            "li:nth-child(6) > .mainlink[name=\"CGR31\"][role=\"link\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_June30_2024.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\"> Corporate Governance Report June 30, 2024</a>",
+          "target": [
+            "li:nth-child(7) > .mainlink[name=\"CGR31\"][role=\"link\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_March_31_2024.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report March 31, 2024</a>",
+          "target": [
+            "li:nth-child(8) > .mainlink[name=\"CGR31\"][role=\"link\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_December_31_2023.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report December 31, 2023</a>",
+          "target": [
+            "li:nth-child(9) > .mainlink[name=\"CGR31\"][role=\"link\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corp_Gov_Report_September_30_2023.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report September 30, 2023</a>",
+          "target": [
+            "li:nth-child(10) > .mainlink[name=\"CGR31\"][role=\"link\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_June_30_2023.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report June 30, 2023</a>",
+          "target": [
+            "li:nth-child(11) > .mainlink[name=\"CGR31\"][role=\"link\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_March_31_2023.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report March 31, 2023</a>",
+          "target": [
+            "li:nth-child(12) > .mainlink[name=\"CGR31\"][role=\"link\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_December31_2022.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report December 31, 2022</a>",
+          "target": [
+            "li:nth-child(13) > .mainlink[name=\"CGR31\"][role=\"link\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_September30_2022.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report September 30, 2022</a>",
+          "target": [
+            "li:nth-child(14) > .mainlink[name=\"CGR31\"][role=\"link\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_June30_2022.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report June 30, 2022</a>",
+          "target": [
+            "li:nth-child(15) > .mainlink[name=\"CGR31\"][role=\"link\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_Mar31_2022.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report March 31, 2022</a>",
+          "target": [
+            "li:nth-child(16) > .mainlink[name=\"CGR31\"][role=\"link\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_Dec31_2021.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report December 31, 2021</a>",
+          "target": [
+            "li:nth-child(17) > .mainlink[name=\"CGR31\"][role=\"link\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_sept30_2021.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report September 30, 2021</a>",
+          "target": [
+            "li:nth-child(18) > .mainlink[name=\"CGR31\"][role=\"link\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_jun30_2021.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report June 30, 2021</a>",
+          "target": [
+            "li:nth-child(19) > .mainlink[name=\"CGR31\"][role=\"link\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_Mar31_2021.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report March 31, 2021</a>",
+          "target": [
+            "li:nth-child(20) > .mainlink[name=\"CGR31\"][role=\"link\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_Dec31_2020.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31\">Corporate Governance Report December 31, 2020</a>",
+          "target": [
+            "li:nth-child(21) > .mainlink[name=\"CGR31\"][role=\"link\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_Sep30_2020.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR30\">Corporate Governance Report September 30, 2020</a>",
+          "target": [
+            "a[name=\"CGR30\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_June30_2020.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR30jne\">Corporate Governance Report June 30, 2020</a>",
+          "target": [
+            "a[name=\"CGR30jne\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_March31_2020.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31march\">Corporate Governance Report March 31, 2020</a>",
+          "target": [
+            "a[name=\"CGR31march\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_Dec31_2019.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31dec\">Corporate Governance Report December 31, 2019</a>",
+          "target": [
+            "a[name=\"CGR31dec\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_Sep_30_2019.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR30sept\">Corporate Governance Report September 30, 2019</a>",
+          "target": [
+            "a[name=\"CGR30sept\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_June_30_2019.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR3019\">Corporate Governance Report June 30, 2019</a>",
+          "target": [
+            "a[name=\"CGR3019\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_Mar_31_2019.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR312019\">Corporate Governance Report March 31, 2019</a>",
+          "target": [
+            "a[name=\"CGR312019\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_Dec_31_2018.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR3118\">Corporate Governance Report December 31, 2018 </a>",
+          "target": [
+            "a[name=\"CGR3118\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_Sept_30_2018.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR3018\">Corporate Governance Report September  30, 2018 </a>",
+          "target": [
+            "a[name=\"CGR3018\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_Jun_30_2018.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR3006\">Corporate Governance Report June 30, 2018 </a>",
+          "target": [
+            "a[name=\"CGR3006\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_Mar_31_2018.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR3106\">Corporate Governance Report March 31, 2018</a>",
+          "target": [
+            "a[name=\"CGR3106\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_Dec_31_2017.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR3117\">Corporate Governance Report December 31, 2017</a>",
+          "target": [
+            "a[name=\"CGR3117\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_Sept_30_2017.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR3017\">Corporate Governance Report September 30, 2017</a>",
+          "target": [
+            "a[name=\"CGR3017\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_June_30_2017.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR301706\">Corporate Governance Report June 30, 2017</a>",
+          "target": [
+            "a[name=\"CGR301706\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        },
+        {
+          "any": [
+            {
+              "id": "color-contrast",
+              "data": {
+                "fgColor": "#018ad2",
+                "bgColor": "#ffffff",
+                "contrastRatio": 3.77,
+                "fontSize": "12.0pt (16px)",
+                "fontWeight": "normal",
+                "messageKey": null,
+                "expectedContrastRatio": "4.5:1"
+              },
+              "relatedNodes": [
+                {
+                  "html": "<body class=\"showBand\">",
+                  "target": [
+                    "body"
+                  ]
+                }
+              ],
+              "impact": "serious",
+              "message": "Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<a href=\"/downloads/Corporate_Governance_Report_March_31_2017.pdf\" class=\"mainlink\" target=\"_blank\" role=\"link\" name=\"CGR31017\">Corporate Governance Report March 31, 2017 </a>",
+          "target": [
+            "a[name=\"CGR31017\"]"
+          ],
+          "failureSummary": "Fix any of the following:\n  Element has insufficient color contrast of 3.77 (foreground color: #018ad2, background color: #ffffff, font size: 12.0pt (16px), font weight: normal). Expected contrast ratio of 4.5:1"
+        }
+      ]
+    },
+    {
+      "rule_id": "html-has-lang",
+      "title": "<html> element must have a lang attribute",
+      "severity": "serious",
+      "needs_review_severity": "Critical",
+      "wcag_sc": [
+        "3.1.1"
+      ],
+      "wcag_name": "Language of Page",
+      "wcag_level": "A",
+      "actual_results": "URL: https://www.icclindia.com/Static/investor_relations/corp_govreport.aspx\n\nThe <html> element does not have a lang attribute\n- \"Skip to main content -A A +A Group Websites Language Home About Us Investor Rela\" in Page section\n",
+      "incorrect_code": "<html>",
+      "screenshots": [
+        "1774289066939_html-has-lang_3.png"
+      ],
+      "recommendation": "Set the document language using the lang attribute on the <html> element.\n- Review affected elements and apply semantic HTML updates required by this rule.\n- Retest after fixes and verify no violations remain.",
+      "correct_code": "<html lang=\"en\">",
+      "help_url": "",
+      "occurrence_count": 1,
+      "raw_nodes": [
+        {
+          "any": [
+            {
+              "id": "has-lang",
+              "data": {
+                "messageKey": "noLang"
+              },
+              "relatedNodes": [],
+              "impact": "serious",
+              "message": "The <html> element does not have a lang attribute"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "serious",
+          "html": "<html>",
+          "target": [
+            "html"
+          ],
+          "failureSummary": "Fix any of the following:\n  The <html> element does not have a lang attribute"
+        }
+      ]
+    },
+    {
+      "rule_id": "landmark-one-main",
+      "title": "Document should have one main landmark",
+      "severity": "moderate",
+      "needs_review_severity": "Major",
+      "wcag_sc": [],
+      "wcag_name": "Bypass Blocks",
+      "wcag_level": "",
+      "actual_results": "URL: https://www.icclindia.com/Static/investor_relations/corp_govreport.aspx\n\nDocument does not have a main landmark\n- \"Skip to main content -A A +A Group Websites Language Home About Us Investor Rela\" in Page section\n",
+      "incorrect_code": "<html>",
+      "screenshots": [
+        "1774289067335_landmark-one-main_4.png"
+      ],
+      "recommendation": "Provide exactly one main landmark to help screen-reader users identify primary page content.\n- Review affected elements and apply semantic HTML updates required by this rule.\n- Retest after fixes and verify no violations remain.",
+      "correct_code": "<header>...</header>\n<main id=\"main-content\">...</main>\n<footer>...</footer>",
+      "help_url": "",
+      "occurrence_count": 1,
+      "raw_nodes": [
+        {
+          "any": [],
+          "all": [
+            {
+              "id": "page-has-main",
+              "data": null,
+              "relatedNodes": [],
+              "impact": "moderate",
+              "message": "Document does not have a main landmark"
+            }
+          ],
+          "none": [],
+          "impact": "moderate",
+          "html": "<html>",
+          "target": [
+            "html"
+          ],
+          "failureSummary": "Fix all of the following:\n  Document does not have a main landmark"
+        }
+      ]
+    },
+    {
+      "rule_id": "link-name",
+      "title": "Links must have discernible text",
+      "severity": "serious",
+      "needs_review_severity": "Critical",
+      "wcag_sc": [
+        "2.4.4",
+        "4.1.2"
+      ],
+      "wcag_name": "Link Purpose (In Context)",
+      "wcag_level": "A",
+      "actual_results": "URL: https://www.icclindia.com/Static/investor_relations/corp_govreport.aspx\n\nAccessible name is missing. Add a visible label/text, or provide <code>aria-label</code>, <code>aria-labelledby</code>, or <code>title</code> as appropriate.\n- \"#highcontrast\" in \"About Us\"\n",
+      "incorrect_code": "<a id=\"highcontrast\" href=\"#\" class=\"btn btn-sm-square bg-white text-highcontra me-1 link_contrast1\"> <i class=\"fa-solid fa-moon\"></i> </a>",
+      "screenshots": [
+        "1774289067701_link-name_5.png"
+      ],
+      "recommendation": "Give every link an accessible name that clearly describes its destination or action.\n- Ensure each link has clear, unique visible text describing destination/action.\n- Avoid generic labels like \"click here\" or \"read more\" without context.\n- Reference: https://www.w3.org/WAI/ARIA/apg/patterns/link/",
+      "correct_code": "<a href=\"#\">Descriptive link text</a>",
+      "help_url": "",
+      "occurrence_count": 1,
+      "raw_nodes": [
+        {
+          "any": [
+            {
+              "id": "has-visible-text",
+              "data": null,
+              "relatedNodes": [],
+              "impact": "serious",
+              "message": "Element does not have text that is visible to screen readers"
+            },
+            {
+              "id": "aria-label",
+              "data": null,
+              "relatedNodes": [],
+              "impact": "serious",
+              "message": "aria-label attribute does not exist or is empty"
+            },
+            {
+              "id": "aria-labelledby",
+              "data": null,
+              "relatedNodes": [],
+              "impact": "serious",
+              "message": "aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty"
+            },
+            {
+              "id": "non-empty-title",
+              "data": {
+                "messageKey": "noAttr"
+              },
+              "relatedNodes": [],
+              "impact": "serious",
+              "message": "Element has no title attribute"
+            }
+          ],
+          "all": [],
+          "none": [
+            {
+              "id": "focusable-no-name",
+              "data": null,
+              "relatedNodes": [],
+              "impact": "serious",
+              "message": "Element is in tab order and does not have accessible text"
+            }
+          ],
+          "impact": "serious",
+          "html": "<a id=\"highcontrast\" href=\"#\" class=\"btn btn-sm-square bg-white text-highcontra me-1 link_contrast1\"> <i class=\"fa-solid fa-moon\"></i> </a>",
+          "target": [
+            "#highcontrast"
+          ],
+          "failureSummary": "Fix all of the following:\n  Element is in tab order and does not have accessible text\n\nFix any of the following:\n  Element does not have text that is visible to screen readers\n  aria-label attribute does not exist or is empty\n  aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty\n  Element has no title attribute"
+        }
+      ]
+    },
+    {
+      "rule_id": "page-has-heading-one",
+      "title": "Page should contain a level-one heading",
+      "severity": "moderate",
+      "needs_review_severity": "Major",
+      "wcag_sc": [],
+      "wcag_name": "Page should contain a level-one heading",
+      "wcag_level": "",
+      "actual_results": "URL: https://www.icclindia.com/Static/investor_relations/corp_govreport.aspx\n\nPage must have a level-one heading\n- \"Skip to main content -A A +A Group Websites Language Home About Us Investor Rela\" in Page section\n",
+      "incorrect_code": "<html>",
+      "screenshots": [
+        "1774289068068_page-has-heading-one_6.png"
+      ],
+      "recommendation": "Page should contain a level-one heading\n- Inspect all flagged elements and apply semantic HTML fix required by this rule.\n- Validate the fix in keyboard and screen-reader flow.\n- Run scan again to confirm violation is resolved.",
+      "correct_code": "<h1>Page title</h1>\n<h2>Section heading</h2>\n<h3>Sub section heading</h3>",
+      "help_url": "",
+      "occurrence_count": 1,
+      "raw_nodes": [
+        {
+          "any": [],
+          "all": [
+            {
+              "id": "page-has-heading-one",
+              "data": null,
+              "relatedNodes": [],
+              "impact": "moderate",
+              "message": "Page must have a level-one heading"
+            }
+          ],
+          "none": [],
+          "impact": "moderate",
+          "html": "<html>",
+          "target": [
+            "html"
+          ],
+          "failureSummary": "Fix all of the following:\n  Page must have a level-one heading"
+        }
+      ]
+    },
+    {
+      "rule_id": "region",
+      "title": "All page content should be contained by landmarks",
+      "severity": "moderate",
+      "needs_review_severity": "Major",
+      "wcag_sc": [],
+      "wcag_name": "All page content should be contained by landmarks",
+      "wcag_level": "",
+      "actual_results": "URL: https://www.icclindia.com/Static/investor_relations/corp_govreport.aspx\n\nSome page content is not contained by landmarks\n- \"-A A +A\" in \"About Us\"\n- \"div\" in \"About Us\"\n- \"Corporate Governance Report Home Investor Relations Corporate Governance Report\" in \"About Us\"\n- \"Corporate Governance Report December 31,2025 Corporate Governance Report Septemb\" in \"About Us\"\n",
+      "incorrect_code": "<div class=\"h-100 d-inline-flex align-items-center\">\n\n<div class=\"container-fluid d-none d-lg-block\">\n\n<div class=\"bg-gray-7\">\n\n<div class=\"container-fluid\">",
+      "screenshots": [
+        "1774289068433_region_7.png"
+      ],
+      "recommendation": "Ensure all significant page content is inside semantic landmarks.\n- Wrap major content in semantic landmarks such as <main>, <header>, and <footer>.\n- Ensure only one primary <main> landmark is present.",
+      "correct_code": "<header>...</header>\n<main id=\"main-content\">...</main>\n<footer>...</footer>",
+      "help_url": "",
+      "occurrence_count": 4,
+      "raw_nodes": [
+        {
+          "any": [
+            {
+              "id": "region",
+              "data": {
+                "isIframe": false
+              },
+              "relatedNodes": [],
+              "impact": "moderate",
+              "message": "Some page content is not contained by landmarks"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "moderate",
+          "html": "<div class=\"h-100 d-inline-flex align-items-center\">",
+          "target": [
+            ".h-100.d-inline-flex.align-items-center:nth-child(4)"
+          ],
+          "failureSummary": "Fix any of the following:\n  Some page content is not contained by landmarks"
+        },
+        {
+          "any": [
+            {
+              "id": "region",
+              "data": {
+                "isIframe": false
+              },
+              "relatedNodes": [],
+              "impact": "moderate",
+              "message": "Some page content is not contained by landmarks"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "moderate",
+          "html": "<div class=\"container-fluid d-none d-lg-block\">",
+          "target": [
+            ".d-none.d-lg-block.container-fluid:nth-child(7)"
+          ],
+          "failureSummary": "Fix any of the following:\n  Some page content is not contained by landmarks"
+        },
+        {
+          "any": [
+            {
+              "id": "region",
+              "data": {
+                "isIframe": false
+              },
+              "relatedNodes": [],
+              "impact": "moderate",
+              "message": "Some page content is not contained by landmarks"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "moderate",
+          "html": "<div class=\"bg-gray-7\">",
+          "target": [
+            ".bg-gray-7"
+          ],
+          "failureSummary": "Fix any of the following:\n  Some page content is not contained by landmarks"
+        },
+        {
+          "any": [
+            {
+              "id": "region",
+              "data": {
+                "isIframe": false
+              },
+              "relatedNodes": [],
+              "impact": "moderate",
+              "message": "Some page content is not contained by landmarks"
+            }
+          ],
+          "all": [],
+          "none": [],
+          "impact": "moderate",
+          "html": "<div class=\"container-fluid\">",
+          "target": [
+            "#fontSize > .container-fluid"
+          ],
+          "failureSummary": "Fix any of the following:\n  Some page content is not contained by landmarks"
+        }
+      ]
+    }
+  ]
+}

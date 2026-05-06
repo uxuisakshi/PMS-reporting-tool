@@ -46,7 +46,7 @@ class PDFExporter extends ExportEngine {
      * @return string Path to generated PDF file
      * @throws Exception If PDF generation fails
      */
-    protected function generateExportFile($requestId, $exportType, $reportType, $projectIds, $options) {
+    protected function generateExportFile($requestId, $exportType, $reportType, $projectIds, $options): string {
         if ($exportType !== 'pdf') {
             throw new Exception('PDFExporter only supports PDF format');
         }

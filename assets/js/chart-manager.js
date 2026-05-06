@@ -127,6 +127,10 @@ class ChartManager {
                 scales: {
                     y: {
                         beginAtZero: true,
+                        max: 100,
+                        ticks: {
+                            stepSize: 10
+                        },
                         grid: {
                             color: 'rgba(0, 0, 0, 0.1)'
                         }
@@ -177,6 +181,10 @@ class ChartManager {
                 scales: {
                     y: {
                         beginAtZero: true,
+                        max: 100,
+                        ticks: {
+                            stepSize: 10
+                        },
                         grid: {
                             color: 'rgba(0, 0, 0, 0.1)'
                         }
@@ -225,6 +233,10 @@ class ChartManager {
                     y: {
                         stacked: true,
                         beginAtZero: true,
+                        max: 100,
+                        ticks: {
+                            stepSize: 10
+                        },
                         grid: {
                             color: 'rgba(0, 0, 0, 0.1)'
                         }

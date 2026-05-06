@@ -44,7 +44,7 @@ class ExcelExporter extends ExportEngine {
      * @return string Path to generated Excel file
      * @throws Exception If Excel generation fails
      */
-    protected function generateExportFile($requestId, $exportType, $reportType, $projectIds, $options) {
+    protected function generateExportFile($requestId, $exportType, $reportType, $projectIds, $options): string {
         if ($exportType !== 'excel') {
             throw new Exception('ExcelExporter only supports Excel format');
         }

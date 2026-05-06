@@ -199,8 +199,10 @@ class HoursValidator {
     }
 }
 
-// Global instance
-window.hoursValidator = new HoursValidator();
+// Global instance — use baseDir from page config if available
+window.hoursValidator = new HoursValidator(
+    (window._manageHoursConfig && window._manageHoursConfig.baseDir) ? window._manageHoursConfig.baseDir : ''
+);
 
 // Helper functions for backward compatibility
 window.validateProjectHours = async function(projectId, hours, excludeAssignmentId = null) {

@@ -4,7 +4,7 @@ require_once __DIR__ . '/../../includes/functions.php';
 require_once __DIR__ . '/../../includes/helpers.php';
 
 $auth = new Auth();
-$auth->requireRole(['admin', 'super_admin']);
+$auth->requireRole(['admin']);
 
 $db = Database::getInstance();
 $userId = $_SESSION['user_id'];
@@ -12,6 +12,11 @@ $baseDir = getBaseDir();
 
 // Handle form submissions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error'] = 'Invalid request. Please try again.';
+        header('Location: resource_workload_permissions.php');
+        exit;
+    }
     if (isset($_POST['grant_access'])) {
         $projectLeadId = intval($_POST['project_lead_id']);
         $expiresAt = !empty($_POST['expires_at']) ? $_POST['expires_at'] : null;
@@ -212,6 +217,7 @@ unset($_SESSION['success'], $_SESSION['error']);
                 </div>
                 <div class="card-body">
                     <form method="POST" id="grantWorkloadAccessForm">
+                        <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                         <input type="hidden" name="grant_access" value="1">
                         <div class="mb-3">
                             <label class="form-label">Project Lead *</label>
@@ -317,6 +323,7 @@ unset($_SESSION['success'], $_SESSION['error']);
                                             </td>
                                             <td>
                                                 <form id="revokeForm_<?php echo $permission['id']; ?>" method="POST" style="display: inline;">
+                                                    <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                                                     <input type="hidden" name="permission_id" value="<?php echo $permission['id']; ?>">
                                                     <input type="hidden" name="revoke_access" value="1">
                                                     <button type="button" class="btn btn-sm btn-outline-danger" title="Revoke Access"
@@ -382,7 +389,7 @@ unset($_SESSION['success'], $_SESSION['error']);
     </div>
 </div>
 
-<script>
+<script nonce="<?php echo $cspNonce ?? ''; ?>">
 document.addEventListener('DOMContentLoaded', function () {
     <?php if (!empty($flashSuccess)): ?>
     if (typeof showToast === 'function') {
@@ -397,4 +404,4 @@ document.addEventListener('DOMContentLoaded', function () {
 });
 </script>
 
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<?php include __DIR__ . '/../../includes/footer.php'; 

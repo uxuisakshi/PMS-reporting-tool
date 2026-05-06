@@ -1,9 +1,11 @@
 <?php
+ob_start();
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../config/constants.php';
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/functions.php';
 require_once __DIR__ . '/../includes/helpers.php';
+ob_end_clean();
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -57,7 +59,6 @@ function handleGetRequest() {
         
         if ($action === 'get_categories') {
             // Get active generic task categories
-            error_log("Getting generic task categories");
             
             $stmt = $db->prepare("
                 SELECT id, name, description 
@@ -67,8 +68,6 @@ function handleGetRequest() {
             ");
             $stmt->execute();
             $categories = $stmt->fetchAll();
-            
-            error_log("Found " . count($categories) . " categories");
             
             jsonResponse($categories);
             return;
@@ -89,10 +88,10 @@ function handleGetRequest() {
         
     } catch (PDOException $e) {
         error_log("Get generic tasks error: " . $e->getMessage());
-        jsonError('Database error occurred: ' . $e->getMessage(), 500);
+        jsonError('Database error occurred', 500);
     } catch (Exception $e) {
         error_log("Get generic tasks general error: " . $e->getMessage());
-        jsonError('An error occurred: ' . $e->getMessage(), 500);
+        jsonError('An error occurred', 500);
     }
 }
 

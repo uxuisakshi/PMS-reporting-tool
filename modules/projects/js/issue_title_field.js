@@ -107,7 +107,11 @@
             clearTimeout(timer);
             const val = input.value.trim();
             if (val.length < 2) {
-                dropdown.style.display = 'none';
+                if (val.length === 0) {
+                    fetchAllPresets();
+                } else {
+                    dropdown.style.display = 'none';
+                }
                 return;
             }
             timer = setTimeout(() => fetchSuggestions(val), 250);
@@ -151,7 +155,7 @@
                 e.stopImmediatePropagation();
                 setHighlightedIndex((highlightedIndex - 1 + suggestionItems.length) % suggestionItems.length);
                 input.focus();
-            } else if (key === 'Enter' || key === ' ' || code === 13 || code === 32) {
+            } else if (key === 'Enter' || code === 13) {
                 if (highlightedIndex >= 0 && highlightedIndex < suggestionItems.length) {
                     e.preventDefault();
                     e.stopPropagation();
@@ -240,6 +244,13 @@
                         });
                         setHighlightedIndex(0);
                         dropdown.style.display = 'block';
+                    } else if (query.trim().length >= 2) {
+                        // Show "No results" only if query length >= 2
+                        const item = document.createElement('div');
+                        item.className = 'px-3 py-2 text-muted small italic';
+                        item.textContent = 'No matching suggestions found';
+                        dropdown.appendChild(item);
+                        dropdown.style.display = 'block';
                     } else {
                         resetSuggestions();
                     }
@@ -279,6 +290,13 @@
             highlightedIndex = -1;
             input.removeAttribute('aria-activedescendant');
         }
+
+        function formatCodeBackticks(html) {
+            if (!html || typeof html !== 'string') return html;
+            // Matches text between backticks: `code` -> <code>code</code>
+            // Uses global match to catch all instances in the preset
+            return html.replace(/`([^`]+)`/g, '<code>$1</code>');
+        }
         
         function loadPresetData(title) {
             // Fetch preset details and populate form
@@ -297,7 +315,9 @@
                             const descField = document.getElementById('finalIssueDetails');
                             if (descField) {
                                 if (window.jQuery && jQuery.fn.summernote && jQuery(descField).summernote) {
-                                    jQuery(descField).summernote('code', data.preset.description_html);
+                                    // Transform backticks to <code> before setting the content
+                                    const formattedHtml = formatCodeBackticks(data.preset.description_html);
+                                    jQuery(descField).summernote('code', formattedHtml);
                                 } else {
                                     descField.value = data.preset.description_html;
                                 }

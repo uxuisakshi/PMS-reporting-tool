@@ -4,11 +4,16 @@ require_once __DIR__ . '/../../includes/helpers.php';
 require_once __DIR__ . '/../../includes/functions.php';
 
 $auth = new Auth();
-$auth->requireRole(['admin','super_admin']);
+$auth->requireRole(['admin','admin']);
 
 $db = Database::getInstance();
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error'] = 'Invalid request. Please try again.';
+        header('Location: active_sessions.php');
+        exit;
+    }
     $postAction = trim((string)($_POST['cleanup_action'] ?? ''));
     $redirectTo = strtok($_SERVER['REQUEST_URI'], '?');
     $queryString = $_SERVER['QUERY_STRING'] ?? '';
@@ -208,6 +213,33 @@ $stmt->execute($paramsWithLimit);
 $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 $totalPages = max(1, (int)ceil($total / $perPage));
+$visiblePages = [];
+if ($totalPages <= 9) {
+    $visiblePages = range(1, $totalPages);
+} else {
+    $windowStart = max(2, $page - 1);
+    $windowEnd = min($totalPages - 1, $page + 1);
+
+    if ($page <= 3) {
+        $windowStart = 2;
+        $windowEnd = 4;
+    } elseif ($page >= $totalPages - 2) {
+        $windowStart = $totalPages - 3;
+        $windowEnd = $totalPages - 1;
+    }
+
+    $visiblePages[] = 1;
+    if ($windowStart > 2) {
+        $visiblePages[] = 'ellipsis';
+    }
+    for ($pageNo = $windowStart; $pageNo <= $windowEnd; $pageNo++) {
+        $visiblePages[] = $pageNo;
+    }
+    if ($windowEnd < $totalPages - 1) {
+        $visiblePages[] = 'ellipsis';
+    }
+    $visiblePages[] = $totalPages;
+}
 $allUsers = $db->query("SELECT id, full_name, email FROM users ORDER BY full_name ASC")->fetchAll(PDO::FETCH_ASSOC);
 $allProjects = $db->query("SELECT id, title FROM projects ORDER BY title ASC")->fetchAll(PDO::FETCH_ASSOC);
 
@@ -221,6 +253,7 @@ require_once __DIR__ . '/../../includes/header.php';
         <div class="card-body py-3">
             <div class="fw-semibold mb-2">Session Storage Cleanup</div>
             <form method="post" class="row g-2 align-items-end" data-confirm="Delete old session records?">
+                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                 <input type="hidden" name="cleanup_action" value="purge_old">
                 <div class="col-md-3">
                     <label class="form-label form-label-sm">Delete sessions older than</label>
@@ -243,6 +276,7 @@ require_once __DIR__ . '/../../includes/header.php';
         <div class="card-body py-3">
             <div class="fw-semibold mb-2">User/Project Wise Session Cleanup</div>
             <form method="post" class="row g-2 align-items-end" data-confirm="Delete sessions for the selected scope?">
+                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
                 <input type="hidden" name="cleanup_action" value="delete_by_scope">
                 <div class="col-md-2">
                     <label class="form-label form-label-sm">Scope</label>
@@ -320,6 +354,7 @@ require_once __DIR__ . '/../../includes/header.php';
     </form>
 
     <form method="post" data-confirm="Delete selected sessions?">
+    <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
     <input type="hidden" name="cleanup_action" value="delete_selected">
     <div class="d-flex justify-content-between align-items-center mb-2">
         <div class="small text-muted">Select session rows to delete DB records directly.</div>
@@ -366,15 +401,19 @@ require_once __DIR__ . '/../../includes/header.php';
                 <td><?php echo htmlspecialchars($r['ip_address'] ?? ''); ?></td>
                 <td>
                     <?php
-                        $ua_full = $r['user_agent'] ?? '';
+                        $ua_full  = $r['user_agent'] ?? '';
                         $ua_short = mb_substr($ua_full, 0, 120);
                         $ua_too_long = mb_strlen($ua_full) > 120;
+                        $ua_parsed = !empty($ua_full) ? get_browser_info($ua_full) : null;
                     ?>
-                    <div class="ua-snippet" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:480px;" title="<?php echo htmlspecialchars($ua_full); ?>"><?php echo htmlspecialchars($ua_short); ?><?php if ($ua_too_long) echo '...'; ?></div>
+                    <?php if ($ua_parsed && $ua_parsed['browser'] !== 'Unknown'): ?>
+                        <span class="fw-semibold"><?php echo htmlspecialchars($ua_parsed['platform'] . ' / ' . $ua_parsed['browser'] . ' ' . ($ua_parsed['browser_version'] ?? '')); ?></span>
+                    <?php endif; ?>
+                    <div class="ua-snippet small text-muted" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:480px;" title="<?php echo htmlspecialchars($ua_full); ?>"><?php echo htmlspecialchars($ua_short); ?><?php if ($ua_too_long) echo '...'; ?></div>
                     <?php if ($ua_too_long): ?>
                         <div class="ua-full d-none" style="white-space:normal; word-break:break-word; max-width:480px; margin-top:4px;"><?php echo htmlspecialchars($ua_full); ?></div>
                         <div class="mt-1">
-                            <button type="button" class="btn btn-link btn-sm ua-toggle">Read more</button>
+                            <button type="button" class="btn btn-link btn-sm p-0 ua-toggle">Read more</button>
                             <button type="button" class="btn btn-outline-secondary btn-sm ua-copy ms-2" title="Copy user-agent">Copy</button>
                         </div>
                     <?php endif; ?>
@@ -385,15 +424,18 @@ require_once __DIR__ . '/../../includes/header.php';
                         if (!empty($r['ip_location'])) {
                             $loc = json_decode($r['ip_location'], true) ?: [];
                         }
-                        // Don't call get_geo_info during page load - it's too slow
+                        $ipAddr = $r['ip_address'] ?? '';
                         if (!empty($loc)) {
-                            $addr = trim(($loc['city'] ?? '') . ' ' . ($loc['postal'] ?? '') . ', ' . ($loc['region'] ?? '') . ', ' . ($loc['country'] ?? ''));
+                            $addr = trim(($loc['city'] ?? '') . ', ' . ($loc['region'] ?? '') . ', ' . ($loc['country'] ?? ''));
+                            $addr = trim($addr, ', ');
                             if (!empty($loc['latitude']) && !empty($loc['longitude'])) {
                                 $mapUrl = 'https://www.google.com/maps/search/?api=1&query=' . urlencode($loc['latitude'] . ',' . $loc['longitude']);
                             } else {
                                 $mapUrl = 'https://www.google.com/maps/search/?api=1&query=' . urlencode($addr);
                             }
                             echo htmlspecialchars($addr) . ' <a href="' . htmlspecialchars($mapUrl) . '" target="_blank" rel="noopener" class="ms-1"><i class="fas fa-map-marker-alt text-primary"></i></a>';
+                        } elseif (!empty($ipAddr)) {
+                            echo '<span class="geo-lazy text-muted" data-ip="' . htmlspecialchars($ipAddr, ENT_QUOTES) . '"><i class="fas fa-spinner fa-spin fa-xs"></i></span>';
                         } else {
                             echo '<span class="text-muted">-</span>';
                         }
@@ -401,9 +443,9 @@ require_once __DIR__ . '/../../includes/header.php';
                 </td>
                 <td><?php echo htmlspecialchars($r['created_at'] ?? ''); ?></td>
                 <td><?php echo htmlspecialchars($r['last_activity'] ?? ''); ?></td>
-                <td><?php echo htmlspecialchars($r['logout_at'] ?? ''); ?></td>
-                <td><?php echo htmlspecialchars($r['logout_type'] ?? ''); ?></td>
-                <td>
+                <td class="session-logout-at"><?php echo htmlspecialchars($r['logout_at'] ?? ''); ?></td>
+                <td class="session-logout-type"><?php echo htmlspecialchars($r['logout_type'] ?? ''); ?></td>
+                <td class="session-status">
                     <?php 
                     $isActive = (bool)$r['active'];
                     // Use database to calculate time difference to avoid timezone issues
@@ -421,7 +463,7 @@ require_once __DIR__ . '/../../includes/header.php';
                     }
                     ?>
                 </td>
-                <td>
+                <td class="session-action">
                     <?php if ($r['active']): ?>
                         <button class="btn btn-sm btn-danger force-logout" data-session="<?php echo htmlspecialchars($r['session_id']); ?>">Force Logout</button>
                     <?php else: ?>
@@ -436,218 +478,35 @@ require_once __DIR__ . '/../../includes/header.php';
     </form>
 
     <nav aria-label="Page navigation">
-        <ul class="pagination pagination-sm">
+        <div class="d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center gap-2">
+            <div class="small text-muted">Page <?php echo $page; ?> of <?php echo $totalPages; ?>, total <?php echo $total; ?> session record(s).</div>
+            <ul class="pagination pagination-sm flex-wrap mb-0">
             <?php
             // build base query string for pagination links
             $qs = $_GET; unset($qs['page']);
             $baseQs = http_build_query($qs);
             $baseUrl = strtok($_SERVER['REQUEST_URI'], '?');
-            for ($p=1;$p<=$totalPages;$p++) {
-                $activeClass = ($p==$page) ? ' active' : '';
-                $link = $baseUrl . '?' . ($baseQs ? ($baseQs . '&') : '') . 'page=' . $p . '&per_page=' . $perPage;
-                echo '<li class="page-item' . $activeClass . '"><a class="page-link" href="' . htmlspecialchars($link) . '">' . $p . '</a></li>';
+            $previousPage = max(1, $page - 1);
+            $nextPage = min($totalPages, $page + 1);
+            $previousLink = $baseUrl . '?' . ($baseQs ? ($baseQs . '&') : '') . 'page=' . $previousPage . '&per_page=' . $perPage;
+            $nextLink = $baseUrl . '?' . ($baseQs ? ($baseQs . '&') : '') . 'page=' . $nextPage . '&per_page=' . $perPage;
+            echo '<li class="page-item' . ($page <= 1 ? ' disabled' : '') . '"><a class="page-link" href="' . htmlspecialchars($previousLink) . '"' . ($page <= 1 ? ' tabindex="-1" aria-disabled="true"' : '') . '>Previous</a></li>';
+            foreach ($visiblePages as $pageToken) {
+                if ($pageToken === 'ellipsis') {
+                    echo '<li class="page-item disabled"><span class="page-link">...</span></li>';
+                    continue;
+                }
+                $activeClass = ((int)$pageToken === $page) ? ' active' : '';
+                $link = $baseUrl . '?' . ($baseQs ? ($baseQs . '&') : '') . 'page=' . (int)$pageToken . '&per_page=' . $perPage;
+                echo '<li class="page-item' . $activeClass . '"><a class="page-link" href="' . htmlspecialchars($link) . '">' . (int)$pageToken . '</a></li>';
             }
+            echo '<li class="page-item' . ($page >= $totalPages ? ' disabled' : '') . '"><a class="page-link" href="' . htmlspecialchars($nextLink) . '"' . ($page >= $totalPages ? ' tabindex="-1" aria-disabled="true"' : '') . '>Next</a></li>';
             ?>
-        </ul>
+            </ul>
+        </div>
     </nav>
 
-    <script>
-    const baseDir = '<?php echo getBaseDir(); ?>';
-    
-    document.querySelectorAll('.force-logout').forEach(function(btn){
-        btn.addEventListener('click', function(){
-            var self = this;
-            var sid = self.dataset.session;
-            confirmModal('Force logout session '+sid+' ?', function() {
-                fetch(baseDir + '/api/force_logout_session.php', {
-                    method: 'POST',
-                    headers: {'Content-Type':'application/json'},
-                    body: JSON.stringify({session_id: sid})
-                }).then(r=>r.json()).then(function(j){
-                    if (j && j.success) {
-                        var row = document.getElementById('sess-'+sid);
-                        if (row) {
-                            // Update Active column (11th column) to show "Logged Out"
-                            var activeCell = row.querySelector('td:nth-child(11)');
-                            if (activeCell) {
-                                activeCell.innerHTML = '<span class="badge bg-secondary">Logged Out</span>';
-                            }
-                            // Update Action column (12th column) to remove button
-                            var actionCell = row.querySelector('td:nth-child(12)');
-                            if (actionCell) {
-                                actionCell.innerHTML = '<span class="text-muted">-</span>';
-                            }
-                        }
-                        showToast('Session terminated successfully.', 'success');
-                    } else {
-                        showToast('Failed: '+(j && j.error ? j.error : 'unknown'), 'danger');
-                    }
-                }).catch(function(e){ 
-                    console.error('Force logout error:', e);
-                    showToast('Request failed', 'danger'); 
-                });
-            });
-        });
-    });
-        // Read more toggle for long user-agent strings
-        function isOverflowing(el) {
-            return el && el.scrollWidth > el.clientWidth;
-        }
+    <script>window._activeSessionsConfig = { baseDir: "<?php echo getBaseDir(); ?>", csrfToken: "<?php echo htmlspecialchars(generateCsrfToken(), ENT_QUOTES, 'UTF-8'); ?>" };</script>
+    <script src="<?php echo getBaseDir(); ?>/assets/js/active-sessions.js?v=<?php echo time(); ?>"></script>
 
-        function ensureUaButtons() {
-            document.querySelectorAll('.ua-snippet').forEach(function(snippet){
-                var cell = snippet.closest('td');
-                if (!cell) return;
-                var btnToggle = cell.querySelector('.ua-toggle');
-                var btnCopy = cell.querySelector('.ua-copy');
-                var overflowing = isOverflowing(snippet);
-                if (overflowing) {
-                    if (!btnToggle) {
-                        btnToggle = document.createElement('button');
-                        btnToggle.type = 'button';
-                        btnToggle.className = 'btn btn-link btn-sm ua-toggle';
-                        btnToggle.textContent = 'Read more';
-                    }
-                    if (!btnCopy) {
-                        btnCopy = document.createElement('button');
-                        btnCopy.type = 'button';
-                        btnCopy.className = 'btn btn-outline-secondary btn-sm ua-copy ms-2';
-                        btnCopy.title = 'Copy user-agent';
-                        btnCopy.textContent = 'Copy';
-                    }
-                    var container = cell.querySelector('.ua-actions');
-                    if (!container) {
-                        container = document.createElement('div');
-                        container.className = 'mt-1 ua-actions';
-                        snippet.after(container);
-                    }
-                    if (!container.contains(btnToggle)) container.appendChild(btnToggle);
-                    if (!container.contains(btnCopy)) container.appendChild(btnCopy);
-                    // ensure visible
-                    btnToggle.classList.remove('d-none');
-                    btnCopy.classList.remove('d-none');
-                } else {
-                    if (btnToggle) btnToggle.classList.add('d-none');
-                    if (btnCopy) btnCopy.classList.add('d-none');
-                }
-            });
-        }
-
-        document.addEventListener('click', function(e){
-            if (e.target && e.target.classList && e.target.classList.contains('ua-toggle')) {
-                var btn = e.target;
-                var cell = btn.closest('td');
-                if (!cell) return;
-                var full = cell.querySelector('.ua-full');
-                var snippet = cell.querySelector('.ua-snippet');
-                if (full) {
-                    if (full.classList.contains('d-none')) {
-                        full.classList.remove('d-none');
-                        if (snippet) snippet.classList.add('d-none');
-                        btn.textContent = 'Read less';
-                    } else {
-                        full.classList.add('d-none');
-                        if (snippet) snippet.classList.remove('d-none');
-                        btn.textContent = 'Read more';
-                    }
-                } else if (snippet) {
-                    // fallback: toggle between truncated and full title
-                    var fullText = snippet.getAttribute('title') || snippet.textContent;
-                    if (btn.dataset.expanded === '1') {
-                        // collapse
-                        snippet.textContent = fullText.substring(0, 120) + (fullText.length>120? '...':'');
-                        btn.textContent = 'Read more';
-                        btn.dataset.expanded = '0';
-                    } else {
-                        snippet.textContent = fullText;
-                        btn.textContent = 'Read less';
-                        btn.dataset.expanded = '1';
-                    }
-                }
-            }
-        });
-        // Copy UA to clipboard
-        document.addEventListener('click', function(e){
-            if (e.target && e.target.classList && e.target.classList.contains('ua-copy')) {
-                var btn = e.target;
-                var cell = btn.closest('td');
-                if (!cell) return;
-                var full = cell.querySelector('.ua-full');
-                var text = full ? full.textContent.trim() : (cell.querySelector('.ua-snippet') ? (cell.querySelector('.ua-snippet').getAttribute('title') || cell.querySelector('.ua-snippet').textContent) : '');
-                if (!text) return;
-                if (navigator.clipboard && navigator.clipboard.writeText) {
-                    navigator.clipboard.writeText(text).then(function(){
-                        var old = btn.innerHTML;
-                        btn.innerHTML = 'Copied';
-                        setTimeout(function(){ btn.innerHTML = old; }, 1500);
-                    }).catch(function(){ showToast('Copy failed', 'danger'); });
-                } else {
-                    // fallback
-                    var ta = document.createElement('textarea');
-                    ta.value = text;
-                    document.body.appendChild(ta);
-                    ta.select();
-                    try { document.execCommand('copy'); btn.innerHTML = 'Copied'; setTimeout(function(){ btn.innerHTML = 'Copy'; },1500);} catch(e){ showToast('Copy failed', 'danger'); }
-                    document.body.removeChild(ta);
-                }
-            }
-        });
-
-        // run on load and on window resize to ensure buttons show when snippet is visually truncated
-        window.addEventListener('load', ensureUaButtons);
-        window.addEventListener('resize', function(){ setTimeout(ensureUaButtons, 150); });
-
-        var selectAllSessions = document.getElementById('selectAllSessions');
-        if (selectAllSessions) {
-            selectAllSessions.addEventListener('change', function() {
-                var checked = !!this.checked;
-                document.querySelectorAll('input[name="session_ids[]"]').forEach(function(cb) {
-                    cb.checked = checked;
-                });
-            });
-        }
-
-        (function() {
-            var scopeType = document.getElementById('sessionScopeType');
-            var userWrap = document.getElementById('sessionUserTargetWrap');
-            var projectWrap = document.getElementById('sessionProjectTargetWrap');
-            var userSelect = document.getElementById('sessionUserTarget');
-            var projectSelect = document.getElementById('sessionProjectTarget');
-            if (!scopeType || !userWrap || !projectWrap || !userSelect || !projectSelect) return;
-
-            function syncScope() {
-                if (scopeType.value === 'project') {
-                    userWrap.classList.add('d-none');
-                    projectWrap.classList.remove('d-none');
-                    userSelect.name = '';
-                    projectSelect.name = 'target_id';
-                } else {
-                    projectWrap.classList.add('d-none');
-                    userWrap.classList.remove('d-none');
-                    projectSelect.name = '';
-                    userSelect.name = 'target_id';
-                }
-            }
-            scopeType.addEventListener('change', syncScope);
-            syncScope();
-        })();
-
-        document.querySelectorAll('form[data-confirm]').forEach(function(form) {
-            form.addEventListener('submit', function(e) {
-                var msg = form.getAttribute('data-confirm') || 'Are you sure?';
-                e.preventDefault();
-                if (typeof window.confirmModal === 'function') {
-                    window.confirmModal(msg, function() {
-                        form.submit();
-                    });
-                    return;
-                }
-                var confirmFn = (typeof window._origConfirm === 'function') ? window._origConfirm : window.confirm;
-                if (confirmFn(msg)) {
-                    form.submit();
-                }
-            });
-        });
-    </script>
-
-<?php require_once __DIR__ . '/../../includes/footer.php'; ?>
+<?php require_once __DIR__ . '/../../includes/footer.php'; 

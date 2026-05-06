@@ -5,7 +5,7 @@ require_once __DIR__ . '/../../includes/helpers.php';
 require_once __DIR__ . '/../../includes/project_permissions.php';
 
 $auth = new Auth();
-$auth->requireRole(['admin', 'project_lead', 'qa', 'at_tester', 'ft_tester', 'super_admin', 'client']);
+$auth->requireRole(['admin', 'project_lead', 'qa', 'at_tester', 'ft_tester', 'admin', 'client']);
 
 $baseDir = getBaseDir();
 $projectId = (int)($_GET['project_id'] ?? 0);
@@ -49,21 +49,13 @@ if (!$page) {
     exit;
 }
 
-// Fetch project users
+// Fetch all users for name resolution (ensures historical reporters/QA always resolve correctly)
 $projectUsersStmt = $db->prepare("
-    SELECT DISTINCT u.id, u.full_name, u.username, u.role
-    FROM user_assignments ua 
-    JOIN users u ON ua.user_id = u.id 
-    WHERE ua.project_id = ? 
-      AND u.is_active = 1
-      AND (ua.is_removed IS NULL OR ua.is_removed = 0)
-    UNION
-    SELECT u.id, u.full_name, u.username, u.role
-    FROM users u
-    WHERE u.is_active = 1 AND u.role IN ('admin', 'super_admin')
+    SELECT id, full_name, username, role
+    FROM users
     ORDER BY full_name
 ");
-$projectUsersStmt->execute([$projectId]);
+$projectUsersStmt->execute();
 $projectUsers = $projectUsersStmt->fetchAll(PDO::FETCH_ASSOC);
 
 // Fetch QA statuses
@@ -71,8 +63,7 @@ $qaStatusesStmt = $db->query("SELECT id, status_key, status_label, badge_color F
 $qaStatuses = $qaStatusesStmt->fetchAll(PDO::FETCH_ASSOC);
 
 // Fetch Issue statuses from issue_statuses table
-$issueStatusesStmt = $db->query("SELECT id, name, color, category FROM issue_statuses ORDER BY name ASC");
-$issueStatuses = $issueStatusesStmt->fetchAll(PDO::FETCH_ASSOC);
+$issueStatuses = getIssueStatusesForRole($db, $userRole, ['category']);
 
 // Fetch issue metadata fields - actual columns are: field_key, field_label, options_json
 $metadataFieldsStmt = $db->query("SELECT id, field_key, field_label, options_json FROM issue_metadata_fields WHERE is_active = 1 ORDER BY sort_order ASC");
@@ -88,9 +79,30 @@ foreach ($metadataFields as &$field) {
 }
 
 // Pre-fetch project pages with URLs
-$pagesStmt = $db->prepare("SELECT id, page_name, url FROM project_pages WHERE project_id = ? ORDER BY page_name");
+$pagesStmt = $db->prepare("SELECT id, page_name, page_number, url FROM project_pages WHERE project_id = ? ORDER BY page_name");
 $pagesStmt->execute([$projectId]);
 $projectPages = $pagesStmt->fetchAll(PDO::FETCH_ASSOC);
+usort($projectPages, function($a, $b) {
+    $an = $a['page_number'] ?? '';
+    $bn = $b['page_number'] ?? '';
+    return strnatcasecmp((string)$an, (string)$bn);
+});
+
+$pageDisplayNumberById = [];
+try {
+    $pageOrderStmt = $db->prepare("SELECT id, page_number, page_name FROM project_pages WHERE project_id = ?");
+    $pageOrderStmt->execute([$projectId]);
+    foreach ($pageOrderStmt->fetchAll(PDO::FETCH_ASSOC) as $orderedPageRow) {
+        $orderedPageId = (int)($orderedPageRow['id'] ?? 0);
+        if ($orderedPageId > 0) {
+            $pageDisplayNumberById[$orderedPageId] = resolvePageDisplayValue($orderedPageRow);
+        }
+    }
+} catch (Exception $e) {
+    $pageDisplayNumberById = [];
+}
+
+$displayPageNumber = $pageDisplayNumberById[$pageId] ?? ($page['page_number'] ?? '-');
 
 // Get page metadata with correct issues count
 $issuePageSummary = [];
@@ -101,7 +113,11 @@ try {
             pp.page_name,
             (SELECT GROUP_CONCAT(DISTINCT te.name SEPARATOR ', ') FROM page_environments pe2 JOIN testing_environments te ON pe2.environment_id = te.id WHERE pe2.page_id = pp.id) AS envs,
             (SELECT GROUP_CONCAT(DISTINCT u.full_name SEPARATOR ', ') FROM users u JOIN page_environments pe3 ON u.id = pe3.at_tester_id OR u.id = pe3.ft_tester_id OR u.id = pe3.qa_id WHERE pe3.page_id = pp.id) AS testers,
-            (SELECT COUNT(*) FROM issues i WHERE i.project_id = pp.project_id AND i.page_id = pp.id" . ($userRole === 'client' ? ' AND i.client_ready = 1' : '') . ") AS issues_count,
+            (SELECT COUNT(DISTINCT i.id) FROM issues i 
+             WHERE i.project_id = pp.project_id AND (
+                 EXISTS (SELECT 1 FROM issue_pages ip WHERE ip.issue_id = i.id AND ip.page_id = pp.id)
+                 OR (i.page_id = pp.id AND NOT EXISTS (SELECT 1 FROM issue_pages ip2 WHERE ip2.issue_id = i.id))
+             )" . ($userRole === 'client' ? ' AND i.client_ready = 1' : '') . ") AS issues_count,
             (SELECT COALESCE(SUM(ptl.hours_spent), 0) FROM project_time_logs ptl WHERE ptl.page_id = pp.id) AS production_hours
         FROM project_pages pp
         WHERE pp.id = ?
@@ -498,6 +514,91 @@ include __DIR__ . '/../../includes/header.php';
     padding: 2px 8px;
     user-select: none;
 }
+
+.screenshot-header-actions .btn {
+    white-space: nowrap;
+}
+
+.page-header-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: nowrap;
+}
+
+.page-header-main {
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+.page-header-center {
+    flex: 0 0 auto;
+}
+
+.page-header-right {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 16px;
+    flex: 0 0 auto;
+    min-width: 0;
+}
+
+.page-header-metrics {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    white-space: nowrap;
+    flex-wrap: nowrap;
+}
+
+.page-header-metric {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+}
+
+.page-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: nowrap;
+    white-space: nowrap;
+}
+
+.page-header-actions .btn {
+    white-space: nowrap;
+}
+
+@media (max-width: 991.98px) {
+    .page-header-toolbar {
+        flex-wrap: wrap;
+        align-items: flex-start;
+    }
+
+    .page-header-right {
+        width: 100%;
+        justify-content: space-between;
+        flex-wrap: wrap;
+    }
+
+    .page-header-actions {
+        flex-wrap: wrap;
+        justify-content: flex-start;
+    }
+
+    .page-header-metrics {
+        flex-wrap: wrap;
+    }
+
+    .screenshot-header-actions {
+        justify-content: flex-start !important;
+        overflow-x: auto;
+        padding-bottom: 4px;
+    }
+}
 </style>
 
 <div class="container-fluid mt-4">
@@ -522,58 +623,73 @@ include __DIR__ . '/../../includes/header.php';
     <!-- Compact Page Header -->
     <div class="card mb-2">
         <div class="card-body py-2">
-            <div class="row align-items-center">
-                <div class="col-md-6">
+            <div class="page-header-toolbar">
+                <div class="page-header-main">
                     <h5 class="mb-0">
                         <i class="fas fa-file-alt text-primary me-2"></i>
                         <?php echo htmlspecialchars($page['page_name']); ?>
-                        <span class="badge bg-primary-subtle text-primary ms-2"><?php echo htmlspecialchars($page['page_number'] ?? '-'); ?></span>
+                        <span class="badge bg-primary-subtle text-primary ms-2"><?php echo htmlspecialchars($displayPageNumber); ?></span>
                     </h5>
                     <div class="small text-muted text-truncate" style="max-width: 500px;" title="<?php echo htmlspecialchars($page['url'] ?? '-'); ?>">
                         <?php echo htmlspecialchars($page['url'] ?? '-'); ?>
                     </div>
                 </div>
-                <div class="col-md-3">
-                    <div class="d-flex gap-3 small">
-                        <div>
+                <div class="page-header-center">
+                    <div class="d-flex gap-2 justify-content-md-center flex-nowrap screenshot-header-actions">
+                        <button class="btn btn-outline-primary btn-sm btn-upload-page-screenshots" data-page-id="<?php echo $pageId; ?>" title="Upload page screenshots">
+                            <i class="fas fa-upload me-1"></i> Upload Screenshots
+                        </button>
+                        <button class="btn btn-outline-info btn-sm btn-open-page-screenshots position-relative" data-page-id="<?php echo $pageId; ?>" title="View page screenshots">
+                            <i class="fas fa-images me-1"></i> View Screenshots
+                            <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger screenshot-count-badge d-none" data-page-id="<?php echo $pageId; ?>">
+                                0
+                            </span>
+                        </button>
+                    </div>
+                </div>
+                <div class="page-header-right">
+                    <div class="page-header-metrics small">
+                        <div class="page-header-metric">
                             <span class="text-muted">Issues:</span>
                             <span class="badge <?php echo ($issuePageSummary['issues_count'] ?? 0) > 0 ? 'bg-warning' : 'bg-secondary'; ?>">
                                 <?php echo (int)($issuePageSummary['issues_count'] ?? 0); ?>
                             </span>
                         </div>
                         <?php if ($userRole !== 'client'): ?>
-                        <div>
+                        <div class="page-header-metric">
                             <span class="text-muted">Prod Hours:</span>
                             <strong><?php echo number_format((float)($issuePageSummary['production_hours'] ?? 0), 2); ?></strong>
                         </div>
                         <?php endif; ?>
                         <?php if (!empty($groupedUrls)): ?>
-                        <div>
-                            <button class="btn btn-xs btn-outline-secondary" data-bs-toggle="collapse" data-bs-target="#pageUrlsList">
+                        <div class="page-header-metric">
+                            <button class="btn btn-xs btn-outline-secondary" onclick="var el=document.getElementById('pageUrlsList');if(el)el.style.display=el.style.display==='none'||!el.style.display?'block':'none';event.stopPropagation();">
                                 <i class="fas fa-link me-1"></i><?php echo count($groupedUrls); ?> URLs
                             </button>
                         </div>
                         <?php endif; ?>
                     </div>
-                </div>
-                <div class="col-md-3 text-md-end">
-                    <a href="<?php echo $baseDir; ?>/modules/projects/issues_all.php?project_id=<?php echo $projectId; ?>" class="btn btn-primary btn-sm me-1">
-                        <i class="fas fa-list"></i> All Issues
-                    </a>
-                    <a href="<?php echo $baseDir; ?>/modules/projects/issues_common.php?project_id=<?php echo $projectId; ?>" class="btn btn-outline-primary btn-sm me-1">
-                        <i class="fas fa-layer-group"></i> Common
-                    </a>
-                    <a href="<?php echo $baseDir; ?>/modules/projects/issues_pages.php?project_id=<?php echo $projectId; ?>" class="btn btn-outline-secondary btn-sm">
-                        <i class="fas fa-arrow-left"></i> Back
-                    </a>
+                    <div class="page-header-actions">
+                        <a href="<?php echo $baseDir; ?>/modules/projects/issues_all.php?project_id=<?php echo $projectId; ?>" class="btn btn-primary btn-sm">
+                            <i class="fas fa-list"></i> All Issues
+                        </a>
+                        <a href="<?php echo $baseDir; ?>/modules/projects/issues_common.php?project_id=<?php echo $projectId; ?>" class="btn btn-outline-primary btn-sm">
+                            <i class="fas fa-layer-group"></i> Common
+                        </a>
+                        <a href="<?php echo $baseDir; ?>/modules/projects/issues_pages.php?project_id=<?php echo $projectId; ?>" class="btn btn-outline-secondary btn-sm">
+                            <i class="fas fa-arrow-left"></i> Back
+                        </a>
+                    </div>
                 </div>
             </div>
         </div>
     </div>
 
+    <?php include __DIR__ . '/partials/regression_panel.php'; ?>
+
     <?php if (!empty($groupedUrls)): ?>
     <!-- Collapsible Grouped URLs -->
-    <div class="collapse mb-2" id="pageUrlsList">
+    <div class="mb-2" id="pageUrlsList" style="display:none;">
         <div class="card">
             <div class="card-body py-2">
                 <div class="small">
@@ -587,6 +703,16 @@ include __DIR__ . '/../../includes/header.php';
                     </div>
                 </div>
             </div>
+        </div>
+    </div>
+    <?php endif; ?>
+
+    <?php $pageNotes = trim((string)($page['notes'] ?? '')); ?>
+    <?php if ($pageNotes !== ''): ?>
+    <div class="card mb-2 border-start border-4 border-info-subtle">
+        <div class="card-body py-2">
+            <div class="small text-muted mb-1"><i class="fas fa-note-sticky me-1"></i>Page Notes</div>
+            <div class="small text-break"><?php echo nl2br(htmlspecialchars($pageNotes)); ?></div>
         </div>
     </div>
     <?php endif; ?>
@@ -629,7 +755,7 @@ include __DIR__ . '/../../includes/header.php';
                                             <div class="text-muted" style="font-size: 0.85em;"><?php echo htmlspecialchars($env['at_tester_name']); ?></div>
                                         </div>
                                         <div>
-                                            <?php if (in_array($userRole, ['admin', 'super_admin', 'project_lead']) || $env['at_tester_id'] == $userId): ?>
+                                            <?php if (in_array($userRole, ['admin', 'project_lead']) || $env['at_tester_id'] == $userId): ?>
                                             <select class="form-select form-select-sm env-status-update" 
                                                     data-status-type="testing"
                                                     data-page-id="<?php echo $pageId; ?>" 
@@ -679,7 +805,7 @@ include __DIR__ . '/../../includes/header.php';
                                             <div class="text-muted" style="font-size: 0.85em;"><?php echo htmlspecialchars($env['ft_tester_name']); ?></div>
                                         </div>
                                         <div>
-                                            <?php if (in_array($userRole, ['admin', 'super_admin', 'project_lead']) || $env['ft_tester_id'] == $userId): ?>
+                                            <?php if (in_array($userRole, ['admin', 'project_lead']) || $env['ft_tester_id'] == $userId): ?>
                                             <select class="form-select form-select-sm env-status-update" 
                                                     data-status-type="testing"
                                                     data-page-id="<?php echo $pageId; ?>" 
@@ -729,7 +855,7 @@ include __DIR__ . '/../../includes/header.php';
                                             <div class="text-muted" style="font-size: 0.85em;"><?php echo htmlspecialchars($env['qa_name']); ?></div>
                                         </div>
                                         <div>
-                                            <?php if (in_array($userRole, ['admin', 'super_admin', 'project_lead', 'qa']) || $env['qa_id'] == $userId): ?>
+                                            <?php if (in_array($userRole, ['admin', 'project_lead', 'qa']) || $env['qa_id'] == $userId): ?>
                                             <?php
                                                 $qaStatusRaw = strtolower(trim((string)($env['qa_status'] ?? 'not_started')));
                                                 $qaStatusMap = [
@@ -793,6 +919,9 @@ include __DIR__ . '/../../includes/header.php';
                 <button class="btn btn-outline-secondary btn-sm" id="pageIssuesRefreshBtn" title="Refresh issues">
                     <i class="fas fa-sync-alt"></i> Refresh
                 </button>
+                <a href="<?php echo $baseDir; ?>/api/download_screenshots.php?project_id=<?php echo $projectId; ?>&page_id=<?php echo $pageId; ?>" class="btn btn-outline-primary btn-sm">
+                    <i class="fas fa-download me-1"></i> Download Screenshots
+                </a>
                 <?php if ($_SESSION['role'] !== 'client'): ?>
                 <button class="btn btn-primary btn-sm" id="issueAddFinalBtn">
                     <i class="fas fa-plus me-1"></i> Add Issue
@@ -818,48 +947,148 @@ include __DIR__ . '/../../includes/header.php';
                     <div class="d-flex justify-content-between align-items-center px-3 py-2 border-bottom bg-light">
                         <div class="d-flex align-items-center gap-2">
                             <span class="small text-muted">Issues for the final report</span>
-                            <span class="scroll-hint"><i class="fas fa-arrows-left-right"></i> scroll</span>
                         </div>
                         <div>
                             <button class="btn btn-sm btn-outline-success me-1" id="finalMarkClientReadyBtn" disabled>
                                 <i class="fas fa-check"></i> Mark Client Ready
                             </button>
                             <button class="btn btn-sm btn-outline-secondary" id="finalDeleteSelected" disabled>Delete Selected</button>
+                            <button class="btn btn-sm btn-outline-secondary ms-1" id="kbShortcutsBtn" title="Keyboard Shortcuts">
+                                <i class="fas fa-keyboard me-1"></i><span class="d-none d-md-inline">Shortcuts</span>
+                            </button>
                         </div>
                     </div>
                     <?php endif; ?>
+
+                    <!-- Unified Filters Section -->
+                    <div class="filter-section border-bottom bg-light px-3 py-3">
+                        <div class="row align-items-end g-3">
+                            <div class="col-md-3">
+                                <label class="form-label small mb-1 fw-bold"><i class="fas fa-search me-1"></i> Search</label>
+                                <input type="text" class="form-control form-control-sm" id="searchInput" placeholder="Search by title, key, or description...">
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label small mb-1 fw-bold"><i class="fas fa-flag me-1"></i> Status</label>
+                                <select class="form-select form-select-sm" id="filterStatus" multiple>
+                                    <option value="">All Statuses</option>
+                                    <?php foreach ($issueStatuses as $status): ?>
+                                        <option value="<?php echo $status['id']; ?>"><?php echo htmlspecialchars($status['name']); ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                            <?php if ($_SESSION['role'] !== 'client'): ?>
+                            <div class="col-md-3">
+                                <label class="form-label small mb-1 fw-bold"><i class="fas fa-check-circle me-1"></i> QA Status</label>
+                                <select class="form-select form-select-sm" id="filterQAStatus" multiple>
+                                    <option value="">All QA Statuses</option>
+                                    <?php foreach ($qaStatuses as $qaStatus): ?>
+                                        <option value="<?php echo htmlspecialchars($qaStatus['status_key']); ?>">
+                                            <?php echo htmlspecialchars($qaStatus['status_label']); ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label small mb-1 fw-bold"><i class="fas fa-user me-1"></i> Reporter</label>
+                                <select class="form-select form-select-sm" id="filterReporter" multiple>
+                                    <option value="">All Reporters</option>
+                                    <?php foreach ($projectUsers as $reporter): ?>
+                                        <option value="<?php echo $reporter['id']; ?>"><?php echo htmlspecialchars($reporter['full_name']); ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                            <?php endif; ?>
+                            <div class="col-md-1">
+                                <button class="btn btn-sm btn-secondary w-100" id="clearFilters">
+                                    <i class="fas fa-times"></i> Clear
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Pagination Top -->
+                    <div class="px-3 py-2 border-bottom bg-white">
+                        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                            <div class="d-flex align-items-center gap-2 flex-wrap">
+                                <div class="d-flex align-items-center gap-1">
+                                    <label class="text-muted small mb-0">Per page:</label>
+                                    <select id="perPageSelect" class="form-select form-select-sm" style="width:auto; min-width:75px;">
+                                        <option value="25" selected>25</option>
+                                        <option value="50">50</option>
+                                        <option value="100">100</option>
+                                        <option value="250">250</option>
+                                        <option value="500">500</option>
+                                    </select>
+                                </div>
+                                <span class="text-muted small" id="paginationInfoTop"></span>
+                                <nav aria-label="Issues pagination top">
+                                    <ul class="pagination pagination-sm mb-0" id="paginationControlsTop"></ul>
+                                </nav>
+                            </div>
+                            <div>
+                                <button class="btn btn-sm btn-outline-primary" id="refreshBtn">
+                                    <i class="fas fa-sync-alt"></i> Refresh
+                                </button>
+                            </div>
+                        </div>
+                    </div>
                     <div class="final-issues-table-wrap">
-                        <table class="table table-sm table-hover align-middle mb-0">
+                        <table class="table table-sm table-hover align-middle mb-0 fixed-issue-table resizable-table" id="finalIssuesTable">
+                            <?php if ($_SESSION['role'] !== 'client'): ?>
+                            <colgroup>
+                                <col style="width:30px;">
+                                <col style="width:105px;">
+                                <col><!-- Title -->
+                                <col style="width:100px;">
+                                <col style="width:110px;">
+                                <col style="width:105px;">
+                                <col style="width:105px;">
+                                <col style="width:90px;">
+                                <col style="width:85px;">
+                                <col style="width:100px;">
+                            </colgroup>
+                            <?php else: ?>
+                            <colgroup>
+                                <col style="width:105px;">
+                                <col><!-- Title -->
+                                <col style="width:100px;">
+                                <col style="width:85px;">
+                                <col style="width:100px;">
+                            </colgroup>
+                            <?php endif; ?>
                             <thead class="table-light">
                                 <tr>
                                     <?php if ($_SESSION['role'] !== 'client'): ?>
-                                    <th style="width:30px;"><input type="checkbox" id="finalSelectAll"></th>
+                                    <th style="width:30px; position:relative;"><input type="checkbox" id="finalSelectAll"><div class="col-resizer"></div></th>
                                     <?php endif; ?>
-                                    <th style="width:110px;">Issue Key</th>
-                                    <th style="min-width:200px;">Issue Title</th>
-                                    <th style="width:90px;">Severity</th>
-                                    <th style="width:90px;">Priority</th>
-                                    <th style="width:110px;">Status</th>
+                                    <th style="width:105px; position:relative;">Issue Key<div class="col-resizer"></div></th>
+                                    <th style="position:relative;">Issue Title<div class="col-resizer"></div></th>
+                                    <th style="width:100px; position:relative;">Status<div class="col-resizer"></div></th>
                                     <?php if ($_SESSION['role'] !== 'client'): ?>
-                                    <th style="width:120px;">QA Status</th>
-                                    <th style="width:110px;">Reporter</th>
-                                    <th style="width:110px;">QA Name</th>
-                                    <th style="width:95px;">Client Ready</th>
+                                    <th style="width:110px; position:relative;">QA Status<div class="col-resizer"></div></th>
+                                    <th style="width:105px; position:relative;">Reporter<div class="col-resizer"></div></th>
+                                    <th style="width:105px; position:relative;">QA Name<div class="col-resizer"></div></th>
+                                    <th style="width:90px; position:relative;">Client Ready<div class="col-resizer"></div></th>
                                     <?php endif; ?>
-                                    <th style="width:90px;">Pages</th>
-                                    <?php if ($_SESSION['role'] !== 'client'): ?>
-                                    <th style="width:110px;">Actions</th>
-                                    <?php endif; ?>
+                                    <th style="width:85px; position:relative;">Pages<div class="col-resizer"></div></th>
+                                    <th style="width:100px; position:relative;">Actions<div class="col-resizer"></div></th>
                                 </tr>
                             </thead>
                             <tbody id="finalIssuesBody">
-                                <tr><td colspan="11" class="text-muted text-center py-4">
+                                <tr><td colspan="9" class="text-muted text-center py-4">
                                     <i class="fas fa-inbox fa-2x mb-2 opacity-25"></i>
                                     <div>No issues found for this page.</div>
                                     <div class="small mt-1">Click "Add Issue" to create one.</div>
                                 </td></tr>
                             </tbody>
                         </table>
+                    </div>
+                    <!-- Pagination Bottom -->
+                    <div class="d-flex justify-content-between align-items-center px-3 py-2 border-top bg-white flex-wrap gap-2" id="paginationBar">
+                        <div class="text-muted small" id="paginationInfo"></div>
+                        <nav aria-label="Issues pagination">
+                            <ul class="pagination pagination-sm mb-0" id="paginationControls"></ul>
+                        </nav>
                     </div>
                 </div>
                 <?php if ($_SESSION['role'] !== 'client'): ?>
@@ -876,14 +1105,19 @@ include __DIR__ . '/../../includes/header.php';
                             <button class="btn btn-sm btn-outline-secondary" id="needsReviewRefreshBtn" type="button">
                                 <i class="fas fa-rotate me-1"></i> Refresh
                             </button>
-                            <button class="btn btn-sm btn-outline-primary" id="needsReviewRunScanBtn" type="button">
+                            <button class="btn btn-sm btn-outline-primary" id="needsReviewRunScanBtn" title="Run standard rule-based accessibility scan" type="button">
                                 <i class="fas fa-universal-access me-1"></i> Run Scan
                             </button>
                         </div>
                     </div>
                     <div class="px-3 py-2 border-bottom bg-white d-none" id="needsReviewScanProgressWrap">
                         <div class="d-flex justify-content-between align-items-center mb-1">
-                            <span class="small text-muted" id="needsReviewScanProgressText">Scanning...</span>
+                            <div>
+                                <span class="small text-muted" id="needsReviewScanProgressText">Scanning...</span>
+                                <button type="button" class="btn btn-link btn-sm p-0 ms-2 text-danger text-decoration-none" id="needsReviewCancelScanBtn" style="font-size: 11px;">
+                                    <i class="fas fa-stop-circle me-1"></i> Cancel Scan
+                                </button>
+                            </div>
                             <span class="small fw-semibold" id="needsReviewScanProgressPercent">0%</span>
                         </div>
                         <div class="progress" style="height: 8px;">
@@ -915,6 +1149,13 @@ include __DIR__ . '/../../includes/header.php';
                             </tbody>
                         </table>
                     </div>
+                    <!-- Pagination Bottom -->
+                    <div class="d-flex justify-content-between align-items-center px-3 py-2 border-top bg-white flex-wrap gap-2" id="paginationBar">
+                        <div class="text-muted small" id="paginationInfo"></div>
+                        <nav aria-label="Issues pagination">
+                            <ul class="pagination pagination-sm mb-0" id="paginationControls"></ul>
+                        </nav>
+                    </div>
                 </div>
                 <?php endif; ?>
             </div>
@@ -925,9 +1166,14 @@ include __DIR__ . '/../../includes/header.php';
 <div class="modal fade" id="needsReviewPreviewModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-xl modal-dialog-scrollable">
         <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">Needs Review Preview</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            <div class="modal-header bg-light d-flex justify-content-between align-items-center">
+                <h5 class="modal-title">Scanner Finding Preview</h5>
+                <div class="d-flex gap-2">
+                    <button type="button" class="btn btn-sm btn-primary d-none" id="needsReviewTrainAIBtn">
+                        <i class="fas fa-robot me-1"></i> Train AI Style
+                    </button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
             </div>
             <div class="modal-body" id="needsReviewPreviewBody"></div>
         </div>
@@ -980,6 +1226,130 @@ include __DIR__ . '/../../includes/header.php';
     </div>
 </div>
 
+<!-- Issue Page Screenshots Upload Modal -->
+<div class="modal fade" id="issueScreenshotUploadModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-upload me-2"></i>Upload Screenshots</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <!-- Upload Form -->
+                <div id="screenshotUploadStatus" class="d-none"></div>
+                <form id="screenshotUploadForm" class="mb-4">
+                    <div class="row g-3">
+                        <div class="col-12">
+                            <label for="screenshotFileInput" class="form-label">Select Images</label>
+                            <input type="file" class="form-control" id="screenshotFileInput" name="screenshots" multiple accept="image/*" required>
+                            <small class="text-muted d-block mt-1">Supported: JPG, PNG, GIF, WebP (Max 10MB each)</small>
+                        </div>
+                        <div class="col-12">
+                            <label for="screenshotGroupedUrlSelect" class="form-label">Associated URL (Optional)</label>
+                            <select class="form-select" id="screenshotGroupedUrlSelect" name="grouped_url_id" data-placeholder="Search and select a URL">
+                                <option value="">-- Select a URL --</option>
+                            </select>
+                            <small class="text-muted d-block mt-1">Select which URL this screenshot is from</small>
+                        </div>
+                        <div class="col-12">
+                            <label for="screenshotDescription" class="form-label">Description (Optional)</label>
+                            <textarea class="form-control" id="screenshotDescription" name="description" rows="2" placeholder="Add a note about this screenshot..."></textarea>
+                        </div>
+                        <div class="col-12">
+                            <button type="submit" class="btn btn-primary w-100">
+                                <i class="fas fa-upload me-2"></i>Upload Screenshots
+                            </button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="pageScreenshotsViewModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-images me-2"></i>View Page Screenshots</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-3 mb-3 align-items-end">
+                    <div class="col-md-4">
+                        <label for="pageScreenshotsSearchInput" class="form-label">Search</label>
+                        <input type="search" class="form-control" id="pageScreenshotsSearchInput" placeholder="Search by file name, URL, component">
+                    </div>
+                    <div class="col-md-4">
+                        <label for="pageScreenshotsUrlFilter" class="form-label">URL / Component</label>
+                        <select class="form-select" id="pageScreenshotsUrlFilter">
+                            <option value="">All</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2">
+                        <label for="pageScreenshotsPageSize" class="form-label">Rows</label>
+                        <select class="form-select" id="pageScreenshotsPageSize">
+                            <option value="5">5</option>
+                            <option value="10" selected>10</option>
+                            <option value="20">20</option>
+                            <option value="50">50</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2 text-md-end">
+                        <button type="button" class="btn btn-outline-secondary w-100" id="pageScreenshotsResetFiltersBtn">
+                            <i class="fas fa-rotate-left me-1"></i>Reset
+                        </button>
+                    </div>
+                </div>
+                <div id="pageScreenshotsTableWrap" class="table-responsive">
+                    <table class="table table-sm table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th style="width: 70px;">Sr. No.</th>
+                                <th style="width: 180px;">Screenshot Thumbnail</th>
+                                <th>URLs/Components</th>
+                                <th>Description</th>
+                                <th style="width: 180px;">Timestamp</th>
+                                <th style="width: 150px;">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="pageScreenshotsTableBody">
+                            <tr>
+                                <td colspan="6" class="text-center text-muted py-4">Loading screenshots...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2 mt-3">
+                    <div class="small text-muted" id="pageScreenshotsPaginationInfo">Showing 0 of 0 screenshots</div>
+                    <div class="btn-group" role="group" aria-label="Screenshot pagination">
+                        <button type="button" class="btn btn-outline-secondary btn-sm" id="pageScreenshotsPrevBtn">Previous</button>
+                        <button type="button" class="btn btn-outline-secondary btn-sm" id="pageScreenshotsNextBtn">Next</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="deleteScreenshotConfirmModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Delete Screenshot</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                Are you sure you want to delete this screenshot?
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger" id="confirmDeleteScreenshotBtn">Delete</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <?php include __DIR__ . '/partials/issues_modals.php'; ?>
 
 <!-- Summernote JS -->
@@ -987,14 +1357,18 @@ include __DIR__ . '/../../includes/header.php';
 <!-- Select2 JS -->
 <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
 
-<script>
+<script nonce="<?php echo $cspNonce ?? ''; ?>">
+    window._csrfToken = <?php echo json_encode(generateCsrfToken()); ?>;
+    
     window.ProjectConfig = {
         projectId: <?php echo json_encode($projectId); ?>,
+        projectCode: <?php echo json_encode($project['project_code'] ?? 'ISS'); ?>,
+        pageId: <?php echo json_encode($pageId ?? 0); ?>,
         userId: <?php echo json_encode($userId); ?>,
         userRole: <?php echo json_encode($userRole); ?>,
         canUpdateIssueQaStatus: <?php echo $canUpdateIssueQaStatus ? 'true' : 'false'; ?>,
-        baseDir: '<?php echo $baseDir; ?>',
-        projectType: '<?php echo $project['type'] ?? 'web'; ?>',
+        baseDir: <?php echo json_encode($baseDir); ?>,
+        projectType: <?php echo json_encode(strtolower($project['project_type'] ?? 'web')); ?>,
         currentPageUrl: <?php echo json_encode($page['url'] ?? ''); ?>,
         projectPages: <?php echo json_encode($projectPages ?? []); ?>,
         groupedUrls: <?php echo json_encode($groupedUrls ?? []); ?>,
@@ -1008,36 +1382,25 @@ include __DIR__ . '/../../includes/header.php';
     window.issueMetadataFields = <?php echo json_encode($metadataFields ?? []); ?>;
 </script>
 
-<script src="<?php echo $baseDir; ?>/modules/projects/js/issue_title_field.js?v=20260210180000"></script>
+<script src="<?php echo $baseDir; ?>/modules/projects/js/issue_title_field.js?v=<?php echo time(); ?>"></script>
 <script src="<?php echo $baseDir; ?>/modules/projects/js/view_issues.js?v=<?php echo time(); ?>"></script>
-<script>
-document.addEventListener('pms:issues-changed', function (e) {
-    var detail = e.detail || {};
-    if (detail.source === 'internal') {
-        // view_issues.js already updated in-memory data and called renderAll()
-        // Just reload common issues from API to stay in sync
-        if (typeof window.loadCommonIssues === 'function') {
-            window.loadCommonIssues({ silent: true });
-        }
-    } else {
-        // External change (another tab/page) — reload everything from API
-        if (typeof window.loadFinalIssues === 'function') {
-            window.loadFinalIssues(<?php echo (int)$pageId; ?>, { silent: true });
-        }
-        if (typeof window.loadCommonIssues === 'function') {
-            window.loadCommonIssues({ silent: true });
-        }
-    }
-});
+<script src="<?php echo $baseDir; ?>/assets/js/issues-page-detail.js?v=<?php echo time(); ?>"></script>
+<script src="<?php echo $baseDir; ?>/modules/projects/js/regression-panel.js?v=<?php echo time(); ?>"></script>
+<script src="<?php echo $baseDir; ?>/modules/projects/js/issue_navigation.js?v=<?php echo time(); ?>"></script>
 
-document.getElementById('pageIssuesRefreshBtn').addEventListener('click', function () {
-    if (typeof window.loadFinalIssues === 'function') {
-        window.loadFinalIssues(<?php echo (int)$pageId; ?>);
+<script nonce="<?php echo $cspNonce ?? ''; ?>">
+document.addEventListener('DOMContentLoaded', function() {
+    if (window.IssueNavigation) {
+        window.IssueNavigation.init({
+            rowSelector: '.issue-expandable-row',
+            editBtnSelector: '.final-edit, .common-edit, .issue-open'
+        });
     }
 });
 </script>
 
-<script>
+
+<script nonce="<?php echo $cspNonce ?? ''; ?>">
 // Automated findings -> Needs Review tab
 (function () {
     var baseDir = <?php echo json_encode($baseDir); ?>;
@@ -1108,82 +1471,64 @@ document.getElementById('pageIssuesRefreshBtn').addEventListener('click', functi
     function renderRecommendationHtml(text, emptyFallback) {
         var raw = String(text || '').trim();
         if (!raw) return esc(String(emptyFallback || '-'));
-        var lines = raw.split(/\r?\n/).map(function (l) { return String(l || '').trim(); }).filter(Boolean);
+        
+        function simpleCodeHighlight(txt) {
+            var s = esc(txt);
+            // Highlight text in backticks: `code`
+            s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+            // Highlight things that look like HTML tags: <tag>, </tag>, <tag />
+            s = s.replace(/(&lt;\/?[a-z1-6]+(?:\s+[a-z-]+(?:=&quot;[^&]*&quot;|='[^']*')?)*\s*\/?&gt;)/gi, function(m) {
+                return '<code class="text-danger">' + m + '</code>';
+            });
+            return s;
+        }
+
+        var lines = raw.split(/\r?\n/).map(function(l) { return l.trim(); }).filter(function(l) { return l !== ''; });
         if (!lines.length) return esc(String(emptyFallback || '-'));
 
-        function renderTextWithCodeTags(inputText) {
-            var txt = String(inputText || '');
-            var tokens = txt.split(/(<\/?[a-z][^>]*>)/gi);
-            return tokens.map(function (t) {
-                if (/^<\/?[a-z][^>]*>$/i.test(t)) {
-                    return '<code>' + esc(t) + '</code>';
-                }
-                var s = esc(t);
-                // Wrap complete attribute assignments first, then standalone aria/role tokens.
-                s = s.replace(/\b[a-zA-Z_:-]+\s*=\s*&quot;[^&]+&quot;/g, function (m) { return '<code>' + m + '</code>'; });
-                s = s.replace(/\b[a-zA-Z_:-]+\s*=\s*&#39;[^&]+&#39;/g, function (m) { return '<code>' + m + '</code>'; });
-                var parts = s.split(/(<code>[\s\S]*?<\/code>)/i);
-                s = parts.map(function (part) {
-                    if (/^<code>[\s\S]*<\/code>$/i.test(part)) return part;
-                    var out = part;
-                    out = out.replace(/\baria-[a-z-]+\b/gi, function (m) { return '<code>' + m + '</code>'; });
-                    out = out.replace(/\brole\b/gi, function (m) { return '<code>' + m + '</code>'; });
-                    return out;
-                }).join('');
-                return s;
-            }).join('');
+        var html = '';
+        var inList = false;
+        var listType = ''; // 'ul' or 'ol'
+
+        function closeList() {
+            if (inList) {
+                html += '</div>';
+                inList = false;
+            }
         }
 
-        var heading = '';
-        var subHeading = '';
-        var paragraphs = [];
-        var bullets = [];
-        var seenRecLine = {};
-        function pushUnique(target, line) {
-            var t = String(line || '').trim();
-            if (!t) return;
-            var key = t.toLowerCase();
-            if (seenRecLine[key]) return;
-            seenRecLine[key] = true;
-            target.push(t);
-        }
-        lines.forEach(function (line) {
-            var cleaned = String(line || '').trim();
-            var isBullet = /^\-\s+/.test(cleaned);
-            if (isBullet) cleaned = cleaned.replace(/^\-\s+/, '').trim();
-            if (/^apply the following changes:?$/i.test(cleaned)) {
-                subHeading = line;
-            } else if (!heading) {
-                heading = cleaned;
-            } else if (isBullet) {
-                pushUnique(bullets, cleaned);
+        lines.forEach(function(line, idx) {
+            var isBullet = /^[\-\*•]\s+/.test(line);
+            var isNumbered = /^\d+[\.\)]\s+/.test(line);
+            
+            if (isBullet || isNumbered) {
+                if (!inList) {
+                    closeList();
+                    html += '<div class="needs-review-steps mt-2">';
+                    inList = true;
+                }
+                var content = line.replace(/^[\-\*•]\s+/, '').replace(/^\d+[\.\)]\s+/, '').trim();
+                html += '<div class="d-flex gap-2 mb-2">' +
+                       '<div class="flex-shrink-0">' + 
+                       (isNumbered ? 
+                         '<span class="badge rounded-circle bg-primary-subtle text-primary border border-primary-subtle" style="width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:0.75rem;">' + (html.match(/d-flex/g) || []).length + '</span>' :
+                         '<i class="fas fa-circle text-primary-emphasis mt-1" style="font-size: 0.4rem;"></i>'
+                       ) + 
+                       '</div>' +
+                       '<div class="flex-grow-1">' + simpleCodeHighlight(content) + '</div>' +
+                       '</div>';
             } else {
-                pushUnique(paragraphs, cleaned);
+                closeList();
+                var isHeader = (idx === 0) || (line.length < 100 && /:$/.test(line)) || (line === line.toUpperCase() && line.length < 50);
+                if (isHeader) {
+                    html += '<div class="mb-2" style="font-size:0.95rem;">' + simpleCodeHighlight(line) + '</div>';
+                } else {
+                    html += '<div class="mb-2 text-muted-foreground" style="font-size:0.9rem;">' + simpleCodeHighlight(line) + '</div>';
+                }
             }
         });
+        closeList();
 
-        if (!bullets.length && !paragraphs.length && !subHeading) {
-            return renderTextWithCodeTags(raw).replace(/\n/g, '<br>');
-        }
-
-        var html = '';
-        if (heading) {
-            html += '<div class="mb-1">' + renderTextWithCodeTags(heading) + '</div>';
-        }
-        if (subHeading) {
-            html += '<div class="mt-2 mb-1"><strong>' + renderTextWithCodeTags(subHeading.replace(/^\-\s+/, '').trim()) + '</strong></div>';
-        }
-        if (paragraphs.length) {
-            html += paragraphs.map(function (p) {
-                return '<div class="mb-2">' + renderTextWithCodeTags(p) + '</div>';
-            }).join('');
-        }
-        if (bullets.length) {
-            // Keep recommendation readable as paragraph blocks instead of dense bullets.
-            html += bullets.map(function (b) {
-                return '<div class="mb-2">' + renderTextWithCodeTags(b) + '</div>';
-            }).join('');
-        }
         return html;
     }
 
@@ -1196,23 +1541,30 @@ document.getElementById('pageIssuesRefreshBtn').addEventListener('click', functi
 
         function renderTextWithCodeTags(inputText) {
             var txt = String(inputText || '');
-            var tokens = txt.split(/(<\/?[a-z][^>]*>)/gi);
-            return tokens.map(function (t) {
-                if (/^<\/?[a-z][^>]*>$/i.test(t)) {
-                    return '<code>' + esc(t) + '</code>';
+            var chunks = txt.split(/(<code>[\s\S]*?<\/code>)/i);
+            return chunks.map(function (chunk) {
+                if (/^<code>([\s\S]*)<\/code>$/i.test(chunk)) {
+                    var inner = chunk.replace(/^<code>/i, '').replace(/<\/code>$/i, '');
+                    return '<code>' + esc(inner) + '</code>';
                 }
-                var s = esc(t);
-                s = s.replace(/\b[a-zA-Z_:-]+\s*=\s*&quot;[^&]+&quot;/g, function (m) { return '<code>' + m + '</code>'; });
-                s = s.replace(/\b[a-zA-Z_:-]+\s*=\s*&#39;[^&]+&#39;/g, function (m) { return '<code>' + m + '</code>'; });
-                var parts = s.split(/(<code>[\s\S]*?<\/code>)/i);
-                s = parts.map(function (part) {
-                    if (/^<code>[\s\S]*<\/code>$/i.test(part)) return part;
-                    var out = part;
-                    out = out.replace(/\baria-[a-z-]+\b/gi, function (m) { return '<code>' + m + '</code>'; });
-                    out = out.replace(/\brole\b/gi, function (m) { return '<code>' + m + '</code>'; });
-                    return out;
+                var tokens = chunk.split(/(<\/?[a-z][^>]*>)/gi);
+                return tokens.map(function (t) {
+                    if (/^<\/?[a-z][^>]*>$/i.test(t)) {
+                        return '<code>' + esc(t) + '</code>';
+                    }
+                    var s = esc(t);
+                    s = s.replace(/\b[a-zA-Z_:-]+\s*=\s*&quot;[^&]+&quot;/g, function (m) { return '<code>' + m + '</code>'; });
+                    s = s.replace(/\b[a-zA-Z_:-]+\s*=\s*&#39;[^&]+&#39;/g, function (m) { return '<code>' + m + '</code>'; });
+                    var parts = s.split(/(<code>[\s\S]*?<\/code>)/i);
+                    s = parts.map(function (part) {
+                        if (/^<code>[\s\S]*<\/code>$/i.test(part)) return part;
+                        var out = part;
+                        out = out.replace(/\baria-[a-z-]+\b/gi, function (m) { return '<code>' + m + '</code>'; });
+                        out = out.replace(/\brole\b/gi, function (m) { return '<code>' + m + '</code>'; });
+                        return out;
+                    }).join('');
+                    return s;
                 }).join('');
-                return s;
             }).join('');
         }
 
@@ -1284,6 +1636,9 @@ document.getElementById('pageIssuesRefreshBtn').addEventListener('click', functi
             }
 
             function onConfirm() {
+                if (document.activeElement && document.activeElement !== document.body) {
+                    document.activeElement.blur();
+                }
                 finish(true);
                 bsModal.hide();
             }
@@ -1297,6 +1652,37 @@ document.getElementById('pageIssuesRefreshBtn').addEventListener('click', functi
             bsModal.show();
         });
     }
+
+    function renderCorrectCodeBlocks(finding) {
+        var code = String(finding.correct_code || '').trim();
+        if (!code || code === '-') return '<span class="text-muted">-</span>';
+        
+        var id = 'copy_' + Math.random().toString(36).slice(2, 10);
+        return '<div class="needs-review-correct-code-container position-relative">' +
+               '<pre class="needs-review-inline-code mb-0 p-2 rounded bg-dark-subtle border" id="' + id + '" style="max-height: 200px; overflow: auto; white-space: pre-wrap;"><code>' + esc(code) + '</code></pre>' +
+               '<button type="button" class="btn btn-xs btn-outline-primary position-absolute top-0 end-0 m-1" onclick="copyFindingCode(\'' + id + '\', this)" title="Copy Code" aria-label="Copy Code">' +
+               '<i class="far fa-copy"></i>' +
+               '</button>' +
+               '</div>';
+    }
+
+    window.copyFindingCode = function(elementId, btn) {
+        var el = document.getElementById(elementId);
+        if (!el) return;
+        var text = el.textContent || el.innerText;
+        navigator.clipboard.writeText(text).then(function() {
+            var icon = btn.querySelector('i');
+            if (icon) {
+                icon.className = 'fas fa-check text-success';
+                setTimeout(function() {
+                    icon.className = 'far fa-copy';
+                }, 2000);
+            }
+            if (typeof window.showToast === 'function') window.showToast('Code copied to clipboard', 'success');
+        }).catch(function() {
+            if (typeof window.showToast === 'function') window.showToast('Failed to copy code', 'danger');
+        });
+    };
 
     function extractIncorrectCode(finding) {
         return '<div class="needs-review-code-wrap">' + renderIncorrectCodeBlocks(finding, 'mb-1') + '</div>';
@@ -1377,13 +1763,16 @@ document.getElementById('pageIssuesRefreshBtn').addEventListener('click', functi
 
     function getAutoScanUrlOptions() {
         var urls = [];
-        var currentPageUrl = String((window.ProjectConfig && window.ProjectConfig.currentPageUrl) || '').trim();
+        var cfg = window.ProjectConfig || {};
+        var currentPageUrl = String(cfg.currentPageUrl || '').trim();
         if (currentPageUrl) urls.push(currentPageUrl);
-        var grouped = (window.ProjectConfig && Array.isArray(window.ProjectConfig.groupedUrls)) ? window.ProjectConfig.groupedUrls : [];
+        
+        var grouped = Array.isArray(cfg.groupedUrls) ? cfg.groupedUrls : [];
         grouped.forEach(function (g) {
             var u = String((g && (g.url || g.normalized_url)) || '').trim();
             if (u) urls.push(u);
         });
+
         var seen = {};
         return urls.filter(function (u) {
             var key = u.toLowerCase();
@@ -1452,15 +1841,33 @@ document.getElementById('pageIssuesRefreshBtn').addEventListener('click', functi
         });
     }
 
-    function openScanUrlSelectionModal(keepOpen) {
+    function openScanUrlSelectionModal(keepOpenOrMode) {
         var modalEl = document.getElementById('needsReviewScanUrlModal');
         var listEl = document.getElementById('needsReviewScanUrlList');
+        if (!modalEl || !listEl) {
+            console.error('Scan URL list modal element not found');
+            return;
+        }
+
         var selectAllEl = document.getElementById('needsReviewScanSelectAll');
         var customInput = document.getElementById('needsReviewCustomScanUrlInput');
         var customOpenBtn = document.getElementById('needsReviewOpenCustomUrlBtn');
         var customAddBtn = document.getElementById('needsReviewAddCustomUrlBtn');
+        var runBtn = document.getElementById('needsReviewRunSelectedScanBtn');
+        
+        var scanMode = 'default';
+        var keepOpen = false;
+
+        if (typeof keepOpenOrMode === 'string') {
+            scanMode = keepOpenOrMode;
+        } else if (typeof keepOpenOrMode === 'boolean') {
+            keepOpen = keepOpenOrMode;
+            scanMode = modalEl.getAttribute('data-current-mode') || 'default';
+        }
+        modalEl.setAttribute('data-current-mode', scanMode);
+
         if (!(modalEl && listEl)) {
-            runAutomatedScanForCurrentPage([]);
+            runAutomatedScanForCurrentPage([], scanMode);
             return;
         }
 
@@ -1520,6 +1927,22 @@ document.getElementById('pageIssuesRefreshBtn').addEventListener('click', functi
             };
         }
 
+        if (runBtn) {
+            runBtn.onclick = async function() {
+                var selectedUrls = Array.from(document.querySelectorAll('#needsReviewScanUrlList .needs-review-scan-url:checked'))
+                    .map(function (cb) { return String(cb.value || '').trim(); })
+                    .filter(Boolean);
+                if (!selectedUrls.length) {
+                    if (typeof window.showToast === 'function') window.showToast('Select at least one URL', 'warning');
+                    return;
+                }
+                if (modalEl && window.bootstrap && bootstrap.Modal) {
+                    bootstrap.Modal.getOrCreateInstance(modalEl).hide();
+                }
+                await runAutomatedScanForCurrentPage(selectedUrls, scanMode);
+            };
+        }
+
         if (window.bootstrap && bootstrap.Modal) {
             var modal = bootstrap.Modal.getOrCreateInstance(modalEl);
             if (!keepOpen || !modalEl.classList.contains('show')) {
@@ -1535,32 +1958,20 @@ document.getElementById('pageIssuesRefreshBtn').addEventListener('click', functi
         var rec = String(finding.recommendation || '').trim();
         var correct = String(finding.correct_code || '').trim();
 
-        // Keep final issue formatting stable: swap issue headline with recommendation text
-        // (as requested) and preserve line breaks after moving to Final Issues.
-        var actualLines = actual.split(/\r?\n/);
-        var firstActualLine = '';
-        for (var i = 0; i < actualLines.length; i++) {
-            var ln = String(actualLines[i] || '').trim();
-            if (ln !== '') { firstActualLine = ln; break; }
-        }
-        if (rec && firstActualLine && rec.toLowerCase() !== firstActualLine.toLowerCase()) {
-            actual = actual.replace(firstActualLine, rec);
-            rec = firstActualLine;
-        }
 
         return [
             '<p><strong>[Actual Results]</strong></p>',
-            '<pre class="mb-0" style="white-space: pre-wrap;"><code>' + esc(actual) + '</code></pre>',
+            '<div class="mb-2">' + (typeof renderActualResultsHtml === 'function' ? renderActualResultsHtml(actual, '') : '<p>' + esc(actual) + '</p>') + '</div>',
             '<p><strong>[Incorrect Code]</strong></p>',
             incorrectCodeHtml,
             '<p><strong>[Screenshots]</strong></p>',
             screenshots.length
                 ? ('<div class="issue-image-grid">' + screenshots.map(function (u, idx) {
-                    return '<img src="' + esc(u) + '" alt="Screenshot ' + (idx + 1) + '" class="issue-image-thumb">';
+                    return '<img loading="lazy" src="' + esc(u) + '" alt="Screenshot ' + (idx + 1) + '" class="issue-image-thumb" onerror="this.style.display=\'none\'">';
                 }).join('') + '</div>')
                 : '<p></p>',
             '<p><strong>[Recommendation]</strong></p>',
-            '<p>' + esc(rec) + '</p>',
+            '<div class="mb-2">' + (typeof renderRecommendationHtml === 'function' ? renderRecommendationHtml(rec, '') : '<p>' + esc(rec) + '</p>') + '</div>',
             '<p><strong>[Correct Code]</strong></p>',
             '<code class="needs-review-inline-code">' + esc(correct || '-') + '</code>'
         ].join('\n');
@@ -1568,9 +1979,9 @@ document.getElementById('pageIssuesRefreshBtn').addEventListener('click', functi
 
     function toIssueSeverity(findingSeverity) {
         var s = String(findingSeverity || '').toLowerCase();
-        if (s === 'blocker' || s === 'critical' || s === 'high' || s === 'serious') return 'high';
-        if (s === 'minor' || s === 'low') return 'low';
-        return 'medium';
+        if (s === 'blocker' || s === 'critical' || s === 'high' || s === 'serious') return 'High';
+        if (s === 'minor' || s === 'low') return 'Low';
+        return 'Medium';
     }
 
     function toMetadataSeverity(findingSeverity) {
@@ -1590,7 +2001,7 @@ document.getElementById('pageIssuesRefreshBtn').addEventListener('click', functi
         fd.append('title', String(finding.title || 'Automated accessibility issue'));
         fd.append('description', buildDetailsHtml(finding));
         fd.append('severity', toIssueSeverity(finding.severity));
-        fd.append('priority', 'medium');
+        fd.append('priority', 'Medium');
         fd.append('issue_status', 'Open');
         fd.append('pages[]', String(pageId));
         var findingUrls = getFindingUrls(finding);
@@ -1639,6 +2050,11 @@ document.getElementById('pageIssuesRefreshBtn').addEventListener('click', functi
         var markJson = await markRes.json();
         if (!markJson || !markJson.success) {
             throw new Error((markJson && markJson.message) ? markJson.message : 'Unable to mark finding as moved');
+        }
+
+        // Refresh regression stats if the panel exists
+        if (typeof window.loadRegressionStats === 'function') {
+            window.loadRegressionStats();
         }
     }
 
@@ -1694,18 +2110,113 @@ document.getElementById('pageIssuesRefreshBtn').addEventListener('click', functi
                 var finding = rows.find(function (x) { return String(x.id) === String(findingId); });
                 if (!finding) return;
                 var body = document.getElementById('needsReviewPreviewBody');
+                var trainBtn = document.getElementById('needsReviewTrainAIBtn');
                 if (!body) return;
                 var shots = getScreenshotUrls(finding);
                 var findingUrls = getFindingUrls(finding);
+                
                 body.innerHTML = ''
-                    + '<div class="mb-2"><strong>' + esc(finding.title || '-') + '</strong></div>'
-                    + '<div class="small text-muted mb-2">Rule: ' + esc(finding.rule_id || '-') + ' | Severity: ' + esc(finding.severity || '-') + '</div>'
-                    + '<div class="mb-2"><strong>URLs</strong><div class="p-2 bg-light border rounded" style="white-space: pre-wrap;">' + esc(findingUrls.join('\n') || '-') + '</div></div>'
-                    + '<div class="mb-2"><strong>Actual Results</strong><div class="p-2 bg-light border rounded needs-review-rich-text">' + renderActualResultsHtml(finding.actual_results, '-') + '</div></div>'
-                    + '<div class="mb-2"><strong>Incorrect Code</strong><div class="p-2 bg-light border rounded">' + renderIncorrectCodeBlocks(finding, 'mb-2') + '</div></div>'
-                    + '<div class="mb-2"><strong>Recommendation</strong><div class="p-2 bg-light border rounded">' + renderRecommendationHtml(finding.recommendation, '-') + '</div></div>'
-                    + '<div class="mb-2"><strong>Correct Code</strong><div class="p-2 bg-light border rounded"><code class="needs-review-inline-code mb-0">' + esc(String(finding.correct_code || '-')) + '</code></div></div>'
-                    + '<div><strong>Screenshots</strong><div class="mt-2 d-flex flex-wrap gap-2">' + (shots.length ? shots.map(function (u) { return '<img src="' + esc(u) + '" class="img-thumbnail needs-review-preview-image" style="max-height:180px;" data-src="' + esc(u) + '">'; }).join('') : '<span class="text-muted">No screenshots</span>') + '</div></div>';
+                    + '<div class="row">'
+                    + '  <div class="col-md-6">'
+                    + '    <div class="mb-3"><strong>' + esc(finding.title || '-') + '</strong></div>'
+                    + '    <div class="small text-muted mb-2">Rule: ' + esc(finding.rule_id || '-') + ' | Severity: ' + esc(finding.severity || '-') + '</div>'
+                    + '    <div class="mb-3"><strong>URLs</strong><div class="p-2 bg-light border rounded small" style="max-height:60px; overflow:auto;">' + esc(findingUrls.join('\n') || '-') + '</div></div>'
+                    + '    <div class="mb-3">'
+                    + '      <label class="fw-bold mb-1">Actual Results</label>'
+                    + '      <textarea class="form-control form-control-sm" id="aiActualResults" rows="4" style="font-size:12px;">' + esc(String(finding.actual_results || '')) + '</textarea>'
+                    + '    </div>'
+                    + '    <div class="mb-3">'
+                    + '      <label class="fw-bold mb-1">Incorrect Code</label>'
+                    + '      <textarea class="form-control form-control-sm font-monospace" id="aiIncorrectCode" rows="4" style="font-size:11px; background:#f8f9fa;">' + esc(String(finding.incorrect_code || '')) + '</textarea>'
+                    + '    </div>'
+                    + '  </div>'
+                    + '  <div class="col-md-6 border-start bg-light p-3 rounded-end">'
+                    + '    <div class="mb-3">'
+                    + '      <div class="d-flex justify-content-between align-items-center mb-1">'
+                    + '         <label class="fw-bold small text-primary"><i class="fas fa-magic me-1"></i> AI Recommendation</label>'
+                    + '         <span class="badge bg-primary text-white" style="font-size:9px;">EDITABLE FIELD</span>'
+                    + '      </div>'
+                    + '      <textarea class="form-control form-control-sm" id="aiImprovementText" rows="6" style="font-size:12px; border: 1px solid #74c0fc;">' + esc(String(finding.recommendation || '')) + '</textarea>'
+                    + '      <div class="mt-2 small text-muted fst-italic" style="font-size:11px;">Editing this text and clicking "Train AI" helps the scanner learn your preferred writing style for future reports.</div>'
+                    + '    </div>'
+                    + '    <div class="mb-3">'
+                    + '      <label class="fw-bold mb-1">Correct Code Suggestion</label>'
+                    + '      <textarea class="form-control form-control-sm font-monospace" id="aiCorrectCode" rows="3" style="font-size:11px;">' + esc(String(finding.correct_code || '')) + '</textarea>'
+                    + '    </div>'
+                    + '    <div><strong>Screenshots</strong><div class="mt-2 d-flex flex-wrap gap-2">' + (shots.length ? shots.map(function (u) { return '<img src="' + esc(u) + '" class="img-thumbnail needs-review-preview-image" style="max-height:100px; cursor:zoom-in;" data-src="' + esc(u) + '" onerror="this.style.display=\'none\';">'; }).join('') : '<span class="text-muted">No screenshots</span>') + '</div></div>'
+                    + '  </div>'
+                    + '</div>';
+
+                if (trainBtn) {
+                    trainBtn.classList.remove('d-none');
+                    trainBtn.onclick = async function() {
+                        var improved = document.getElementById('aiImprovementText').value;
+                        var improvedActual = document.getElementById('aiActualResults').value;
+                        var improvedIncorrect = document.getElementById('aiIncorrectCode').value;
+                        var improvedCorrect = document.getElementById('aiCorrectCode').value;
+                        
+                        this.disabled = true;
+                        this.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Training All Fields...';
+                        try {
+                            var res = await fetch(baseDir + '/api/save_ai_feedback.php', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    finding_id: (finding.id || 0),
+                                    project_id: (projectId || 0),
+                                    rule_id: finding.rule_id,
+                                    snippet: (finding.incorrect_code || '-'),
+                                    original_text: (finding.recommendation || ''),
+                                    improved_text: improved,
+                                    actual_results: improvedActual,
+                                    incorrect_code: improvedIncorrect,
+                                    correct_code: improvedCorrect
+                                })
+                            });
+                            var json = await res.json();
+                            if (json.success) {
+                                // Update local data and UI immediately
+                                finding.recommendation = improved;
+                                finding.actual_results = improvedActual;
+                                finding.incorrect_code = improvedIncorrect;
+                                finding.correct_code = improvedCorrect;
+                                
+                                var row = document.querySelector('tr[data-finding-id="' + finding.id + '"]');
+                                if (row) {
+                                    var cells = row.querySelectorAll('td');
+                                    // Row indices: ... 8:Actual, 9:Incorrect, 11:Recommendation
+                                    if (cells && cells.length >= 12) {
+                                        // Actual Results (Col 9)
+                                        var actualDiv = cells[8].querySelector('.needs-review-rich-text') || cells[8];
+                                        if (actualDiv) actualDiv.innerHTML = (typeof renderActualResultsHtml === 'function') ? renderActualResultsHtml(improvedActual, '-') : improvedActual;
+                                        
+                                        // Incorrect Code (Col 10)
+                                        var codeDiv = cells[9].querySelector('code') || cells[9];
+                                        if (codeDiv) codeDiv.innerText = improvedIncorrect;
+
+                                        // Recommendation (Col 12)
+                                        var recDiv = cells[11].querySelector('.needs-review-truncate');
+                                        if (recDiv) recDiv.innerHTML = (typeof renderRecommendationHtml === 'function') ? renderRecommendationHtml(improved, '-') : improved;
+                                    }
+                                }
+
+                                if (typeof window.showToast === 'function') window.showToast('AI Trained! Scan results updated.', 'success');
+                                this.innerHTML = '<i class="fas fa-check me-1"></i> Trained!';
+                                setTimeout(() => {
+                                    this.disabled = false;
+                                    this.innerHTML = '<i class="fas fa-robot me-1"></i> Train AI Style';
+                                }, 2000);
+                            } else {
+                                throw new Error(json.error || 'Failed to save feedback');
+                            }
+                        } catch (err) {
+                            if (typeof window.showToast === 'function') window.showToast(err.message, 'danger');
+                            this.disabled = false;
+                            this.innerHTML = '<i class="fas fa-robot me-1"></i> Train AI Style';
+                        }
+                    };
+                }
+
                 body.querySelectorAll('.needs-review-preview-image').forEach(function (img) {
                     img.addEventListener('click', function (ev) {
                         ev.preventDefault();
@@ -1726,7 +2237,7 @@ document.getElementById('pageIssuesRefreshBtn').addEventListener('click', functi
                 var shotHtml = shots.length
                     ? ('<div class="needs-review-shot-stack">'
                         + visibleShots.map(function (u) {
-                            return '<img src="' + esc(u) + '" alt="Finding screenshot" class="needs-review-shot" onclick="event.stopPropagation(); if (typeof openImagePopup === \'function\') openImagePopup(this.src, this.alt);">';
+                            return '<img loading="lazy" src="' + esc(u) + '" alt="Finding screenshot" class="needs-review-shot" onerror="this.style.display=\'none\';" onclick="event.stopPropagation(); if (typeof openImagePopup === \'function\') openImagePopup(this.src, this.alt);">';
                         }).join('')
                         + (extraShots > 0 ? '<span class="needs-review-extra-badge">+' + extraShots + '</span>' : '')
                         + '</div>')
@@ -1737,10 +2248,14 @@ document.getElementById('pageIssuesRefreshBtn').addEventListener('click', functi
                 var urlsCellHtml = findingUrls.length
                     ? (esc(urlsPreview.join('\n')) + (urlsExtra > 0 ? ('\n+' + urlsExtra + ' more') : ''))
                     : esc((f.scan_url || '-'));
+                var discoveryBadge = '';
+                if (f.discovery_type === 'ai_discovery' || (f.raw_payload && f.raw_payload.indexOf('ai_discovery') !== -1)) {
+                    discoveryBadge = '<span class="badge bg-info-subtle text-info border-info ms-1" style="font-size: 10px;"><i class="fas fa-sparkles me-1"></i> Deep AI Discovery</span>';
+                }
                 return '<tr class="needs-review-row" data-finding-id="' + esc(f.id) + '">' +
                     '<td class="text-center"><input type="checkbox" class="form-check-input needs-review-select" value="' + esc(f.id) + '"></td>' +
                     '<td>' + (idx + 1) + '</td>' +
-                    '<td><div class="fw-semibold needs-review-issue-title">' + esc(f.title || '-') + '</div><div class="small text-muted needs-review-issue-meta">' + esc(f.rule_id || '-') + ' | ' + esc(f.severity || '-') + ' | ' + esc(f.occurrence_count || 0) + ' hit(s)</div></td>' +
+                    '<td><div class="fw-semibold needs-review-issue-title">' + esc(f.title || '-') + discoveryBadge + '</div><div class="small text-muted needs-review-issue-meta">' + esc(f.rule_id || '-') + ' | ' + esc(f.severity || '-') + ' | ' + esc(f.occurrence_count || 0) + ' hit(s)</div></td>' +
                     '<td class="small needs-review-cell-scroll"><div class="needs-review-truncate" title="' + esc(findingUrls.join('\n')) + '">' + urlsCellHtml + '</div></td>' +
                     '<td><span class="badge bg-light text-dark border">' + esc(f.severity || '-') + '</span></td>' +
                     '<td class="small">' + esc(f.wcag_sc || '-') + '</td>' +
@@ -1750,7 +2265,7 @@ document.getElementById('pageIssuesRefreshBtn').addEventListener('click', functi
                     '<td class="small needs-review-cell-scroll">' + extractIncorrectCode(f) + '</td>' +
                     '<td class="small">' + shotHtml + '</td>' +
                     '<td class="small needs-review-cell-scroll"><div class="needs-review-truncate">' + renderRecommendationHtml(String(f.recommendation || recommendation || '-'), '-') + '</div></td>' +
-                    '<td class="small needs-review-cell-scroll"><div class="needs-review-code-wrap"><code class="needs-review-inline-code mb-0">' + esc(String(f.correct_code || '-')) + '</code></div></td>' +
+                    '<td class="small needs-review-cell-scroll">' + renderCorrectCodeBlocks(f) + '</td>' +
                     '<td class="needs-review-actions"><button type="button" class="btn btn-sm btn-outline-secondary needs-review-preview" data-finding-id="' + esc(f.id) + '"><i class="fas fa-eye"></i></button> <button type="button" class="btn btn-sm btn-success needs-review-move" data-finding-id="' + esc(f.id) + '"><i class="fas fa-arrow-right"></i></button> <button type="button" class="btn btn-sm btn-outline-danger needs-review-delete" data-finding-id="' + esc(f.id) + '"><i class="fas fa-trash"></i></button></td>' +
                 '</tr>';
             }).join('');
@@ -1868,16 +2383,26 @@ document.getElementById('pageIssuesRefreshBtn').addEventListener('click', functi
         }
     }
 
-    async function runAutomatedScanForCurrentPage(scanUrls) {
+    async function runAutomatedScanForCurrentPage(scanUrls, mode) {
+        var scanMode = 'default';
         var btn = document.getElementById('needsReviewRunScanBtn');
         var runSelectedBtn = document.getElementById('needsReviewRunSelectedScanBtn');
         var progressWrap = document.getElementById('needsReviewScanProgressWrap');
         var progressText = document.getElementById('needsReviewScanProgressText');
         var progressPercent = document.getElementById('needsReviewScanProgressPercent');
         var progressBar = document.getElementById('needsReviewScanProgressBar');
+        var cancelBtnUI = document.getElementById('needsReviewCancelScanBtn');
+
         if (btn) btn.disabled = true;
         if (runSelectedBtn) runSelectedBtn.disabled = true;
+        
         var token = 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+        window.currentScanToken = token;
+
+        if (cancelBtnUI) {
+            cancelBtnUI.classList.remove('disabled');
+            cancelBtnUI.innerHTML = '<i class="fas fa-stop-circle me-1"></i> Cancel Scan';
+        }
         var totalUrls = (Array.isArray(scanUrls) && scanUrls.length) ? scanUrls.length : 1;
 
         function setProgress(completed, total, percent, statusText) {
@@ -1885,7 +2410,11 @@ document.getElementById('pageIssuesRefreshBtn').addEventListener('click', functi
             var t = Math.max(1, parseInt(total || 1, 10));
             var p = Math.max(0, Math.min(100, parseInt(percent || 0, 10)));
             if (progressWrap) progressWrap.classList.remove('d-none');
-            if (progressText) progressText.textContent = (statusText || 'Scanning...') + ' (' + c + '/' + t + ' URLs)';
+            
+            // Use the granular message if available, otherwise fallback to generic status
+            var displayMsg = (statusText || 'Scanning...');
+            if (progressText) progressText.innerText = displayMsg + ' (' + c + '/' + t + ' URLs)';
+            
             if (progressPercent) progressPercent.textContent = p + '%';
             if (progressBar) progressBar.style.width = p + '%';
         }
@@ -1894,24 +2423,48 @@ document.getElementById('pageIssuesRefreshBtn').addEventListener('click', functi
             clearInterval(scanProgressTimer);
             scanProgressTimer = null;
         }
-        setProgress(0, totalUrls, 0, 'Starting scan');
+        var startMsg = 'Starting scan';
+        setProgress(0, totalUrls, 0, startMsg);
+        
+        // Persist token in localStorage so we can resume if user navigates away/refreshes
+        localStorage.setItem('pms_a11y_scan_' + pageId, token);
+
         scanProgressTimer = setInterval(async function () {
             try {
                 var pRes = await fetch(baseDir + '/api/accessibility_scan.php?action=progress&project_id=' + encodeURIComponent(projectId) + '&token=' + encodeURIComponent(token), { credentials: 'same-origin' });
                 var pJson = await pRes.json();
                 if (!pJson || !pJson.success) return;
-                setProgress(pJson.completed || 0, pJson.total || totalUrls, pJson.percent || 0, 'Scanning');
-                if (pJson.status === 'completed' || pJson.status === 'failed') {
+                
+                if (pJson.status === 'running') {
+                    var statusMsg = pJson.message || 'Scanning';
+                    setProgress(pJson.completed || 0, pJson.total || totalUrls, pJson.percent || 0, statusMsg);
+                } else if (pJson.status === 'completed') {
                     clearInterval(scanProgressTimer);
                     scanProgressTimer = null;
+                    localStorage.removeItem('pms_a11y_scan_' + pageId);
+                    setProgress(pJson.total, pJson.total, 100, 'Scan completed');
+                    if (typeof window.showToast === 'function') window.showToast('Automated scan completed.', 'success');
+                    await loadNeedsReviewFindings();
+                    if (btn) btn.disabled = false;
+                    if (runSelectedBtn) runSelectedBtn.disabled = false;
+                    setTimeout(() => { if (progressWrap) progressWrap.classList.add('d-none'); }, 3000);
+                } else if (pJson.status === 'failed' || pJson.status === 'cancelled') {
+                    clearInterval(scanProgressTimer);
+                    scanProgressTimer = null;
+                    localStorage.removeItem('pms_a11y_scan_' + pageId);
+                    setProgress(0, 0, 0, pJson.error || 'Scan failed or cancelled');
+                    if (btn) btn.disabled = false;
+                    if (runSelectedBtn) runSelectedBtn.disabled = false;
+                    setTimeout(() => { if (progressWrap) progressWrap.classList.add('d-none'); }, 4000);
                 }
             } catch (_) { }
-        }, 900);
+        }, 1200);
         try {
             var fd = new FormData();
             fd.append('project_id', String(projectId));
             fd.append('page_id', String(pageId));
             fd.append('progress_token', token);
+            fd.append('scan_mode', scanMode);
             if (Array.isArray(scanUrls) && scanUrls.length) {
                 fd.append('scan_urls', JSON.stringify(scanUrls));
             }
@@ -1922,35 +2475,96 @@ document.getElementById('pageIssuesRefreshBtn').addEventListener('click', functi
             });
             var json = await res.json();
             if (!json || !json.success) {
-                throw new Error((json && json.message) ? json.message : 'Scan failed');
+                // If the background start failed, clean up
+                localStorage.removeItem('pms_a11y_scan_' + pageId);
+                throw new Error((json && json.message) ? json.message : 'Scan failed to start');
             }
-            setProgress(totalUrls, totalUrls, 100, 'Scan completed');
-            if (typeof window.showToast === 'function') {
-                var countUrls = Array.isArray(json.scan_urls) ? json.scan_urls.length : ((Array.isArray(scanUrls) && scanUrls.length) ? scanUrls.length : 1);
-                window.showToast('Automated scan completed for ' + countUrls + ' URL(s)', 'success');
-            }
-            await loadNeedsReviewFindings();
+            // In background mode, we just wait for the poller now.
+            // No need to do anything else here.
         } catch (e) {
-            if (progressText) progressText.textContent = 'Scan failed';
-            if (typeof window.showToast === 'function') window.showToast(String(e.message || 'Scan failed'), 'danger');
-        } finally {
-            if (scanProgressTimer) {
-                clearInterval(scanProgressTimer);
-                scanProgressTimer = null;
+            if (e.name === 'AbortError' || String(e.message).includes('cancel')) {
+                if (progressText) progressText.textContent = 'Scan cancelled';
+            } else {
+                if (progressText) progressText.textContent = 'Scan failed: ' + e.message;
+                if (typeof window.showToast === 'function') window.showToast(String(e.message || 'Scan failed'), 'danger');
             }
-            if (btn) btn.disabled = false;
-            if (runSelectedBtn) runSelectedBtn.disabled = false;
-            setTimeout(function () {
-                if (progressWrap) progressWrap.classList.add('d-none');
-            }, 2500);
         }
     }
+
+    async function checkAndResumeActiveScan() {
+        var savedToken = localStorage.getItem('pms_a11y_scan_' + pageId);
+        if (savedToken) {
+            // Attempt to resume polling
+            var progressWrap = document.getElementById('needsReviewScanProgressWrap');
+            if (progressWrap) progressWrap.classList.remove('d-none');
+            // We use a dummy scanUrls array for UI placeholders
+            await resumePollingForToken(savedToken);
+        }
+    }
+
+    async function resumePollingForToken(token) {
+        var btn = document.getElementById('needsReviewRunScanBtn');
+        var runSelectedBtn = document.getElementById('needsReviewRunSelectedScanBtn');
+        var progressWrap = document.getElementById('needsReviewScanProgressWrap');
+        var progressText = document.getElementById('needsReviewScanProgressText');
+        var progressPercent = document.getElementById('needsReviewScanProgressPercent');
+        var progressBar = document.getElementById('needsReviewScanProgressBar');
+        
+        if (btn) btn.disabled = true;
+        if (runSelectedBtn) runSelectedBtn.disabled = true;
+        window.currentScanToken = token;
+
+        function setProgress(completed, total, percent, statusText) {
+            if (progressWrap) progressWrap.classList.remove('d-none');
+            if (progressText) progressText.textContent = (statusText || 'Scanning...') + ' (' + completed + '/' + total + ' URLs)';
+            if (progressPercent) progressPercent.textContent = percent + '%';
+            if (progressBar) progressBar.style.width = percent + '%';
+        }
+
+        if (scanProgressTimer) clearInterval(scanProgressTimer);
+        
+        scanProgressTimer = setInterval(async function () {
+            try {
+                var pRes = await fetch(baseDir + '/api/accessibility_scan.php?action=progress&project_id=' + encodeURIComponent(projectId) + '&token=' + encodeURIComponent(token), { credentials: 'same-origin' });
+                var pJson = await pRes.json();
+                if (!pJson || !pJson.success) return;
+                
+                if (pJson.status === 'running') {
+                    var statusMsg = pJson.message || 'Background Scanning';
+                    setProgress(pJson.completed || 0, pJson.total || 0, pJson.percent || 0, statusMsg);
+                } else if (pJson.status === 'completed') {
+                    clearInterval(scanProgressTimer);
+                    scanProgressTimer = null;
+                    localStorage.removeItem('pms_a11y_scan_' + pageId);
+                    setProgress(pJson.total, pJson.total, 100, 'Scan completed');
+                    if (typeof window.showToast === 'function') window.showToast('Background scan completed.', 'success');
+                    await loadNeedsReviewFindings();
+                    if (btn) btn.disabled = false;
+                    if (runSelectedBtn) runSelectedBtn.disabled = false;
+                    setTimeout(() => { if (progressWrap) progressWrap.classList.add('d-none'); }, 3000);
+                } else if (pJson.status === 'failed' || pJson.status === 'cancelled' || pJson.status === 'not_found') {
+                    clearInterval(scanProgressTimer);
+                    scanProgressTimer = null;
+                    localStorage.removeItem('pms_a11y_scan_' + pageId);
+                    if (pJson.status !== 'not_found') {
+                        setProgress(0, 0, 0, pJson.error || 'Scan stopped');
+                    }
+                    var btn = document.getElementById('needsReviewRunScanBtn');
+                    var runSelectedBtn = document.getElementById('needsReviewRunSelectedScanBtn');
+                    if (btn) btn.disabled = false;
+                    if (runSelectedBtn) runSelectedBtn.disabled = false;
+                    setTimeout(() => { if (progressWrap) progressWrap.classList.add('d-none'); }, 3000);
+                }
+            } catch (_) { }
+        }, 1500);
+    }
+
+
 
     document.addEventListener('DOMContentLoaded', function () {
         var refreshBtn = document.getElementById('needsReviewRefreshBtn');
         var runBtn = document.getElementById('needsReviewRunScanBtn');
         var deleteSelectedBtn = document.getElementById('needsReviewDeleteSelectedBtn');
-        var runSelectedBtn = document.getElementById('needsReviewRunSelectedScanBtn');
         var scanModalEl = document.getElementById('needsReviewScanUrlModal');
         var issueImageModalEl = document.getElementById('issueImageModal');
         if (issueImageModalEl) {
@@ -1964,22 +2578,33 @@ document.getElementById('pageIssuesRefreshBtn').addEventListener('click', functi
             });
         }
         if (refreshBtn) refreshBtn.addEventListener('click', loadNeedsReviewFindings);
-        if (runBtn) runBtn.addEventListener('click', openScanUrlSelectionModal);
-        if (runSelectedBtn) {
-            runSelectedBtn.addEventListener('click', async function () {
-                var selectedUrls = Array.from(document.querySelectorAll('#needsReviewScanUrlList .needs-review-scan-url:checked'))
-                    .map(function (cb) { return String(cb.value || '').trim(); })
-                    .filter(Boolean);
-                if (!selectedUrls.length) {
-                    if (typeof window.showToast === 'function') window.showToast('Select at least one URL', 'warning');
-                    return;
+        if (runBtn) runBtn.addEventListener('click', function() { openScanUrlSelectionModal('default'); });
+        
+        var cancelBtn = document.getElementById('needsReviewCancelScanBtn');
+        if (cancelBtn) {
+            cancelBtn.addEventListener('click', async function() {
+                var pToken = String(window.currentScanToken || '');
+                if (!pToken) return;
+                this.classList.add('disabled');
+                this.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Cancelling...';
+                try {
+                    var res = await fetch(baseDir + '/api/accessibility_scan.php?action=cancel&project_id=' + encodeURIComponent(projectId) + '&token=' + encodeURIComponent(pToken), {
+                        credentials: 'same-origin'
+                    });
+                    var json = await res.json();
+                    if (json.success) {
+                        if (typeof window.showToast === 'function') window.showToast('Scan cancelled successfully', 'info');
+                    } else {
+                        throw new Error(json.message || 'Cancel failed');
+                    }
+                } catch (e) {
+                    if (typeof window.showToast === 'function') window.showToast(String(e.message), 'danger');
+                    this.classList.remove('disabled');
+                    this.innerHTML = '<i class="fas fa-stop-circle me-1"></i> Cancel Scan';
                 }
-                if (scanModalEl && window.bootstrap && bootstrap.Modal) {
-                    bootstrap.Modal.getOrCreateInstance(scanModalEl).hide();
-                }
-                await runAutomatedScanForCurrentPage(selectedUrls);
             });
         }
+
         if (deleteSelectedBtn) {
             deleteSelectedBtn.addEventListener('click', async function () {
                 var selected = Array.from(document.querySelectorAll('#needsReviewBody .needs-review-select:checked'))
@@ -2005,6 +2630,7 @@ document.getElementById('pageIssuesRefreshBtn').addEventListener('click', functi
             });
         }
         initNeedsReviewTableResizable();
+        checkAndResumeActiveScan();
         loadNeedsReviewFindings();
     });
 
@@ -2012,7 +2638,7 @@ document.getElementById('pageIssuesRefreshBtn').addEventListener('click', functi
 })();
 </script>
 
-<script>
+<script nonce="<?php echo $cspNonce ?? ''; ?>">
 // Testing Status Update Handler
 (function() {
     document.querySelectorAll('.env-status-update').forEach(function(select) {
@@ -2044,6 +2670,9 @@ document.getElementById('pageIssuesRefreshBtn').addEventListener('click', functi
                 if (data.success) {
                     // Show success feedback
                     selectElement.classList.add('border-success');
+                    if (typeof showToast === 'function') {
+                        showToast(data.message || 'Status updated successfully', 'success');
+                    }
                     setTimeout(function() {
                         selectElement.classList.remove('border-success');
                     }, 1000);
@@ -2138,6 +2767,10 @@ document.getElementById('pageIssuesRefreshBtn').addEventListener('click', functi
             bootstrap.Modal.getOrCreateInstance(modalEl).hide();
         }
     };
+    // Auto-resume background scan if active
+    if (typeof checkAndResumeActiveScan === 'function') {
+        checkAndResumeActiveScan();
+    }
 })();
 </script>
 
@@ -2173,7 +2806,7 @@ document.getElementById('pageIssuesRefreshBtn').addEventListener('click', functi
             </button>
         </div>
     </div>
-    <iframe src="<?php echo $baseDir; ?>/modules/chat/project_chat.php?project_id=<?php echo (int)$projectId; ?>&embed=1" title="Project Chat"></iframe>
+    <iframe src="" data-src="<?php echo $baseDir; ?>/modules/chat/project_chat.php?project_id=<?php echo (int)$projectId; ?>&embed=1" title="Project Chat"></iframe>
 </div>
 
 <button type="button" class="btn btn-primary chat-launcher" id="chatLauncher">
@@ -2181,36 +2814,14 @@ document.getElementById('pageIssuesRefreshBtn').addEventListener('click', functi
     <span>Project Chat</span>
 </button>
 
-<script>
-document.addEventListener('DOMContentLoaded', function () {
-    var launcher = document.getElementById('chatLauncher');
-    var widget = document.getElementById('projectChatWidget');
-    var closeBtn = document.getElementById('chatWidgetClose');
-    var fullscreenBtn = document.getElementById('chatWidgetFullscreen');
-    if (!launcher || !widget || !closeBtn || !fullscreenBtn) return;
-
-    function openChatWidget() {
-        widget.classList.add('open');
-        launcher.style.display = 'none';
-        setTimeout(function () { try { closeBtn.focus(); } catch (e) {} }, 0);
-    }
-    function closeChatWidget() {
-        widget.classList.remove('open');
-        launcher.style.display = 'inline-flex';
-        setTimeout(function () { try { launcher.focus(); } catch (e) {} }, 0);
-    }
-
-    launcher.addEventListener('click', openChatWidget);
-    closeBtn.addEventListener('click', closeChatWidget);
-    fullscreenBtn.addEventListener('click', function () {
-        window.location.href = '<?php echo $baseDir; ?>/modules/chat/project_chat.php?project_id=<?php echo (int)$projectId; ?>';
-    });
-    window.addEventListener('message', function (event) {
-        if (!event || !event.data || event.data.type !== 'pms-chat-close') return;
-        closeChatWidget();
-    });
-});
-</script>
+<script src="<?php echo $baseDir; ?>/assets/js/chat-widget.js?v=<?php echo time(); ?>"></script>
 <?php endif; ?>
 
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/summernote@0.8.18/dist/summernote-lite.min.js"></script>
+<script>
+// ProjectConfig is already defined above with full data
+</script>
+<script src="<?php echo $baseDir; ?>/assets/js/issue-screenshot-manager.js?v=<?php echo time(); ?>"></script>
+
+<?php include __DIR__ . '/../../includes/footer.php';

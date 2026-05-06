@@ -7,19 +7,13 @@ require_once __DIR__ . '/../exceptions/UnauthorizedAccessException.php';
 /**
  * UserAffectedAnalytics - Analytics for users affected by issues
  * 
- * Calculates metrics based on users_affected field values:
- * - Categorizes by affected user count ranges (1-10, 11-50, 51-100, 100+)
- * - Provides distribution analysis and impact assessment
+ * Calculates metrics based on usersaffected metadata values:
+ * - Uses each mentioned users-affected value as a chart category
+ * - Provides distribution analysis and mention summaries
  * 
  * Requirements: 4.1, 4.2, 4.4
  */
 class UserAffectedAnalytics extends AnalyticsEngine {
-    
-    // User count ranges for categorization
-    const RANGE_VERY_LOW = '1-10';
-    const RANGE_LOW = '11-50';
-    const RANGE_MEDIUM = '51-100';
-    const RANGE_HIGH = '100+';
     
     /**
      * Generate analytics report - required by AnalyticsEngine
@@ -156,6 +150,7 @@ class UserAffectedAnalytics extends AnalyticsEngine {
      * @return array Calculated metrics
      */
     private function calculateUserAffectedMetrics($issues) {
+        $issues = $this->hydrateUsersAffectedMetadata($issues);
         $distribution = $this->calculateDistribution($issues);
         $summary = $this->calculateSummary($issues, $distribution);
         $impact_analysis = $this->calculateImpactAnalysis($issues, $distribution);
@@ -198,7 +193,7 @@ class UserAffectedAnalytics extends AnalyticsEngine {
         // Calculate trend points
         foreach ($grouped as $date => $dateIssues) {
             $totalUsers = array_sum(array_map(function($issue) {
-                return intval($issue['users_affected'] ?? 0);
+                return (int)($issue['users_affected_count'] ?? 0);
             }, $dateIssues));
             
             $trends['data_points'][] = [
@@ -212,38 +207,41 @@ class UserAffectedAnalytics extends AnalyticsEngine {
     }
     
     /**
-     * Calculate distribution of issues by user count ranges
+    * Calculate distribution of issues by mentioned users-affected labels
      * 
      * @param array $issues Array of issues
      * @return array Distribution data
      */
     private function calculateDistribution($issues) {
-        $ranges = [
-            self::RANGE_VERY_LOW => 0,
-            self::RANGE_LOW => 0,
-            self::RANGE_MEDIUM => 0,
-            self::RANGE_HIGH => 0
-        ];
-        
-        foreach ($issues as $issue) {
-            $users_affected = intval($issue['users_affected'] ?? 0);
-            $range = $this->getUserCountRange($users_affected);
-            $ranges[$range]++;
-        }
-        
-        // Calculate percentages
-        $total = count($issues);
         $distribution = [];
-        
-        foreach ($ranges as $range => $count) {
-            $percentage = $total > 0 ? round(($count / $total) * 100, 2) : 0;
-            $distribution[$range] = [
-                'count' => $count,
-                'percentage' => $percentage,
-                'range_label' => $this->getRangeLabel($range)
-            ];
+        foreach ($issues as $issue) {
+            $labels = $issue['users_affected_labels'] ?? [];
+            foreach ($labels as $label) {
+                if (!isset($distribution[$label])) {
+                    $distribution[$label] = [
+                        'count' => 0,
+                        'percentage' => 0,
+                        'range_label' => $label,
+                    ];
+                }
+                $distribution[$label]['count']++;
+            }
         }
-        
+
+        uasort($distribution, function($left, $right) {
+            $countCompare = ($right['count'] ?? 0) <=> ($left['count'] ?? 0);
+            if ($countCompare !== 0) {
+                return $countCompare;
+            }
+            return strcasecmp((string)($left['range_label'] ?? ''), (string)($right['range_label'] ?? ''));
+        });
+
+        $totalMentions = array_sum(array_column($distribution, 'count'));
+        foreach ($distribution as &$item) {
+            $item['percentage'] = $totalMentions > 0 ? round((($item['count'] ?? 0) / $totalMentions) * 100, 2) : 0;
+        }
+        unset($item);
+
         return $distribution;
     }
     
@@ -256,30 +254,39 @@ class UserAffectedAnalytics extends AnalyticsEngine {
      */
     private function calculateSummary($issues, $distribution) {
         $user_counts = array_map(function($issue) {
-            return intval($issue['users_affected'] ?? 0);
+            return (int)($issue['users_affected_count'] ?? 0);
         }, $issues);
-        
+
         $total_users_affected = array_sum($user_counts);
         $avg_users_per_issue = count($issues) > 0 ? round($total_users_affected / count($issues), 1) : 0;
-        
-        // Find most common range
-        $most_common_range = '';
-        $highest_count = 0;
-        foreach ($distribution as $range => $data) {
-            if ($data['count'] > $highest_count) {
-                $highest_count = $data['count'];
-                $most_common_range = $range;
+
+        $mostCommonLabel = '';
+        $mostCommonCount = 0;
+        foreach ($distribution as $label => $data) {
+            if (($data['count'] ?? 0) > $mostCommonCount) {
+                $mostCommonCount = (int)$data['count'];
+                $mostCommonLabel = (string)$label;
             }
         }
-        
+
         return [
             'total_issues' => count($issues),
             'total_users_affected' => $total_users_affected,
             'average_users_per_issue' => $avg_users_per_issue,
-            'most_common_range' => $most_common_range,
-            'most_common_range_label' => $this->getRangeLabel($most_common_range),
-            'high_impact_issues' => $distribution[self::RANGE_HIGH]['count'],
-            'low_impact_issues' => $distribution[self::RANGE_VERY_LOW]['count']
+            'most_common_range' => $mostCommonLabel,
+            'most_common_range_label' => $mostCommonLabel,
+            'high_impact_issues' => count(array_filter($issues, function($issue) {
+                return !empty($issue['users_affected_labels']);
+            })),
+            'low_impact_issues' => count(array_filter($issues, function($issue) {
+                return empty($issue['users_affected_labels']);
+            })),
+            'distinct_user_groups' => count($distribution),
+            'top_user_group' => $mostCommonLabel,
+            'top_user_group_count' => $mostCommonCount,
+            'issues_with_user_mentions' => count(array_filter($issues, function($issue) {
+                return !empty($issue['users_affected_labels']);
+            }))
         ];
     }
     
@@ -291,22 +298,24 @@ class UserAffectedAnalytics extends AnalyticsEngine {
      * @return array Impact analysis
      */
     private function calculateImpactAnalysis($issues, $distribution) {
-        $high_impact_count = $distribution[self::RANGE_HIGH]['count'];
-        $medium_impact_count = $distribution[self::RANGE_MEDIUM]['count'];
         $total_issues = count($issues);
-        
-        $critical_issues_percentage = $total_issues > 0 ? 
-            round((($high_impact_count + $medium_impact_count) / $total_issues) * 100, 1) : 0;
-        
-        // Calculate potential user impact reduction
+        $issuesWithMentions = count(array_filter($issues, function($issue) {
+            return !empty($issue['users_affected_labels']);
+        }));
+        $critical_issues_percentage = $total_issues > 0
+            ? round(($issuesWithMentions / $total_issues) * 100, 1)
+            : 0;
+
         $potential_reduction = $this->calculatePotentialReduction($issues);
-        
+        $topCategories = array_slice($distribution, 0, 3, true);
+
         return [
-            'critical_issues_count' => $high_impact_count + $medium_impact_count,
+            'critical_issues_count' => $issuesWithMentions,
             'critical_issues_percentage' => $critical_issues_percentage,
             'potential_user_impact_reduction' => $potential_reduction,
             'priority_recommendation' => $this->getPriorityRecommendation($distribution),
-            'impact_score' => $this->calculateUserImpactScore($issues)
+            'impact_score' => $this->calculateUserImpactScore($issues),
+            'top_categories' => $topCategories,
         ];
     }
     
@@ -348,40 +357,6 @@ class UserAffectedAnalytics extends AnalyticsEngine {
     }
     
     /**
-     * Get user count range for a given number
-     * 
-     * @param int $count User count
-     * @return string Range identifier
-     */
-    private function getUserCountRange($count) {
-        if ($count <= 10) {
-            return self::RANGE_VERY_LOW;
-        } elseif ($count <= 50) {
-            return self::RANGE_LOW;
-        } elseif ($count <= 100) {
-            return self::RANGE_MEDIUM;
-        } else {
-            return self::RANGE_HIGH;
-        }
-    }
-    
-    /**
-     * Get human-readable label for range
-     * 
-     * @param string $range Range identifier
-     * @return string Human-readable label
-     */
-    private function getRangeLabel($range) {
-        $labels = [
-            self::RANGE_VERY_LOW => '1-10 users',
-            self::RANGE_LOW => '11-50 users',
-            self::RANGE_MEDIUM => '51-100 users',
-            self::RANGE_HIGH => '100+ users'
-        ];
-        
-        return $labels[$range] ?? 'Unknown range';
-    }
-    
     /**
      * Calculate potential user impact reduction
      * 
@@ -390,12 +365,11 @@ class UserAffectedAnalytics extends AnalyticsEngine {
      */
     private function calculatePotentialReduction($issues) {
         $high_impact_issues = array_filter($issues, function($issue) {
-            $users_affected = intval($issue['users_affected'] ?? 0);
-            return $users_affected > 50; // Medium and High impact
+            return count($issue['users_affected_labels'] ?? []) > 0;
         });
-        
+
         $potential_users_helped = array_sum(array_map(function($issue) {
-            return intval($issue['users_affected'] ?? 0);
+            return (int)($issue['users_affected_count'] ?? 0);
         }, $high_impact_issues));
         
         return [
@@ -413,19 +387,14 @@ class UserAffectedAnalytics extends AnalyticsEngine {
      * @return string Priority recommendation
      */
     private function getPriorityRecommendation($distribution) {
-        $high_count = $distribution[self::RANGE_HIGH]['count'];
-        $medium_count = $distribution[self::RANGE_MEDIUM]['count'];
-        $total_critical = $high_count + $medium_count;
-        
-        if ($high_count > 0) {
-            return "Focus on {$high_count} high-impact issues affecting 100+ users each";
-        } elseif ($medium_count > 0) {
-            return "Address {$medium_count} medium-impact issues affecting 51-100 users each";
-        } elseif ($distribution[self::RANGE_LOW]['count'] > 0) {
-            return "Consider addressing low-impact issues to improve overall user experience";
-        } else {
-            return "Most issues have minimal user impact - focus on severity and business priority";
+        if (empty($distribution)) {
+            return 'No users affected categories were tagged on the current issue set.';
         }
+
+        $top = reset($distribution);
+        $label = (string)($top['range_label'] ?? 'Unknown');
+        $count = (int)($top['count'] ?? 0);
+        return "Prioritize issues tagged for {$label} because they appear on {$count} issue(s).";
     }
     
     /**
@@ -443,18 +412,8 @@ class UserAffectedAnalytics extends AnalyticsEngine {
         $max_possible_score = 0;
         
         foreach ($issues as $issue) {
-            $users_affected = intval($issue['users_affected'] ?? 0);
-            
-            // Weight the score based on user count ranges
-            if ($users_affected > 100) {
-                $score = 100;
-            } elseif ($users_affected > 50) {
-                $score = 75;
-            } elseif ($users_affected > 10) {
-                $score = 50;
-            } else {
-                $score = 25;
-            }
+            $mentions = (int)($issue['users_affected_count'] ?? 0);
+            $score = min(100, $mentions * 25);
             
             $total_score += $score;
             $max_possible_score += 100;
@@ -472,12 +431,7 @@ class UserAffectedAnalytics extends AnalyticsEngine {
         return [
             'project_ids' => [],
             'total_issues' => 0,
-            'distribution' => [
-                self::RANGE_VERY_LOW => ['count' => 0, 'percentage' => 0, 'range_label' => $this->getRangeLabel(self::RANGE_VERY_LOW)],
-                self::RANGE_LOW => ['count' => 0, 'percentage' => 0, 'range_label' => $this->getRangeLabel(self::RANGE_LOW)],
-                self::RANGE_MEDIUM => ['count' => 0, 'percentage' => 0, 'range_label' => $this->getRangeLabel(self::RANGE_MEDIUM)],
-                self::RANGE_HIGH => ['count' => 0, 'percentage' => 0, 'range_label' => $this->getRangeLabel(self::RANGE_HIGH)]
-            ],
+            'distribution' => [],
             'summary' => [
                 'total_issues' => 0,
                 'total_users_affected' => 0,
@@ -485,7 +439,11 @@ class UserAffectedAnalytics extends AnalyticsEngine {
                 'most_common_range' => '',
                 'most_common_range_label' => '',
                 'high_impact_issues' => 0,
-                'low_impact_issues' => 0
+                'low_impact_issues' => 0,
+                'distinct_user_groups' => 0,
+                'top_user_group' => '',
+                'top_user_group_count' => 0,
+                'issues_with_user_mentions' => 0
             ],
             'impact_analysis' => [
                 'critical_issues_count' => 0,
@@ -534,7 +492,7 @@ class UserAffectedAnalytics extends AnalyticsEngine {
         
         return [
             'type' => 'pie',
-            'title' => 'Issues by User Impact Range',
+            'title' => 'Issues by Users Affected',
             'data' => [
                 'labels' => array_map(function($range_data) {
                     return $range_data['range_label'];
@@ -565,5 +523,65 @@ class UserAffectedAnalytics extends AnalyticsEngine {
                 ]
             ]
         ];
+    }
+
+    private function hydrateUsersAffectedMetadata($issues) {
+        if (empty($issues) || !$this->pdo) {
+            return $issues;
+        }
+
+        $issueIds = array_values(array_unique(array_filter(array_map(function($issue) {
+            return (int)($issue['id'] ?? 0);
+        }, $issues))));
+
+        if (empty($issueIds)) {
+            return $issues;
+        }
+
+        $placeholders = implode(',', array_fill(0, count($issueIds), '?'));
+        $stmt = $this->pdo->prepare("SELECT issue_id, meta_value FROM issue_metadata WHERE meta_key = 'usersaffected' AND issue_id IN ($placeholders) ORDER BY id ASC");
+        $stmt->execute($issueIds);
+
+        $labelsByIssue = [];
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $issueId = (int)($row['issue_id'] ?? 0);
+            $labelsByIssue[$issueId] = array_merge($labelsByIssue[$issueId] ?? [], $this->parseUsersAffectedMetaValue($row['meta_value'] ?? ''));
+        }
+
+        foreach ($issues as &$issue) {
+            $issueId = (int)($issue['id'] ?? 0);
+            $labels = array_values(array_unique($labelsByIssue[$issueId] ?? []));
+            $issue['users_affected_labels'] = $labels;
+            $issue['users_affected_count'] = count($labels);
+        }
+        unset($issue);
+
+        return $issues;
+    }
+
+    private function parseUsersAffectedMetaValue($value) {
+        if (is_array($value)) {
+            $items = [];
+            foreach ($value as $entry) {
+                $items = array_merge($items, $this->parseUsersAffectedMetaValue($entry));
+            }
+            return $items;
+        }
+
+        $value = trim((string)$value);
+        if ($value === '') {
+            return [];
+        }
+
+        if ($value[0] === '[') {
+            $decoded = json_decode($value, true);
+            if (is_array($decoded)) {
+                return $this->parseUsersAffectedMetaValue($decoded);
+            }
+        }
+
+        return array_values(array_filter(array_map('trim', explode(',', $value)), function($item) {
+            return $item !== '';
+        }));
     }
 }

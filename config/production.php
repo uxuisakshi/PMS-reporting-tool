@@ -115,11 +115,11 @@ class ProductionConfig {
             // Content Security Policy
             'Content-Security-Policy' => implode('; ', [
                 "default-src 'self'",
-                "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://code.jquery.com https://cdn.datatables.net",
+                "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://code.jquery.com https://cdn.datatables.net https://code.highcharts.com",
                 "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://cdn.datatables.net https://fonts.googleapis.com",
                 "img-src 'self' data: https:",
                 "font-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://fonts.gstatic.com",
-                "connect-src 'self'",
+                "connect-src 'self' https://code.highcharts.com",
                 "media-src 'self'",
                 "object-src 'none'",
                 "frame-src 'none'",
@@ -130,12 +130,12 @@ class ProductionConfig {
             // Security headers
             'X-Content-Type-Options' => 'nosniff',
             'X-Frame-Options' => 'DENY',
-            'X-XSS-Protection' => '1; mode=block',
+            // X-XSS-Protection intentionally removed — deprecated and can introduce XSS auditor bypass vulnerabilities
             'Referrer-Policy' => 'strict-origin-when-cross-origin',
             'Permissions-Policy' => 'geolocation=(), microphone=(), camera=()',
             
-            // HSTS (if using HTTPS)
-            'Strict-Transport-Security' => 'max-age=31536000; includeSubDomains; preload',
+            // HSTS — preload removed until domain is submitted to hstspreload.org
+            'Strict-Transport-Security' => 'max-age=31536000; includeSubDomains',
             
             // Cache control for sensitive pages
             'Cache-Control' => 'no-cache, no-store, must-revalidate, private',

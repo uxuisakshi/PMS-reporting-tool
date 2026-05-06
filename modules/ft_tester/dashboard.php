@@ -4,7 +4,7 @@ require_once __DIR__ . '/../../includes/functions.php';
 require_once __DIR__ . '/../../includes/helpers.php';
 
 $auth = new Auth();
-$auth->requireRole(['ft_tester', 'admin', 'super_admin']);
+$auth->requireRole(['ft_tester', 'admin']);
 
 $baseDir = getBaseDir();
 $db = Database::getInstance();
@@ -59,7 +59,25 @@ $recentActivities = $db->prepare($recentActivitiesQuery);
 $recentActivities->execute([$userId]);
 $activities = $recentActivities->fetchAll();
 
-// Get pending tasks: all assigned tasks except on-hold/completed
+// Pagination for Pending Tasks
+$p_perPage = 10;
+$p_page = max(1, (int)($_GET['p_page'] ?? 1));
+$p_offset = ($p_page - 1) * $p_perPage;
+
+$pendingTasksCountQuery = "
+    SELECT COUNT(*)
+    FROM project_pages pp
+    JOIN projects p ON pp.project_id = p.id
+    JOIN page_environments pe ON pp.id = pe.page_id
+    WHERE pe.ft_tester_id = ? 
+    AND (pe.status IS NULL OR LOWER(pe.status) NOT IN ('on_hold', 'hold', 'completed', 'tested', 'pass'))
+    AND p.status NOT IN ('completed', 'cancelled')
+";
+$pendingTasksCountStmt = $db->prepare($pendingTasksCountQuery);
+$pendingTasksCountStmt->execute([$userId]);
+$pendingTasksTotalCount = (int)$pendingTasksCountStmt->fetchColumn();
+$pendingTasksTotalPages = ceil($pendingTasksTotalCount / $p_perPage);
+
 $pendingTasksQuery = "
     SELECT pp.id, pp.page_name, p.title as project_title, pe.status, te.name as environment_name,
            p.id as project_id
@@ -78,9 +96,10 @@ $pendingTasksQuery = "
             WHEN 'in_testing' THEN 2
             WHEN 'not_started' THEN 3
             WHEN 'not_tested' THEN 3
+            WHEN '' THEN 4
         END,
         pp.created_at ASC
-    LIMIT 20
+    LIMIT $p_perPage OFFSET $p_offset
 ";
 
 $pendingTasks = $db->prepare($pendingTasksQuery);
@@ -342,6 +361,34 @@ include __DIR__ . '/../../includes/header.php';
                             </div>
                             <?php endforeach; ?>
                         </div>
+
+                        <?php if ($pendingTasksTotalPages > 1): ?>
+                        <div class="mt-3">
+                            <nav aria-label="Pending tasks pagination">
+                                <ul class="pagination pagination-sm justify-content-center mb-0">
+                                    <li class="page-item <?php echo $p_page <= 1 ? 'disabled' : ''; ?>">
+                                        <a class="page-link" href="?p_page=<?php echo $p_page - 1; ?>">Previous</a>
+                                    </li>
+                                    <?php 
+                                    $startPage = max(1, $p_page - 2);
+                                    $endPage = min($pendingTasksTotalPages, $p_page + 2);
+                                    for ($i = $startPage; $i <= $endPage; $i++): 
+                                    ?>
+                                    <li class="page-item <?php echo $p_page == $i ? 'active' : ''; ?>">
+                                        <a class="page-link" href="?p_page=<?php echo $i; ?>"><?php echo $i; ?></a>
+                                    </li>
+                                    <?php endfor; ?>
+                                    <li class="page-item <?php echo $p_page >= $pendingTasksTotalPages ? 'disabled' : ''; ?>">
+                                        <a class="page-link" href="?p_page=<?php echo $p_page + 1; ?>">Next</a>
+                                    </li>
+                                </ul>
+                            </nav>
+                            <div class="text-center text-muted small mt-1">
+                                Showing <?php echo $p_offset + 1; ?>-<?php echo min($p_offset + $p_perPage, $pendingTasksTotalCount); ?> of <?php echo $pendingTasksTotalCount; ?> tasks
+                            </div>
+                        </div>
+                        <?php endif; ?>
+
                     <?php endif; ?>
                 </div>
             </div>
@@ -401,4 +448,4 @@ include __DIR__ . '/../../includes/header.php';
     </div>
 </div>
 
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<?php include __DIR__ . '/../../includes/footer.php'; 

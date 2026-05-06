@@ -5,7 +5,7 @@ require_once __DIR__ . '/../../includes/helpers.php';
 require_once __DIR__ . '/../../includes/project_permissions.php';
 
 $auth = new Auth();
-$auth->requireRole(['admin', 'project_lead', 'qa', 'at_tester', 'ft_tester', 'super_admin', 'client']);
+$auth->requireRole(['admin', 'project_lead', 'qa', 'at_tester', 'ft_tester', 'admin', 'client']);
 
 $baseDir = getBaseDir();
 $projectId = (int)($_GET['project_id'] ?? 0);
@@ -25,9 +25,8 @@ if (!hasProjectAccess($db, $userId, $projectId)) {
     exit;
 }
 $canUpdateIssueQaStatus = hasIssueQaStatusUpdateAccess($db, $userId, $projectId);
-if (in_array($normalizedUserRole, ['at_tester', 'ft_tester'], true)) {
-    $canUpdateIssueQaStatus = false;
-}
+// Note: hasIssueQaStatusUpdateAccess already handles tester role permissions properly
+// Don't override it here as testers may have explicit QA permissions granted
 
 // Get project details
 $stmt = $db->prepare("SELECT p.*, c.name as client_name FROM projects p LEFT JOIN clients c ON p.client_id = c.id WHERE p.id = ?");
@@ -41,12 +40,18 @@ if (!$project) {
 }
 
 // Get filter options
-$pagesStmt = $db->prepare("SELECT id, page_name, page_number, url FROM project_pages WHERE project_id = ? ORDER BY page_number, page_name");
+$pagesStmt = $db->prepare("SELECT id, page_name, page_number, url FROM project_pages WHERE project_id = ? ORDER BY page_name");
 $pagesStmt->execute([$projectId]);
 $projectPages = $pagesStmt->fetchAll(PDO::FETCH_ASSOC);
 
-$statusesStmt = $db->query("SELECT id, name, color FROM issue_statuses ORDER BY id");
-$issueStatuses = $statusesStmt->fetchAll(PDO::FETCH_ASSOC);
+// Natural sort by page_number (Page 1, Page 2, Page 10... not Page 1, Page 10, Page 2)
+usort($projectPages, function($a, $b) {
+    $an = $a['page_number'] ?? '';
+    $bn = $b['page_number'] ?? '';
+    return strnatcasecmp((string)$an, (string)$bn);
+});
+
+$issueStatuses = getIssueStatusesForRole($db, $userRole);
 
 $qaStatusesStmt = $db->query("SELECT status_key, status_label, badge_color FROM qa_status_master WHERE is_active = 1 ORDER BY display_order");
 $qaStatuses = $qaStatusesStmt->fetchAll(PDO::FETCH_ASSOC);
@@ -57,30 +62,30 @@ $reportersStmt = $db->prepare("
     INNER JOIN user_assignments ua ON u.id = ua.user_id
     WHERE ua.project_id = ? AND u.is_active = 1 AND (ua.is_removed IS NULL OR ua.is_removed = 0)
     UNION
-    SELECT u.id, u.full_name, u.username, u.role
+    SELECT DISTINCT u.id, u.full_name, u.username, u.role
     FROM users u
-    WHERE u.is_active = 1 AND u.role IN ('admin', 'super_admin')
+    INNER JOIN projects p ON p.project_lead_id = u.id
+    WHERE p.id = ? AND u.is_active = 1
     ORDER BY full_name
 ");
-$reportersStmt->execute([$projectId]);
+$reportersStmt->execute([$projectId, $projectId]);
 $projectUsers = $reportersStmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Fetch grouped URLs for auto-populating when pages are selected
+// Fetch grouped URLs
 $groupedStmt = $db->prepare("
     SELECT 
         gu.id AS grouped_id, 
         gu.url, 
         gu.normalized_url, 
-        gu.unique_page_id, 
+        gu.unique_page_id,
+        COALESCE(gu.unique_page_id, pp_match.id) AS mapped_page_id,
         up.id AS unique_id, 
         up.page_name AS unique_name,
-        up.url AS canonical_url,
-        pp.id AS mapped_page_id, 
-        pp.page_name AS mapped_page_name 
+        up.url AS canonical_url
     FROM grouped_urls gu 
     LEFT JOIN project_pages up ON gu.unique_page_id = up.id
-    LEFT JOIN project_pages pp ON pp.project_id = gu.project_id 
-        AND (pp.url = gu.url OR pp.url = gu.normalized_url) 
+    LEFT JOIN project_pages pp_match ON pp_match.project_id = gu.project_id
+        AND (pp_match.url = gu.url OR pp_match.url = gu.normalized_url)
     WHERE gu.project_id = ? 
     ORDER BY gu.url
 ");
@@ -175,6 +180,216 @@ include __DIR__ . '/../../includes/header.php';
     margin: 0 !important;
     line-height: 1.5 !important;
 }
+<?php if ($_SESSION['role'] === 'client'): ?>
+#finalIssueModal.client-issue-sidebar-shell {
+    position: fixed;
+    inset: 0;
+    z-index: 1045;
+    pointer-events: none;
+}
+#finalIssueModal.client-issue-sidebar-shell .client-issue-sidebar-panel {
+    position: fixed;
+    top: var(--client-issue-sidebar-top-offset, 64px);
+    bottom: 0;
+    right: 0;
+    width: min(310px, 100vw);
+    height: auto;
+    max-height: calc(100vh - var(--client-issue-sidebar-top-offset, 64px));
+    display: flex;
+    flex-direction: column;
+    background: linear-gradient(180deg, #f8fbff 0%, #ffffff 14%);
+    border-left: 1px solid #dce8f8;
+    box-shadow: -24px 0 60px rgba(15, 23, 42, .18);
+    transform: translateX(100%);
+    transition: transform .28s ease;
+    pointer-events: auto;
+    overflow: hidden;
+}
+#finalIssueModal.client-issue-sidebar-shell.show .client-issue-sidebar-panel,
+#finalIssueModal.client-issue-sidebar-shell.is-open .client-issue-sidebar-panel {
+    transform: translateX(0);
+}
+#finalIssueModal.client-issue-sidebar-shell .client-issue-sidebar-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: .75rem;
+    padding: .6rem .7rem .4rem;
+    border-bottom: 1px solid #e5edf7;
+    background: rgba(255, 255, 255, .96);
+    backdrop-filter: blur(10px);
+}
+#finalIssueModal.client-issue-sidebar-shell .client-issue-title-stack {
+    min-width: 0;
+}
+#finalIssueModal.client-issue-sidebar-shell #finalEditorTitle {
+    font-size: 1.02rem;
+    line-height: 1.2;
+    color: #0f172a;
+    word-break: break-word;
+}
+#finalIssueModal.client-issue-sidebar-shell #finalIssuePresenceIndicator:empty {
+    display: none;
+}
+#finalIssueModal.client-issue-sidebar-shell .client-issue-sidebar-body {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+    flex-direction: column;
+    padding: .35rem .55rem 0;
+    overflow: hidden;
+}
+#finalIssueModal.client-issue-sidebar-shell .client-issue-status-row {
+    display: flex;
+    align-items: center;
+    gap: .4rem;
+    background: #f3f7fd;
+    border: 1px solid #dce8f8;
+    border-radius: 14px;
+    padding: .32rem .38rem;
+    margin-bottom: .3rem;
+}
+#finalIssueModal.client-issue-sidebar-shell .client-issue-status-row .form-label {
+    margin-bottom: .1rem !important;
+    font-size: .74rem;
+    line-height: 1.1;
+}
+#finalIssueModal.client-issue-sidebar-shell .client-issue-status-row .form-select {
+    min-height: 32px;
+    padding-top: .18rem;
+    padding-bottom: .18rem;
+    padding-left: .55rem;
+    font-size: .84rem;
+}
+#finalIssueModal.client-issue-sidebar-shell .client-issue-status-row #finalIssueSaveBtn {
+    flex: 0 0 auto;
+    min-width: 68px;
+    height: 32px;
+    border-radius: 999px;
+    padding-inline: .65rem;
+    font-size: .82rem;
+}
+#finalIssueModal.client-issue-sidebar-shell .client-issue-conversation {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: 0;
+    border: 1px solid #e6eef8;
+    border-radius: 18px 18px 0 0;
+    border-bottom: 0;
+    background: #fff;
+    box-shadow: 0 10px 24px rgba(15, 23, 42, .05);
+    overflow: hidden;
+}
+#finalIssueModal.client-issue-sidebar-shell #finalIssueCommentsList {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none !important;
+    overflow-y: auto;
+    padding: .65rem !important;
+    background: linear-gradient(180deg, #f8fbff 0%, #f3f7fd 100%) !important;
+    border: 0 !important;
+    border-radius: 18px 18px 0 0 !important;
+}
+#finalIssueModal.client-issue-sidebar-shell .client-issue-sidebar-footer {
+    padding: .28rem .55rem .42rem;
+    background: #fff;
+    border-top: 1px solid #e6eef8;
+    box-shadow: 0 -12px 24px rgba(15, 23, 42, .04);
+}
+#finalIssueModal.client-issue-sidebar-shell .client-chat-composer {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: 0;
+    background: transparent;
+}
+#finalIssueModal.client-issue-sidebar-shell .client-chat-editor-wrap {
+    border: 1px solid #d7e5f7;
+    border-radius: 18px;
+    background: #fff;
+    box-shadow: 0 10px 24px rgba(15, 23, 42, .05);
+    overflow: hidden;
+}
+#finalIssueModal.client-issue-sidebar-shell .client-chat-editor-wrap .note-editor {
+    border: 0 !important;
+}
+#finalIssueModal.client-issue-sidebar-shell .client-chat-editor-wrap .note-toolbar {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: .2rem;
+    overflow-x: auto;
+    overflow-y: hidden;
+    white-space: nowrap;
+    border-bottom: 1px solid #edf3fb;
+    background: #f8fbff;
+    padding: .25rem .35rem;
+}
+#finalIssueModal.client-issue-sidebar-shell .client-chat-editor-wrap .note-toolbar .note-btn-group {
+    display: inline-flex;
+    flex-wrap: nowrap;
+    margin-right: .2rem;
+}
+#finalIssueModal.client-issue-sidebar-shell .client-chat-editor-wrap .note-editing-area {
+    background: #fff;
+}
+#finalIssueModal.client-issue-sidebar-shell .client-chat-editor-wrap .note-editable {
+    min-height: 54px;
+    max-height: 92px;
+    padding: .55rem .75rem;
+}
+#finalIssueModal.client-issue-sidebar-shell .client-chat-composer #finalIssueAddCommentBtn {
+    min-width: 110px;
+    border-radius: 999px;
+    padding-inline: 1rem;
+}
+#finalIssueModal.client-issue-sidebar-shell .client-chat-composer .mt-2 {
+    margin-top: .45rem !important;
+}
+#finalIssueModal.client-issue-sidebar-shell .message {
+    display: flex;
+    flex-direction: column;
+}
+#finalIssueModal.client-issue-sidebar-shell .message.own-message {
+    align-items: flex-end;
+}
+#finalIssueModal.client-issue-sidebar-shell .message.other-message {
+    align-items: flex-start;
+}
+#finalIssueModal.client-issue-sidebar-shell .message .d-flex.justify-content-between.align-items-start.mb-1,
+#finalIssueModal.client-issue-sidebar-shell .message .d-flex.flex-wrap.gap-2.mb-2 {
+    width: min(100%, 94%);
+}
+#finalIssueModal.client-issue-sidebar-shell .message-content {
+    width: min(100%, 94%);
+    padding: .75rem .9rem !important;
+    border-radius: 18px !important;
+    word-break: break-word;
+}
+#finalIssueModal.client-issue-sidebar-shell .other-message .message-content {
+    background: #ffffff !important;
+    border: 1px solid #dce8f8;
+}
+#finalIssueModal.client-issue-sidebar-shell .own-message .message-content {
+    background: linear-gradient(180deg, #dceeff 0%, #cfe5ff 100%) !important;
+    border: 1px solid #bad8ff;
+}
+#finalIssueModal.client-issue-sidebar-shell .reply-preview {
+    width: min(100%, 94%);
+}
+body.client-issue-sidebar-open {
+    overflow: auto !important;
+    padding-right: 0 !important;
+}
+@media (max-width: 767.98px) {
+    #finalIssueModal.client-issue-sidebar-shell .client-issue-sidebar-panel {
+        width: 100vw;
+    }
+    #finalIssueModal.client-issue-sidebar-shell .client-issue-status-row {
+        flex-direction: column;
+        align-items: stretch;
+    }
+}
+<?php endif; ?>
 </style>
 
 <div class="container-fluid mt-4">
@@ -197,20 +412,24 @@ include __DIR__ . '/../../includes/header.php';
 
     <div class="card mb-3">
         <div class="card-body">
-            <div class="row align-items-center">
-                <div class="col-md-8">
+            <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <div>
                     <h2 class="mb-1">
                         <i class="fas fa-list text-primary me-2"></i>
                         All Issues
                     </h2>
                     <p class="text-muted mb-0">Complete list of all accessibility issues in this project</p>
                 </div>
-                <div class="col-md-4 text-md-end">
-                    <?php if ($_SESSION['role'] !== 'client'): ?>
-                    <button class="btn btn-primary me-2" id="addIssueBtn">
-                        <i class="fas fa-plus me-1"></i> Add Issue
-                    </button>
-                    <?php endif; ?>
+                <div class="d-flex flex-wrap gap-2 align-items-center">
+                    <a href="<?php echo $baseDir; ?>/api/download_screenshots.php?project_id=<?php echo $projectId; ?>" class="btn btn-outline-primary">
+                        <i class="fas fa-download me-1"></i> Download Screenshots
+                    </a>
+                    <a href="<?php echo $baseDir; ?>/modules/projects/issues_common.php?project_id=<?php echo $projectId; ?>" class="btn btn-outline-info">
+                        <i class="fas fa-layer-group me-1"></i> Common Issues
+                    </a>
+                    <a href="<?php echo $baseDir; ?>/modules/projects/issues_pages.php?project_id=<?php echo $projectId; ?>" class="btn btn-outline-secondary">
+                        <i class="fas fa-file-alt me-1"></i> Page View
+                    </a>
                     <a href="<?php echo $baseDir; ?>/modules/projects/issues.php?project_id=<?php echo $projectId; ?>" class="btn btn-outline-secondary">
                         <i class="fas fa-arrow-left me-1"></i> Back
                     </a>
@@ -218,6 +437,8 @@ include __DIR__ . '/../../includes/header.php';
             </div>
         </div>
     </div>
+
+    <?php include __DIR__ . '/partials/regression_panel.php'; ?>
 
     <!-- Filters Section -->
     <div class="filter-section">
@@ -279,36 +500,86 @@ include __DIR__ . '/../../includes/header.php';
     <!-- Issues Table -->
     <div class="card">
         <div class="card-body">
-            <div class="d-flex justify-content-between align-items-center mb-3">
-                <div>
-                    <span class="text-muted">Total Issues: <strong id="totalCount">0</strong></span>
-                    <span class="text-muted ms-3">Showing: <strong id="filteredCount">0</strong></span>
+            <!-- Single toolbar row: per page + showing info + pagination + actions -->
+            <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+                <div class="d-flex align-items-center gap-2 flex-wrap">
+                    <div class="d-flex align-items-center gap-1">
+                        <label class="text-muted small mb-0">Per page:</label>
+                        <select id="perPageSelect" class="form-select form-select-sm" style="width:auto; min-width:75px; padding-right:1.75rem;">
+                            <option value="25">25</option>
+                            <option value="50" selected>50</option>
+                            <option value="100">100</option>
+                            <option value="250">250</option>
+                            <option value="500">500</option>
+                            <option value="1000">1000</option>
+                        </select>
+                    </div>
+                    <span class="text-muted small" id="paginationInfoTop"></span>
+                    <nav aria-label="Issues pagination top">
+                        <ul class="pagination pagination-sm mb-0" id="paginationControlsTop"></ul>
+                    </nav>
                 </div>
-                <div>
+                <div class="d-flex align-items-center gap-2">
+                    <?php if ($_SESSION['role'] !== 'client'): ?>
+                    <button class="btn btn-sm btn-primary" id="addIssueBtn">
+                        <i class="fas fa-plus me-1"></i> Add Issue
+                    </button>
+                    <button class="btn btn-sm btn-outline-success" id="allIssuesMarkClientReadyBtn" disabled>
+                        <i class="fas fa-check me-1"></i> Mark Client Ready
+                    </button>
+                    <?php endif; ?>
                     <button class="btn btn-sm btn-outline-primary" id="refreshBtn">
                         <i class="fas fa-sync-alt"></i> Refresh
                     </button>
+                    <button class="btn btn-sm btn-outline-secondary" id="kbShortcutsBtn" title="Keyboard Shortcuts" aria-label="Show keyboard shortcuts">
+                        <i class="fas fa-keyboard me-1"></i><span class="d-none d-md-inline">Shortcuts</span>
+                    </button>
                 </div>
             </div>
-            
+
             <div class="table-responsive">
-                <table class="table table-hover" id="issuesTable">
+                <table class="table table-hover fixed-issue-table resizable-table" id="issuesTable">
+                    <?php if ($_SESSION['role'] !== 'client'): ?>
+                    <colgroup>
+                        <col style="width:36px;">
+                        <col style="width:105px;">
+                        <col><!-- Title: takes remaining space -->
+                        <col style="width:130px;">
+                        <col style="width:110px;">
+                        <col style="width:100px;">
+                        <col style="width:120px;">
+                        <col style="width:105px;">
+                        <col style="width:95px;">
+                    </colgroup>
+                    <?php else: ?>
+                    <colgroup>
+                        <col style="width:105px;">
+                        <col><!-- Title -->
+                        <col style="width:130px;">
+                        <col style="width:110px;">
+                        <col style="width:95px;">
+                    </colgroup>
+                    <?php endif; ?>
                     <thead class="table-light">
                         <tr>
-                            <th style="width: 100px;">Issue Key</th>
-                            <th>Title</th>
-                            <th style="width: 150px;">Page(s)</th>
-                            <th style="width: 120px;">Status</th>
                             <?php if ($_SESSION['role'] !== 'client'): ?>
-                            <th style="width: 150px;">QA Status</th>
-                            <th style="width: 120px;">Reporter</th>
-                            <th style="width: 100px;">Actions</th>
+                            <th style="position:relative;"><input type="checkbox" id="issuesSelectAll" aria-label="Select all issues"><div class="col-resizer"></div></th>
                             <?php endif; ?>
+                            <th style="position:relative;">Issue Key<div class="col-resizer"></div></th>
+                            <th style="position:relative;">Title<div class="col-resizer"></div></th>
+                            <th style="position:relative;">Page(s)<div class="col-resizer"></div></th>
+                            <th style="position:relative;">Status<div class="col-resizer"></div></th>
+                            <?php if ($_SESSION['role'] !== 'client'): ?>
+                            <th style="position:relative;">Client Ready<div class="col-resizer"></div></th>
+                            <th style="position:relative;">QA Status<div class="col-resizer"></div></th>
+                            <th style="position:relative;">Reporter<div class="col-resizer"></div></th>
+                            <?php endif; ?>
+                            <th style="position:relative;">Actions<div class="col-resizer"></div></th>
                         </tr>
                     </thead>
                     <tbody id="issuesTableBody">
                         <tr>
-                            <td colspan="<?php echo ($_SESSION['role'] === 'client') ? '4' : '7'; ?>" class="text-center py-5">
+                            <td colspan="<?php echo ($_SESSION['role'] === 'client') ? '5' : '9'; ?>" class="text-center py-5">
                                 <div class="spinner-border text-primary" role="status">
                                     <span class="visually-hidden">Loading...</span>
                                 </div>
@@ -317,6 +588,13 @@ include __DIR__ . '/../../includes/header.php';
                         </tr>
                     </tbody>
                 </table>
+            </div>
+            <!-- Pagination -->
+            <div class="d-flex justify-content-between align-items-center mt-3 flex-wrap gap-2" id="paginationBar">
+                <div class="text-muted small" id="paginationInfo"></div>
+                <nav aria-label="Issues pagination">
+                    <ul class="pagination pagination-sm mb-0" id="paginationControls"></ul>
+                </nav>
             </div>
         </div>
     </div>
@@ -331,17 +609,20 @@ include __DIR__ . '/../../includes/header.php';
 <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
 
 <!-- Project Configuration for view_issues.js -->
-<script>
+<script nonce="<?php echo $cspNonce ?? ''; ?>">
+window._csrfToken = <?php echo json_encode(generateCsrfToken()); ?>;
+
 // Global configuration object required by view_issues.js
 window.ProjectConfig = {
     projectId: <?php echo $projectId; ?>,
-    projectType: '<?php echo $project['type'] ?? 'web'; ?>',
-    userRole: '<?php echo htmlspecialchars((string)$normalizedUserRole, ENT_QUOTES, 'UTF-8'); ?>',
+    projectCode: <?php echo json_encode($project['project_code'] ?? 'ISS'); ?>,
+    projectType: <?php echo json_encode(strtolower($project['project_type'] ?? 'web')); ?>,
+    userRole: <?php echo json_encode((string)($normalizedUserRole ?? '')); ?>,
     canUpdateIssueQaStatus: <?php echo $canUpdateIssueQaStatus ? 'true' : 'false'; ?>,
     projectPages: <?php echo json_encode($projectPages); ?>,
     uniqueIssuePages: <?php echo json_encode($uniqueIssuePages ?? []); ?>,
     groupedUrls: <?php echo json_encode($groupedUrls); ?>,
-    baseDir: '<?php echo $baseDir; ?>',
+    baseDir: <?php echo json_encode($baseDir); ?>,
     projectUsers: <?php echo json_encode($projectUsers); ?>,
     qaStatuses: <?php echo json_encode($qaStatuses); ?>,
     issueStatuses: <?php echo json_encode($issueStatuses); ?>,
@@ -350,1026 +631,48 @@ window.ProjectConfig = {
 
 // Define issueMetadataFields globally for view_issues.js
 window.issueMetadataFields = <?php echo json_encode($metadataFields ?? []); ?>;
+
+<?php if ($normalizedUserRole === 'client'): ?>
+(function () {
+    function syncClientIssueSidebarOffset() {
+        var headerNav = document.querySelector('header .navbar.sticky-top');
+        var headerHeight = headerNav ? Math.ceil(headerNav.getBoundingClientRect().height) : 64;
+        document.documentElement.style.setProperty('--client-issue-sidebar-top-offset', headerHeight + 'px');
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', syncClientIssueSidebarOffset, { once: true });
+    } else {
+        syncClientIssueSidebarOffset();
+    }
+
+    window.addEventListener('resize', syncClientIssueSidebarOffset);
+})();
+<?php endif; ?>
 </script>
 
 <!-- Include issue management JavaScript -->
 <script src="<?php echo $baseDir; ?>/modules/projects/js/view_core.js"></script>
-<script src="<?php echo $baseDir; ?>/modules/projects/js/issue_title_field.js"></script>
+<script src="<?php echo $baseDir; ?>/modules/projects/js/issue_title_field.js?v=<?php echo time(); ?>"></script>
 <script src="<?php echo $baseDir; ?>/modules/projects/js/view_issues.js?v=<?php echo time(); ?>"></script>
+<script src="<?php echo $baseDir; ?>/modules/projects/js/regression-panel.js?v=<?php echo time(); ?>"></script>
+<script src="<?php echo $baseDir; ?>/modules/projects/js/issue_navigation.js?v=<?php echo time(); ?>"></script>
 
-<script>
-const projectId = <?php echo $projectId; ?>;
-const baseDir = '<?php echo $baseDir; ?>';
-let allIssues = [];
-let filteredIssues = [];
-let loadIssuesDebounceTimer = null;
+<script src="<?php echo $baseDir; ?>/assets/js/issues-all.js?v=<?php echo time(); ?>"></script>
 
-// Fallback decorateIssueImages function if not loaded from view_issues.js
-function decorateIssueImages(html) {
-    if (!html) return '';
-    return String(html).replace(/<img\b([^>]*)>/gi, function (_, attrs) {
-        // Add issue-image-thumb class
-        let newAttrs = attrs;
-        if (/class\s*=/.test(attrs)) {
-            newAttrs = attrs.replace(/class\s*=(["\'])([^"\']*)\1/, 'class="$2 issue-image-thumb"');
-        } else {
-            newAttrs = 'class="issue-image-thumb" ' + attrs;
-        }
-        
-        // Add lazy loading if not present
-        if (!/loading\s*=/.test(newAttrs)) {
-            newAttrs += ' loading="lazy"';
-        }
-        
-        // Ensure images have proper styling and error handling
-        if (!/style\s*=/.test(newAttrs)) {
-            newAttrs += ' style="max-width: 100%; height: auto; cursor: pointer;"';
-        }
-        
-        return '<img ' + newAttrs + '>';
-    });
-}
-
-// Fallback openIssueImageModal function
-function openIssueImageModal(src) {
-    var modal = document.getElementById('issueImageModal');
-    var previewImg = document.getElementById('issueImagePreview');
-    
-    if (modal && previewImg) {
-        previewImg.src = src;
-        previewImg.onerror = function() {
-            this.alt = 'Failed to load image: ' + src;
-            this.style.border = '2px solid #dc3545';
-            this.style.padding = '20px';
-            this.style.backgroundColor = '#f8d7da';
-        };
-        previewImg.onload = function() {
-            this.style.border = '';
-            this.style.padding = '';
-            this.style.backgroundColor = '';
-        };
-        var bsModal = new bootstrap.Modal(modal);
-        bsModal.show();
-    } else {
-        // Fallback - open in new tab
-        window.open(src, '_blank');
-    }
-}
-
-// Load all issues with debouncing
-function loadIssues(options) {
-    const opts = options || {};
-    const preserveFilters = !!opts.preserveFilters;
-    const silentErrors = !!opts.silentErrors;
-    const immediate = !!opts.immediate;
-    
-    // Clear existing debounce timer
-    if (loadIssuesDebounceTimer) {
-        clearTimeout(loadIssuesDebounceTimer);
-        loadIssuesDebounceTimer = null;
-    }
-    
-    // If immediate, load right away
-    if (immediate) {
-        return performLoadIssues(preserveFilters, silentErrors);
-    }
-    
-    // Otherwise debounce by 300ms
-    return new Promise((resolve) => {
-        loadIssuesDebounceTimer = setTimeout(() => {
-            performLoadIssues(preserveFilters, silentErrors).then(resolve);
-        }, 300);
-    });
-}
-
-function performLoadIssues(preserveFilters, silentErrors, retryCount = 0) {
-    const maxRetries = 3;
-    
-    // Add timeout and retry logic
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
-    
-    return fetch(`${baseDir}/api/issues.php?action=get_all&project_id=${projectId}`, {
-        signal: controller.signal,
-        headers: {
-            'Cache-Control': 'no-cache'
-        }
-    })
-    .then(response => {
-        clearTimeout(timeoutId);
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-        return response.json();
-    })
-    .then(data => {
-        if (data.success) {
-            allIssues = data.issues;
-            if (preserveFilters) {
-                applyFilters();
-            } else {
-                filteredIssues = allIssues;
-                updateCounts();
-                renderIssues();
-            }
-        } else {
-            throw new Error(data.message || 'Failed to load issues');
-        }
-    })
-    .catch(error => {
-        clearTimeout(timeoutId);
-        
-        // Retry logic for connection issues
-        if (retryCount < maxRetries && (error.name === 'AbortError' || error.message.includes('Failed to fetch') || error.message.includes('CONNECTION_RESET'))) {
-            return new Promise((resolve) => {
-                setTimeout(() => {
-                    performLoadIssues(preserveFilters, true, retryCount + 1).then(resolve);
-                }, Math.pow(2, retryCount) * 1000); // Exponential backoff: 1s, 2s, 4s
-            });
-        }
-        
-        if (!silentErrors) {
-            showError('Failed to load issues: ' + error.message);
-        }
-        throw error;
-    });
-}
-
-// Render issues table
-function renderIssues() {
-    const tbody = document.getElementById('issuesTableBody');
-    const userRole = window.ProjectConfig?.userRole || '';
-    const isClient = (userRole === 'client');
-    const colspan = isClient ? 4 : 7;
-    
-    if (filteredIssues.length === 0) {
-        tbody.innerHTML = `
-            <tr>
-                <td colspan="${colspan}" class="text-center py-5">
-                    <i class="fas fa-inbox fa-3x text-muted mb-3"></i>
-                    <p class="text-muted">No issues found</p>
-                </td>
-            </tr>
-        `;
-        return;
-    }
-    
-    tbody.innerHTML = filteredIssues.map(issue => {
-        let mainRow = `<tr class="issue-row" data-issue-id="${issue.id}" style="cursor: pointer;">
-            <td>
-                <button class="btn btn-link p-0 me-2 text-muted chevron-toggle" style="border: none; background: none;">
-                    <i class="fas fa-chevron-right chevron-icon" id="chevron-${issue.id}"></i>
-                </button>
-                <span class="badge bg-primary">${escapeHtml(issue.issue_key)}</span>
-            </td>
-            <td>
-                ${issue.common_title ? 
-                    `<div>${escapeHtml(issue.common_title)}</div>
-                     <small class="text-muted">${escapeHtml(issue.title)}</small>` 
-                    : 
-                    `<div>${escapeHtml(issue.title)}</div>`
-                }
-            </td>
-            <td>
-                <small>${issue.pages ? escapeHtml(issue.pages) : '<span class="text-muted">No pages</span>'}</small>
-            </td>
-            <td>
-                <span class="status-badge" style="background-color: ${issue.status_color}; color: white;">
-                    ${escapeHtml(issue.status_name)}
-                </span>
-            </td>`;
-        
-        // QA Status, Reporter, Actions columns - hide for client
-        if (!isClient) {
-            mainRow += `
-            <td>
-                ${issue.qa_statuses && issue.qa_statuses.length > 0 ? issue.qa_statuses.map(qs => {
-                    const bgColor = getBootstrapColor(qs.color || 'secondary');
-                    const textColor = getContrastColor(bgColor);
-                    return `<span class="qa-status-badge" style="background-color: ${bgColor} !important; color: ${textColor} !important;">${escapeHtml(qs.label)}</span>`;
-                }).join(' ') : '<span class="text-muted">-</span>'}
-            </td>
-            <td>
-                <small>${issue.reporters ? escapeHtml(issue.reporters) : '<span class="text-muted">-</span>'}</small>
-            </td>
-            <td>
-                <button class="btn btn-sm btn-outline-primary edit-btn me-1" data-issue-id="${issue.id}" title="Edit">
-                    <i class="fas fa-edit"></i>
-                </button>
-                <button class="btn btn-sm btn-outline-danger delete-btn" data-issue-id="${issue.id}" title="Delete">
-                    <i class="fas fa-trash"></i>
-                </button>
-            </td>`;
-        }
-        
-        mainRow += `</tr>
-        <tr id="issue-details-${issue.id}" style="display: none;">
-            <td colspan="${colspan}" class="p-0">
-                <div class="bg-light p-4 border-top">
-                    <div class="row">
-                        <div class="col-md-8">
-                            <h6 class="fw-bold mb-3"><i class="fas fa-file-alt me-2"></i>Issue Details</h6>
-                            <div class="card">
-                                <div class="card-body issue-content">
-                                    ${decorateIssueImages(issue.description || '') || '<p class="text-muted">No details provided.</p>'}
-                                </div>
-                            </div>
-                        </div>
-                        <div class="col-md-4">
-                            <h6 class="fw-bold mb-3"><i class="fas fa-info-circle me-2"></i>Metadata</h6>
-                            <div class="card">
-                                <div class="card-body">
-                                    ${issue.common_title ? `
-                                    <div class="mb-2">
-                                        <strong>Common Title:</strong><br>
-                                        ${escapeHtml(issue.common_title)}
-                                    </div>
-                                    ` : ''}
-                                    <div class="mb-2">
-                                        <strong>Issue Key:</strong><br>
-                                        <span class="badge bg-primary">${escapeHtml(issue.issue_key)}</span>
-                                    </div>
-                                    <div class="mb-2">
-                                        <strong>Status:</strong><br>
-                                        <span class="status-badge" style="background-color: ${issue.status_color}; color: white;">${escapeHtml(issue.status_name)}</span>
-                                    </div>
-                                    <div class="mb-2">
-                                        <strong>Severity:</strong><br>
-                                        <span class="badge bg-warning text-dark">${escapeHtml((issue.severity || 'N/A').toUpperCase())}</span>
-                                    </div>
-                                    <div class="mb-2">
-                                        <strong>Priority:</strong><br>
-                                        <span class="badge bg-info text-dark">${escapeHtml((issue.priority || 'N/A').toUpperCase())}</span>
-                                    </div>`;
-        
-        // QA Status, Reporter(s) - hide for clients
-        if (!isClient) {
-            mainRow += `
-                                    <div class="mb-2">
-                                        <strong>QA Status:</strong><br>
-                                        ${issue.qa_statuses && issue.qa_statuses.length > 0 ? issue.qa_statuses.map(qs => {
-                                            const bgColor = getBootstrapColor(qs.color || 'secondary');
-                                            const textColor = getContrastColor(bgColor);
-                                            return `<span class="qa-status-badge" style="background-color: ${bgColor} !important; color: ${textColor} !important;">${escapeHtml(qs.label)}</span>`;
-                                        }).join(' ') : '<span class="text-muted">N/A</span>'}
-                                    </div>
-                                    <div class="mb-2">
-                                        <strong>Reporter(s):</strong><br>
-                                        ${issue.reporters ? escapeHtml(issue.reporters) : '<span class="text-muted">N/A</span>'}
-                                    </div>`;
-        }
-        
-        mainRow += `
-                                    <div class="mb-2">
-                                        <strong>Page(s):</strong><br>
-                                        ${issue.pages ? escapeHtml(issue.pages) : '<span class="text-muted">No pages</span>'}
-                                    </div>
-                                    ${issue.grouped_urls && issue.grouped_urls.length > 0 ? `
-                                    <div class="mb-2">
-                                        <strong>Grouped URLs:</strong>
-                                        <button class="btn btn-link p-0 ms-2 text-primary" style="font-size: 12px; text-decoration: none;" onclick="toggleGroupedUrls(${issue.id}, event)">
-                                            <i class="fas fa-chevron-down" id="grouped-urls-icon-${issue.id}"></i>
-                                            <span id="grouped-urls-text-${issue.id}">Show (${issue.grouped_urls.length})</span>
-                                        </button>
-                                        <div id="grouped-urls-content-${issue.id}" style="display: none; margin-top: 8px;">
-                                            <small>${issue.grouped_urls.map(url => escapeHtml(url)).join('<br>')}</small>
-                                        </div>
-                                    </div>
-                                    ` : ''}`;
-        
-        // Created and Updated - hide for client
-        if (!isClient) {
-            mainRow += `
-                                    <div class="mb-2">
-                                        <strong>Created:</strong><br>
-                                        <small class="text-muted">${new Date(issue.created_at).toLocaleString()}</small>
-                                    </div>
-                                    <div class="mb-2">
-                                        <strong>Updated:</strong><br>
-                                        <small class="text-muted">${new Date(issue.updated_at).toLocaleString()}</small>
-                                    </div>`;
-        }
-        
-        // Add custom metadata fields
-        if (window.ProjectConfig && window.ProjectConfig.metadataFields && issue.metadata) {
-            window.ProjectConfig.metadataFields.forEach(field => {
-                // Skip severity and priority as they're already shown above for all users
-                if (field.field_key === 'severity' || field.field_key === 'priority') return;
-                
-                const value = issue.metadata[field.field_key];
-                if (value && value.length > 0) {
-                    const displayValue = Array.isArray(value) ? value.join(', ') : value;
-                    mainRow += `
-                                    <div class="mb-2">
-                                        <strong>${escapeHtml(field.field_label)}:</strong><br>
-                                        ${escapeHtml(displayValue)}
-                                    </div>`;
-                }
-            });
-        }
-        
-        mainRow += `
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </td>
-        </tr>`;
-        
-        return mainRow;
-    }).join('');
-    
-    // Attach event listeners
-    attachEventListeners();
-}
-
-// Update counts
-function updateCounts() {
-    document.getElementById('totalCount').textContent = allIssues.length;
-    document.getElementById('filteredCount').textContent = filteredIssues.length;
-}
-
-// Apply filters
-function applyFilters() {
-    const searchTerm = document.getElementById('searchInput').value.toLowerCase();
-    const pageFilter = $('#filterPage').val() || []; // Get array of selected values
-    const statusFilter = $('#filterStatus').val() || []; // Get array of selected values
-    const qaStatusFilterEl = document.getElementById('filterQAStatus');
-    const qaStatusFilter = qaStatusFilterEl ? ($(qaStatusFilterEl).val() || []) : [];
-    const reporterFilterEl = document.getElementById('filterReporter');
-    const reporterFilter = reporterFilterEl ? ($(reporterFilterEl).val() || []) : [];
-    
-    filteredIssues = allIssues.filter(issue => {
-        // Search filter — covers all visible columns: key, title, page(s), status, QA status, reporter
-        if (searchTerm) {
-            // Strip HTML tags from description for plain-text search
-            const stripHtmlTags = (html) => {
-                if (!html) return '';
-                return String(html).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-            };
-            // qa_statuses is an array of {key, label, color} objects
-            const qaLabels = Array.isArray(issue.qa_statuses)
-                ? issue.qa_statuses.map(qs => String(qs.label || '')).join(' ')
-                : String(issue.qa_statuses || '');
-            const commonTitle = Array.isArray(issue.common_title)
-                ? issue.common_title.join(' ')
-                : String(issue.common_title || '');
-            const searchableText = [
-                issue.issue_key,
-                issue.title,
-                commonTitle,
-                issue.pages,        // "1 - Home, 2 - About"
-                issue.status_name,  // "Need Review"
-                qaLabels,           // "Passed Failed"
-                issue.reporters,    // "John Doe, Jane Smith"
-                stripHtmlTags(issue.description)
-            ].filter(v => v && String(v).trim()).join(' ').toLowerCase();
-            if (!searchableText.includes(searchTerm)) return false;
-        }
-        
-        // Page filter - check if any selected page matches any of the issue's pages
-        if (pageFilter.length > 0 && !pageFilter.includes('')) {
-            if (!issue.page_ids || !pageFilter.some(pid => issue.page_ids.includes(parseInt(pid)))) {
-                return false;
-            }
-        }
-        
-        // Status filter - check if issue status matches any selected status
-        if (statusFilter.length > 0 && !statusFilter.includes('')) {
-            if (!statusFilter.includes(String(issue.status_id))) return false;
-        }
-        
-        // QA Status filter - check if any issue QA status matches any selected QA status
-        if (qaStatusFilter.length > 0 && !qaStatusFilter.includes('')) {
-            if (!issue.qa_status_keys || !qaStatusFilter.some(qas => issue.qa_status_keys.includes(qas))) {
-                return false;
-            }
-        }
-        
-        // Reporter filter - check if any issue reporter matches any selected reporter
-        if (reporterFilter.length > 0 && !reporterFilter.includes('')) {
-            if (!issue.reporter_ids || !reporterFilter.some(rid => issue.reporter_ids.includes(parseInt(rid)))) {
-                return false;
-            }
-        }
-        
-        return true;
-    });
-    
-    updateCounts();
-    renderIssues();
-}
-
-// Attach event listeners
-function attachEventListeners() {
-    // Edit buttons
-    const editButtons = document.querySelectorAll('.edit-btn');
-    
-    editButtons.forEach(btn => {
-        btn.addEventListener('click', function(e) {
-            e.stopPropagation();
-            const issueId = this.dataset.issueId;
-            editIssue(issueId);
-        });
-    });
-    
-    // Delete buttons
-    const deleteButtons = document.querySelectorAll('.delete-btn');
-    
-    deleteButtons.forEach(btn => {
-        btn.addEventListener('click', function(e) {
-            e.stopPropagation();
-            const issueId = this.dataset.issueId;
-            deleteIssue(issueId);
-        });
-    });
-    
-    // Row click to view details - open in detail page
-    document.querySelectorAll('.issue-row').forEach(row => {
-        row.addEventListener('click', function(e) {
-            // Don't trigger if clicking on buttons
-            if (e.target.closest('.edit-btn') || e.target.closest('.delete-btn')) {
-                return;
-            }
-            const issueId = this.dataset.issueId;
-            
-            // Toggle expand/collapse
-            const detailsRow = document.getElementById(`issue-details-${issueId}`);
-            const chevron = document.getElementById(`chevron-${issueId}`);
-            
-            if (detailsRow) {
-                if (detailsRow.style.display === 'none' || !detailsRow.style.display) {
-                    // Expand
-                    detailsRow.style.display = 'table-row';
-                    if (chevron) {
-                        chevron.classList.remove('fa-chevron-right');
-                        chevron.classList.add('fa-chevron-down');
-                    }
-                    
-                    // Re-attach image handlers after expanding (in case they weren't attached)
-                    setTimeout(() => {
-                        attachImageHandlers();
-                    }, 100);
-                } else {
-                    // Collapse
-                    detailsRow.style.display = 'none';
-                    if (chevron) {
-                        chevron.classList.remove('fa-chevron-down');
-                        chevron.classList.add('fa-chevron-right');
-                    }
-                }
-            }
-        });
-    });
-    
-    // Attach image handlers
-    attachImageHandlers();
-}
-
-// Separate function for image handlers with throttling
-function attachImageHandlers() {
-    // Image click handlers for issue images with throttling
-    const images = document.querySelectorAll('#issuesTableBody img, #issuesTableBody .issue-image-thumb');
-    
-    // Process images in batches to avoid overwhelming the server
-    let imageIndex = 0;
-    const batchSize = 10;
-    
-    function processBatch() {
-        const batch = Array.from(images).slice(imageIndex, imageIndex + batchSize);
-        
-        batch.forEach(img => {
-            img.style.cursor = 'pointer';
-            
-            // Remove existing handler to avoid duplicates
-            if (img._imageClickHandler) {
-                img.removeEventListener('click', img._imageClickHandler);
-            }
-            
-            img._imageClickHandler = function(e) {
-                e.stopPropagation();
-                e.preventDefault();
-                
-                var src = this.getAttribute('src');
-                if (src && typeof openIssueImageModal === 'function') {
-                    openIssueImageModal(src);
-                } else if (src) {
-                    // Fallback if openIssueImageModal is not available
-                    window.open(src, '_blank');
-                }
-            };
-            
-            img.addEventListener('click', img._imageClickHandler);
-            
-            // Add lazy loading attribute if not present
-            if (!img.hasAttribute('loading')) {
-                img.setAttribute('loading', 'lazy');
-            }
-            
-            // Add error handling for broken images
-            if (!img._errorHandlerAttached) {
-                img.onerror = function() {
-                    this.style.border = '2px solid #dc3545';
-                    this.style.backgroundColor = '#f8d7da';
-                    this.title = 'Image failed to load: ' + this.src;
-                    this.alt = 'Failed to load image';
-                };
-                
-                // Add load success handler
-                img.onload = function() {
-                    this.style.border = '';
-                    this.style.backgroundColor = '';
-                    this.title = 'Click to view full size';
-                };
-                
-                img._errorHandlerAttached = true;
-            }
-        });
-        
-        imageIndex += batchSize;
-        
-        // Process next batch after a small delay
-        if (imageIndex < images.length) {
-            setTimeout(processBatch, 50);
-        }
-    }
-    
-    // Start processing batches
-    if (images.length > 0) {
-        processBatch();
-    }
-}
-
-// Edit issue - open modal
-function editIssue(issueId) {
-    const issueData = allIssues.find(i => i.id == issueId);
-    if (!issueData) {
-        showError('Issue not found. ID: ' + issueId);
-        return;
-    }
-    
-    // Transform API data format to match what openFinalEditor expects
-    const issue = {
-        id: issueData.id,
-        issue_key: issueData.issue_key,
-        title: issueData.title,
-        details: issueData.description, // API returns 'description', modal expects 'details'
-        common_title: issueData.common_title || '',
-        status_id: issueData.status_id,
-        status: issueData.status_name,
-        pages: issueData.page_ids || [], // Array of page IDs
-        grouped_urls: Array.isArray(issueData.grouped_urls) ? issueData.grouped_urls : [], // Grouped URLs as array
-        reporters: issueData.reporter_ids || [], // Array of reporter IDs
-        qa_status: issueData.qa_status_keys || [], // Array of QA status keys
-        severity: issueData.severity || 'medium',
-        priority: issueData.priority || 'medium',
-        updated_at: issueData.updated_at || null,
-        latest_history_id: issueData.latest_history_id != null ? issueData.latest_history_id : 0,
-        reporter_qa_status_map: (function() {
-            var raw = issueData.reporter_qa_status_map;
-            // API may return array of JSON strings - parse to plain object
-            if (Array.isArray(raw)) {
-                for (var i = 0; i < raw.length; i++) {
-                    try {
-                        var parsed = (typeof raw[i] === 'string') ? JSON.parse(raw[i]) : raw[i];
-                        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
-                    } catch(e) {}
-                }
-                return {};
-            }
-            if (typeof raw === 'string') {
-                try { return JSON.parse(raw); } catch(e) { return {}; }
-            }
-            return (raw && typeof raw === 'object') ? raw : {};
-        })(),
-        assignee_ids: Array.isArray(issueData.assignee_ids) && issueData.assignee_ids.length
-            ? issueData.assignee_ids.map(String)
-            : (issueData.assignee_id ? [String(issueData.assignee_id)] : [])
-    };
-    
-    // Add any additional metadata fields from the metadata object
-    if (issueData.metadata) {
-        Object.keys(issueData.metadata).forEach(key => {
-            // Skip fields we've already mapped
-            if (!['common_title', 'severity', 'priority', 'grouped_urls', 'page_ids', 'qa_status', 'reporter_ids'].includes(key)) {
-                issue[key] = issueData.metadata[key];
-            }
-        });
-    }
-    
-    // Set a default selectedPageId (required by view_issues.js)
-    if (window.issueData) {
-        // Use first page from issue
-        if (issue.pages && issue.pages.length > 0) {
-            window.issueData.selectedPageId = issue.pages[0];
-        } else if (window.ProjectConfig && window.ProjectConfig.projectPages && window.ProjectConfig.projectPages.length > 0) {
-            // Fallback to first project page
-            window.issueData.selectedPageId = window.ProjectConfig.projectPages[0].id;
-        }
-    }
-    
-    // Open the modal with transformed issue data
-    if (typeof openFinalEditor === 'function') {
-        openFinalEditor(issue);
-    } else {
-        showError('Issue editor not loaded. Please refresh the page.');
-    }
-}
-
-// Open edit modal (legacy function for compatibility)
-function openEditModal(issueId) {
-    // This will use the existing modal from issues_modals.php
-    const issue = allIssues.find(i => i.id == issueId);
-    if (issue) {
-        // Trigger the edit modal (you'll need to implement this based on your existing modal code)
-        window.location.href = `${baseDir}/modules/projects/issues_page_detail.php?project_id=${projectId}&issue_id=${issueId}`;
-    }
-}
-
-// Delete issue
-function deleteIssue(issueId) {
-    // Use Bootstrap modal for confirmation instead of browser confirm
-    if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
-        // Create a custom confirmation modal
-        const modalHtml = `
-            <div class="modal fade" id="deleteConfirmModal" tabindex="-1">
-                <div class="modal-dialog">
-                    <div class="modal-content">
-                        <div class="modal-header bg-danger text-white">
-                            <h5 class="modal-title">Confirm Delete</h5>
-                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-                        </div>
-                        <div class="modal-body">
-                            <p>Are you sure you want to delete this issue?</p>
-                            <p class="text-muted mb-0"><small>This action cannot be undone.</small></p>
-                        </div>
-                        <div class="modal-footer">
-                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                            <button type="button" class="btn btn-danger" id="confirmDeleteBtn">Delete</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        `;
-        
-        // Remove existing modal if any
-        const existingModal = document.getElementById('deleteConfirmModal');
-        if (existingModal) {
-            existingModal.remove();
-        }
-        
-        // Add modal to body
-        document.body.insertAdjacentHTML('beforeend', modalHtml);
-        
-        // Show modal
-        const modalEl = document.getElementById('deleteConfirmModal');
-        const modal = new bootstrap.Modal(modalEl);
-        modal.show();
-        
-        // Handle confirm button
-        document.getElementById('confirmDeleteBtn').addEventListener('click', function() {
-            modal.hide();
-            performDelete(issueId);
-        });
-        
-        // Clean up modal after it's hidden
-        modalEl.addEventListener('hidden.bs.modal', function() {
-            modalEl.remove();
-        });
-    } else {
-        // Fallback to browser confirm
-        if (!window.confirm('Are you sure you want to delete this issue?')) {
-            return;
-        }
-        performDelete(issueId);
-    }
-}
-
-// Perform the actual delete operation
-function performDelete(issueId) {
-    const fd = new FormData();
-    fd.append('action', 'delete');
-    fd.append('ids', String(issueId));
-    fd.append('project_id', projectId);
-    
-    fetch(`${baseDir}/api/issues.php`, {
-        method: 'POST',
-        body: fd
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            showSuccess('Issue deleted successfully');
-            // Debounced reload
-            loadIssues({ preserveFilters: true, silentErrors: true });
-        } else {
-            showError(data.message || data.error || 'Failed to delete issue');
-        }
-    })
-    .catch(error => {
-        showError('Error deleting issue');
-    });
-}
-
-// Helper functions
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
-// Toggle grouped URLs visibility
-function toggleGroupedUrls(issueId, event) {
-    event.stopPropagation();
-    const content = document.getElementById(`grouped-urls-content-${issueId}`);
-    const icon = document.getElementById(`grouped-urls-icon-${issueId}`);
-    const text = document.getElementById(`grouped-urls-text-${issueId}`);
-    
-    if (content && icon && text) {
-        if (content.style.display === 'none') {
-            content.style.display = 'block';
-            icon.classList.remove('fa-chevron-down');
-            icon.classList.add('fa-chevron-up');
-            text.textContent = 'Hide';
-        } else {
-            content.style.display = 'none';
-            icon.classList.remove('fa-chevron-up');
-            icon.classList.add('fa-chevron-down');
-            const urlCount = content.querySelectorAll('small')[0]?.innerHTML.split('<br>').length || 0;
-            text.textContent = `Show (${urlCount})`;
-        }
-    }
-}
-
-// Function to determine if a color is light or dark
-function getContrastColor(hexColor) {
-    // Remove # if present
-    const hex = hexColor.replace('#', '');
-    
-    // Convert to RGB
-    const r = parseInt(hex.substr(0, 2), 16);
-    const g = parseInt(hex.substr(2, 2), 16);
-    const b = parseInt(hex.substr(4, 2), 16);
-    
-    // Calculate luminance
-    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-    
-    // Return black for light backgrounds, white for dark backgrounds
-    return luminance > 0.5 ? '#000000' : '#ffffff';
-}
-
-// Convert Bootstrap color names to hex colors
-function getBootstrapColor(colorName) {
-    const colorMap = {
-        'primary': '#0d6efd',
-        'secondary': '#6c757d',
-        'success': '#198754',
-        'danger': '#dc3545',
-        'warning': '#ffc107',
-        'info': '#0dcaf0',
-        'light': '#f8f9fa',
-        'dark': '#212529'
-    };
-    
-    // If it's already a hex color, return it
-    if (colorName && colorName.startsWith('#')) {
-        return colorName;
-    }
-    
-    // Return mapped color or default
-    return colorMap[colorName] || colorMap['secondary'];
-}
-
-function showSuccess(message) {
-    if (typeof showToast === 'function') showToast(message, 'success');
-}
-
-function showError(message) {
-    if (typeof showToast === 'function') showToast(message, 'danger');
-}
-
-// Event listeners
-document.getElementById('searchInput').addEventListener('input', applyFilters);
-$('#filterPage').on('change', applyFilters);
-$('#filterStatus').on('change', applyFilters);
-
-// QA Status and Reporter filters - only for non-client users
-const qaStatusFilterEl = document.getElementById('filterQAStatus');
-if (qaStatusFilterEl) {
-    $(qaStatusFilterEl).on('change', applyFilters);
-}
-const reporterFilterEl = document.getElementById('filterReporter');
-if (reporterFilterEl) {
-    $(reporterFilterEl).on('change', applyFilters);
-}
-
-document.getElementById('clearFilters').addEventListener('click', function() {
-    document.getElementById('searchInput').value = '';
-    $('#filterPage').val([]).trigger('change');
-    $('#filterStatus').val([]).trigger('change');
-    if (qaStatusFilterEl) $(qaStatusFilterEl).val([]).trigger('change');
-    if (reporterFilterEl) $(reporterFilterEl).val([]).trigger('change');
-    applyFilters();
-});
-
-document.getElementById('refreshBtn').addEventListener('click', function () {
-    loadIssues({ preserveFilters: true });
-});
-
-// Reload full table whenever an issue is added, edited, or deleted
-document.addEventListener('pms:issues-changed', function (e) {
-    var detail = e.detail || {};
-    var action = detail.action || '';
-    var issueId = String(detail.issue_id || '');
-
-    // For internal delete: remove from allIssues and re-render instantly
-    if (detail.source === 'internal' && action === 'delete' && issueId) {
-        allIssues = allIssues.filter(function(i) { return String(i.id) !== issueId; });
-        applyFilters();
-        return;
-    }
-
-    // For all other changes (create/update from internal or external): reload from API
-    // This ensures correct field format (status_name, page_ids, etc.) for renderIssues
-    loadIssues({ preserveFilters: true, silentErrors: true });
-});
-
-// Initial load - wait for view_issues.js to load
-function initializeAllIssuesPage() {
-    // Initialize Select2 for multiselect dropdowns
-    $('#filterPage').select2({
-        placeholder: 'All Pages',
-        allowClear: true,
-        width: '100%'
-    });
-    
-    $('#filterStatus').select2({
-        placeholder: 'All Statuses',
-        allowClear: true,
-        width: '100%'
-    });
-    
-    const qaStatusFilterEl = document.getElementById('filterQAStatus');
-    if (qaStatusFilterEl) {
-        $(qaStatusFilterEl).select2({
-            placeholder: 'All QA Statuses',
-            allowClear: true,
-            width: '100%'
-        });
-    }
-    
-    const reporterFilterEl = document.getElementById('filterReporter');
-    if (reporterFilterEl) {
-        $(reporterFilterEl).select2({
-            placeholder: 'All Reporters',
-            allowClear: true,
-            width: '100%'
-        });
-    }
-    
-    // Check if decorateIssueImages is available
-    if (typeof decorateIssueImages === 'function') {
-        loadIssues({ immediate: true });
-    } else {
-        setTimeout(initializeAllIssuesPage, 100);
-    }
-}
-
-// Start initialization
-initializeAllIssuesPage();
-
-// Handle expand parameter from URL (for QA breakdown links)
+<script nonce="<?php echo $cspNonce ?? ''; ?>">
 document.addEventListener('DOMContentLoaded', function() {
-    const urlParams = new URLSearchParams(window.location.search);
-    const expandIssueId = urlParams.get('expand');
-    
-    if (expandIssueId) {
-        // Wait for issues to load, then expand the specified issue
-        const checkAndExpand = function() {
-            if (allIssues.length > 0) {
-                const issueRow = document.querySelector(`[data-issue-id="${expandIssueId}"]`);
-                if (issueRow) {
-                    // Scroll to the issue
-                    issueRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    
-                    // Expand the issue details
-                    setTimeout(function() {
-                        issueRow.click();
-                        
-                        // Highlight the expanded issue
-                        issueRow.style.backgroundColor = '#fff3cd';
-                        setTimeout(function() {
-                            issueRow.style.backgroundColor = '';
-                        }, 3000);
-                    }, 500);
-                } else {
-                    // Issue not found in current filter, clear filters and try again
-                    document.getElementById('clearFilters').click();
-                    setTimeout(checkAndExpand, 1000);
-                }
-            } else {
-                // Issues not loaded yet, wait and try again
-                setTimeout(checkAndExpand, 500);
-            }
-        };
-        
-        checkAndExpand();
+    if (window.IssueNavigation) {
+        window.IssueNavigation.init({
+            rowSelector: '.issue-row',
+            editBtnSelector: '.edit-btn, .issue-open'
+        });
     }
 });
-
-// Also attach image handlers on DOM ready as a fallback
-document.addEventListener('DOMContentLoaded', function() {
-    setTimeout(() => {
-        attachImageHandlers();
-    }, 500);
-});
-
-// Handle Add Issue button - open finalIssueModal for new issue
-document.getElementById('addIssueBtn').addEventListener('click', function() {
-    // Set a default selectedPageId if pages exist (required by view_issues.js)
-    if (window.issueData && window.ProjectConfig && window.ProjectConfig.projectPages && window.ProjectConfig.projectPages.length > 0) {
-        // Set to first page as default, but user can change it in the modal
-        window.issueData.selectedPageId = window.ProjectConfig.projectPages[0].id;
-    }
-    
-    // Call openFinalEditor from view_issues.js with null to create new issue
-    if (typeof openFinalEditor === 'function') {
-        openFinalEditor(null);
-    } else {
-        showError('Issue editor not loaded. Please refresh the page.');
-    }
-});
-
-// Override the save button handler to work without selectedPageId requirement
-document.addEventListener('DOMContentLoaded', function() {
-    if (!window.ProjectConfig.canUpdateIssueQaStatus) {
-        jQuery('#finalIssueQaStatus').prop('disabled', true).trigger('change.select2');
-        jQuery('#finalIssueQaStatus').attr('title', 'Only authorized users can update QA status.');
-    }
-    // Wait for view_issues.js to load and attach its handler first
-    setTimeout(function() {
-        // NOTE: We do NOT replace the save button handler here.
-        // view_issues.js's addOrUpdateFinalIssue handles saving correctly.
-        // Replacing it caused the description to be wiped because the custom
-        // handler called summernote('code') before the editor was ready.
-        // The pms:issues-changed event below handles reloading the list after save.
-        
-        // Ensure reset template button works
-        const resetBtn = document.getElementById('btnResetToTemplate');
-        if (resetBtn) {
-            // Remove any existing handlers
-            const newResetBtn = resetBtn.cloneNode(true);
-            resetBtn.parentNode.replaceChild(newResetBtn, resetBtn);
-            
-            // Add our handler
-            newResetBtn.addEventListener('click', function(e) {
-                e.preventDefault();
-                e.stopPropagation();
-                
-                // Check if there's already content
-                const currentContent = jQuery('#finalIssueDetails').summernote('code');
-                const plainText = String(currentContent || '').replace(/<[^>]*>/g, '').trim();
-                
-                if (plainText && !confirm('This will replace the current content with the default template. Continue?')) {
-                    return;
-                }
-                
-                // Fetch default sections from API
-                fetch(`${baseDir}/api/issue_templates.php?action=list&project_type=<?php echo $project['type'] ?? 'web'; ?>`, {
-                    credentials: 'same-origin'
-                })
-                .then(res => res.json())
-                .then(data => {
-                    const sections = data.default_sections || [];
-                    if (sections.length === 0) {
-                        showError('No default template sections configured for this project type.');
-                        return;
-                    }
-                    
-                    // Build HTML from sections with 2 empty lines between sections
-                    const html = sections.map(s => {
-                        const escaped = String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-                        return '<p><strong>[' + escaped + ']</strong></p><p><br></p><p><br></p>';
-                    }).join('');
-                    
-                    // Set the content
-                    jQuery('#finalIssueDetails').summernote('code', html);
-                    
-                    if (window.showToast) {
-                        showToast('Template sections loaded', 'success');
-                    }
-                })
-                .catch(err => {
-                    showError('Failed to load template sections. Please try again.');
-                });
-            });
-        }
-    }, 500);
-});
-
 </script>
 
+
+<?php if ($normalizedUserRole !== 'client'): ?>
 <!-- Floating Project Chat -->
 <style>
 .chat-launcher { position: fixed; bottom: 20px; right: 20px; z-index: 1040; border-radius: 999px; box-shadow: 0 10px 24px rgba(0,0,0,0.18); padding: 12px 18px; display: flex; align-items: center; gap: 8px; }
@@ -1403,7 +706,7 @@ body.chat-modal-open .chat-widget { visibility: hidden !important; pointer-event
             </button>
         </div>
     </div>
-    <iframe src="<?php echo $baseDir; ?>/modules/chat/project_chat.php?project_id=<?php echo (int)$projectId; ?>&embed=1" title="Project Chat"></iframe>
+    <iframe src="" data-src="<?php echo $baseDir; ?>/modules/chat/project_chat.php?project_id=<?php echo (int)$projectId; ?>&embed=1" title="Project Chat"></iframe>
 </div>
 
 <button type="button" class="btn btn-primary chat-launcher" id="chatLauncher">
@@ -1411,50 +714,7 @@ body.chat-modal-open .chat-widget { visibility: hidden !important; pointer-event
     <span>Project Chat</span>
 </button>
 
-<script>
-document.addEventListener('DOMContentLoaded', function () {
-    var launcher = document.getElementById('chatLauncher');
-    var widget = document.getElementById('projectChatWidget');
-    var closeBtn = document.getElementById('chatWidgetClose');
-    var fullscreenBtn = document.getElementById('chatWidgetFullscreen');
-    if (!launcher || !widget || !closeBtn || !fullscreenBtn) return;
-    launcher.addEventListener('click', function () {
-        widget.classList.add('open');
-        launcher.style.display = 'none';
-        setTimeout(function () { try { closeBtn.focus(); } catch (e) {} }, 0);
-    });
-    closeBtn.addEventListener('click', function () {
-        widget.classList.remove('open');
-        launcher.style.display = 'inline-flex';
-        setTimeout(function () { try { launcher.focus(); } catch (e) {} }, 0);
-    });
-    fullscreenBtn.addEventListener('click', function () {
-        window.location.href = '<?php echo $baseDir; ?>/modules/chat/project_chat.php?project_id=<?php echo (int)$projectId; ?>';
-    });
-    window.addEventListener('message', function (event) {
-        if (!event || !event.data || event.data.type !== 'pms-chat-close') return;
-        widget.classList.remove('open');
-        launcher.style.display = 'inline-flex';
-        setTimeout(function () { try { launcher.focus(); } catch (e) {} }, 0);
-    });
+<script src="<?php echo $baseDir; ?>/assets/js/chat-widget.js?v=<?php echo time(); ?>"></script>
+<?php endif; ?>
 
-    // Prevent chat overlapping any bootstrap modal on this page.
-    function syncModalState() {
-        var hasOpenModal = document.querySelector('.modal.show') !== null;
-        document.body.classList.toggle('chat-modal-open', hasOpenModal);
-        if (hasOpenModal) {
-            widget.classList.remove('open');
-            launcher.style.display = 'none';
-        } else {
-            launcher.style.display = 'inline-flex';
-        }
-    }
-
-    document.addEventListener('show.bs.modal', syncModalState, true);
-    document.addEventListener('shown.bs.modal', syncModalState, true);
-    document.addEventListener('hidden.bs.modal', syncModalState, true);
-    syncModalState();
-});
-</script>
-
-<?php include __DIR__ . '/../../includes/footer.php'; ?>
+<?php include __DIR__ . '/../../includes/footer.php'; 

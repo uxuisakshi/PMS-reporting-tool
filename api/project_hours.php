@@ -4,9 +4,11 @@
  * Provides real-time project hours information for validation
  */
 
+ob_start();
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/functions.php';
 require_once __DIR__ . '/../includes/hours_validation.php';
+ob_end_clean();
 
 header('Content-Type: application/json');
 
@@ -81,7 +83,8 @@ try {
         // Quick log endpoint for project view
         $postAction = $_POST['action'] ?? '';
         if ($postAction === 'log') {
-            $userId = $_POST['user_id'] ?? $_SESSION['user_id'];
+            // Always use session user_id — never trust POST for user identity
+            $userId = $_SESSION['user_id'];
             $projectId = isset($_POST['project_id']) ? intval($_POST['project_id']) : null;
             $pageId = isset($_POST['page_id']) && $_POST['page_id'] !== '' ? intval($_POST['page_id']) : null;
             $envId = isset($_POST['environment_id']) && $_POST['environment_id'] !== '' ? intval($_POST['environment_id']) : null;
@@ -94,6 +97,9 @@ try {
 
             if (!$projectId || $hours <= 0) {
                 throw new Exception('Missing project_id or invalid hours');
+            }
+            if ($hours > 24) {
+                throw new Exception('Cannot log more than 24 hours in a single entry');
             }
 
             if ($taskType === 'regression_testing' && $issueCount !== null && $issueCount > 0) {
@@ -112,7 +118,7 @@ try {
 
             // Server-side: enforce allowed log date window for non-admins
             $role = $_SESSION['role'] ?? '';
-            $isAdmin = in_array($role, ['admin', 'super_admin']);
+            $isAdmin = in_array($role, ['admin']);
             $todayStr = date('Y-m-d');
             $hasApprovedPastEdit = false;
             try {
@@ -203,9 +209,10 @@ try {
     }
     
 } catch (Exception $e) {
-    http_response_code(400);
+    error_log('project_hours API error: ' . $e->getMessage());
+    http_response_code(500);
     echo json_encode([
         'success' => false,
-        'error' => $e->getMessage()
+        'error' => 'An internal error occurred'
     ]);
 }
