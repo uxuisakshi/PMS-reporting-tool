@@ -116,8 +116,16 @@ try {
             $optionsRaw = $_POST['options'] ?? '';
             
             // Split by newline instead of comma to allow commas within values
-            $options = array_filter(array_map('trim', explode("\n", $optionsRaw)));
+            // Strip all HTML tags from each option to prevent HTML injection
+            $options = array_filter(array_map(function($opt) {
+                return htmlspecialchars(strip_tags(trim($opt)), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+            }, explode("\n", $optionsRaw)));
             $optionsJson = json_encode(array_values($options));
+
+            // Sanitize label as well
+            $label = htmlspecialchars(strip_tags($label), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+            // Key: only allow alphanumeric + underscore
+            $key = preg_replace('/[^a-zA-Z0-9_]/', '', $key);
 
             if (!$key || !$label) throw new Exception('Key and Label are required');
 

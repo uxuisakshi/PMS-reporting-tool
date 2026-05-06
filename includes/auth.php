@@ -24,6 +24,17 @@ if (session_status() === PHP_SESSION_NONE) {
     // Enforce Secure cookie on HTTPS; allow non-secure only on localhost HTTP
     ini_set('session.cookie_secure', ($isHttps || !$isLocalhost) ? 1 : 0);
 
+    // Explicitly set cookie params to ensure Secure + HttpOnly are applied
+    // (some PHP versions require session_set_cookie_params in addition to ini_set)
+    session_set_cookie_params([
+        'lifetime' => 0,
+        'path'     => '/',
+        'domain'   => '',
+        'secure'   => ($isHttps || !$isLocalhost),
+        'httponly' => true,
+        'samesite' => $samesite,
+    ]);
+
     // Try Redis session handler first — eliminates file-locking under concurrent load
     $redisSessionSet = false;
     if (class_exists('Redis')) {

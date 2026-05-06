@@ -8,6 +8,12 @@ Options -Indexes
 RewriteEngine On
 RewriteBase /
 
+# Force HTTPS — redirect all HTTP traffic to HTTPS
+RewriteCond %{HTTPS} off
+RewriteCond %{HTTP_HOST} !^localhost [NC]
+RewriteCond %{HTTP_HOST} !^127\.0\.0\.1 [NC]
+RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+
 # Auto-fix legacy XAMPP hardcoded paths - redirects /PMS/uploads to /uploads
 RewriteRule ^PMS/(.*)$ /$1 [R=301,L]
 
