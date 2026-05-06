@@ -3329,7 +3329,11 @@
                     if (window.showToast) showToast('Draft restored from ' + new Date(draft.updated_at).toLocaleString(), 'info');
                     // Apply draft values to already-open modal
                     if (window.injectIssueTitleField) window.injectIssueTitleField(draft.data.title || '');
-                    jQuery('#finalIssueDetails').summernote('code', draft.data.details || '');
+                    // Only apply draft details if the editor is still empty (to avoid overwriting user input)
+                    var currentDetails = jQuery('#finalIssueDetails').summernote('code') || '';
+                    if (currentDetails.trim() === '' || currentDetails === '<p><br></p>') {
+                        jQuery('#finalIssueDetails').summernote('code', draft.data.details || '');
+                    }
                     updateFinalIssueCommentCharCount();
                 }
             }).catch(function() {});
