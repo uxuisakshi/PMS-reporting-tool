@@ -1,7 +1,7 @@
 <?php
-// GitHub push webhook -> deploy PMS (live) from security/vapt-hardening branch only.
+// GitHub push webhook -> deploy PMS-UAT from UI branch only.
 
-define('BRANCH', 'security/vapt-hardening');
+define('BRANCH', 'UI');
 define('LOG_FILE', __DIR__ . '/tmp/deploy.log');
 
 function deploy_load_env_value($filePath, $key) {
@@ -22,7 +22,6 @@ function deploy_load_env_value($filePath, $key) {
             continue;
         }
         $value = trim(substr($trimmed, strlen($prefix)));
-        // Strip optional quotes from .env value
         if ((substr($value, 0, 1) === '"' && substr($value, -1) === '"') || (substr($value, 0, 1) === "'" && substr($value, -1) === "'")) {
             $value = substr($value, 1, -1);
         }
@@ -42,7 +41,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
     exit;
 }
 
-$secret = getenv('DEPLOY_WEBHOOK_SECRET') ?: deploy_load_env_value('/var/www/html/PMS/.env', 'DEPLOY_WEBHOOK_SECRET');
+$secret = getenv('DEPLOY_WEBHOOK_SECRET') ?: deploy_load_env_value('/var/www/html/PMS-UAT/.env', 'DEPLOY_WEBHOOK_SECRET');
 if ($secret === '' || $secret === 'change-me-strong-secret') {
     deploy_log('Blocked: DEPLOY_WEBHOOK_SECRET missing or default');
     http_response_code(500);
@@ -50,33 +49,24 @@ if ($secret === '' || $secret === 'change-me-strong-secret') {
     exit;
 }
 
-$payload = file_get_contents('php://input');
-
+$payload            = file_get_contents('php://input');
 $githubSignature256 = $_SERVER['HTTP_X_HUB_SIGNATURE_256'] ?? '';
-$githubSignature = $_SERVER['HTTP_X_HUB_SIGNATURE'] ?? '';
-$gitlabToken = $_SERVER['HTTP_X_GITLAB_TOKEN'] ?? '';
-$bitbucketSignature = $_SERVER['HTTP_X_HUB_SIGNATURE'] ?? '';
+$githubSignature    = $_SERVER['HTTP_X_HUB_SIGNATURE'] ?? '';
+$gitlabToken        = $_SERVER['HTTP_X_GITLAB_TOKEN'] ?? '';
 
 $isValid = false;
-
 if ($githubSignature256 !== '') {
     $expected = 'sha256=' . hash_hmac('sha256', $payload, $secret);
-    if (hash_equals($expected, $githubSignature256)) {
-        $isValid = true;
-    }
+    if (hash_equals($expected, $githubSignature256)) { $isValid = true; }
 } elseif ($githubSignature !== '') {
     $expected = 'sha1=' . hash_hmac('sha1', $payload, $secret);
-    if (hash_equals($expected, $githubSignature)) {
-        $isValid = true;
-    }
+    if (hash_equals($expected, $githubSignature)) { $isValid = true; }
 } elseif ($gitlabToken !== '') {
-    if (hash_equals($secret, $gitlabToken)) {
-        $isValid = true;
-    }
+    if (hash_equals($secret, $gitlabToken)) { $isValid = true; }
 }
 
 if (!$isValid) {
-    deploy_log('Blocked: signature mismatch or missing signature. Headers: ' . json_encode(getallheaders() ?: $_SERVER));
+    deploy_log('Blocked: signature mismatch. Headers: ' . json_encode(getallheaders() ?: $_SERVER));
     http_response_code(403);
     echo 'Forbidden';
     exit;
@@ -95,7 +85,6 @@ if (!$data && isset($_POST['payload'])) {
 }
 
 $pushedBranch = $data['ref'] ?? '';
-// Also try gitlab push event structure if ref is missing
 if (empty($pushedBranch) && isset($data['push']['changes'][0]['new']['name'])) {
     $pushedBranch = 'refs/heads/' . $data['push']['changes'][0]['new']['name'];
 }
@@ -106,22 +95,17 @@ if ($pushedBranch !== 'refs/heads/' . BRANCH) {
     exit;
 }
 
-$dirs = [
-    '/var/www/html/PMS',
-];
-
 deploy_log('Deploy triggered for branch: ' . BRANCH);
 
-foreach ($dirs as $dir) {
-    $safeDir = escapeshellarg($dir);
-    $safeBranch = escapeshellarg(BRANCH);
-    $cmd = "cd $safeDir"
-        . " && git fetch origin $safeBranch 2>&1"
-        . " && git reset --hard origin/$safeBranch 2>&1"
-        . " && chown -R www-data:www-data . 2>&1";
-    $output = shell_exec($cmd);
-    deploy_log("[$dir]\n" . (string)$output);
-}
+$dir        = '/var/www/html/PMS-UAT';
+$safeDir    = escapeshellarg($dir);
+$safeBranch = escapeshellarg(BRANCH);
+$cmd = "cd $safeDir"
+    . " && git fetch origin $safeBranch 2>&1"
+    . " && git reset --hard origin/$safeBranch 2>&1"
+    . " && chown -R www-data:www-data . 2>&1";
+$output = shell_exec($cmd);
+deploy_log("[$dir]\n" . (string)$output);
 
 http_response_code(200);
 echo 'Deployed successfully.';
