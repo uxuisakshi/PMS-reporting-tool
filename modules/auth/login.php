@@ -94,7 +94,7 @@ include __DIR__ . '/../../includes/header.php';
         <div class="col-md-6">
             <div class="card">
                 <div class="card-header">
-                    <h1 class="text-center">Login to Project Management System HII</h1>
+                    <h1 class="text-center">Login to Project Management System sangam</h1>
                 </div>
                 <div class="card-body">
                     <?php if ($error): ?>
