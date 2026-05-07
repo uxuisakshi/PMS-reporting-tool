@@ -6879,7 +6879,11 @@
         try {
             var fd = new FormData();
             fd.append('action', editId ? 'update' : 'create');
-            fd.append('project_id', projectId);
+            // Always read projectId fresh from ProjectConfig at save time — prevents stale closure value
+            var currentProjectId = (window.ProjectConfig && window.ProjectConfig.projectId)
+                ? window.ProjectConfig.projectId
+                : projectId;
+            fd.append('project_id', currentProjectId);
             if (editId) fd.append('id', editId);
             if (editId && expectedUpdatedAt) fd.append('expected_updated_at', expectedUpdatedAt);
             if (editId) fd.append('expected_history_id', (document.getElementById('finalIssueModal') || {}).dataset.expectedHistoryId || '0');
