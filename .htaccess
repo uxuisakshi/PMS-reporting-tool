@@ -161,6 +161,13 @@ ServerSignature Off
     php_value max_file_uploads 20
     php_value error_reporting 0
     php_value error_log /home/yourusername/logs/php_errors.log
+    # Override default PHPSESSID — ensures PHP never creates a bare PHPSESSID cookie
+    php_value session.name PMS_SESSION
+    php_flag session.cookie_httponly On
+    php_flag session.cookie_secure On
+    php_value session.cookie_samesite Strict
+    php_flag session.use_only_cookies On
+    php_flag session.use_strict_mode On
 </IfModule>
 <IfModule mod_php8.c>
     php_flag display_errors Off
@@ -171,6 +178,13 @@ ServerSignature Off
     php_value max_file_uploads 20
     php_value error_reporting 0
     php_value error_log /home/yourusername/logs/php_errors.log
+    # Override default PHPSESSID — ensures PHP never creates a bare PHPSESSID cookie
+    php_value session.name PMS_SESSION
+    php_flag session.cookie_httponly On
+    php_flag session.cookie_secure On
+    php_value session.cookie_samesite Strict
+    php_flag session.use_only_cookies On
+    php_flag session.use_strict_mode On
 </IfModule>
 
 # Block common attack patterns in User-Agent
