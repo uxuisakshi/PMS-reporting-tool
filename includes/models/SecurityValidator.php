@@ -259,6 +259,7 @@ class SecurityValidator {
      */
     public function generateCSRFToken() {
         if (session_status() === PHP_SESSION_NONE) {
+            session_name('PMS_SESSION');
             session_start();
         }
         
@@ -355,6 +356,7 @@ class SecurityValidator {
      */
     public function checkRateLimit($identifier, $maxAttempts = 5, $timeWindow = 300) { // 5 attempts per 5 minutes
         if (session_status() === PHP_SESSION_NONE) {
+            session_name('PMS_SESSION');
             session_start();
         }
         

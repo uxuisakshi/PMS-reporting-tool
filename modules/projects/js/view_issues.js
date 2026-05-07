@@ -3329,7 +3329,11 @@
                     if (window.showToast) showToast('Draft restored from ' + new Date(draft.updated_at).toLocaleString(), 'info');
                     // Apply draft values to already-open modal
                     if (window.injectIssueTitleField) window.injectIssueTitleField(draft.data.title || '');
-                    jQuery('#finalIssueDetails').summernote('code', draft.data.details || '');
+                    // Only apply draft details if the editor is still empty (to avoid overwriting user input)
+                    var currentDetails = jQuery('#finalIssueDetails').summernote('code') || '';
+                    if (currentDetails.trim() === '' || currentDetails === '<p><br></p>') {
+                        jQuery('#finalIssueDetails').summernote('code', draft.data.details || '');
+                    }
                     updateFinalIssueCommentCharCount();
                 }
             }).catch(function() {});
@@ -6875,7 +6879,11 @@
         try {
             var fd = new FormData();
             fd.append('action', editId ? 'update' : 'create');
-            fd.append('project_id', projectId);
+            // Always read projectId fresh from ProjectConfig at save time — prevents stale closure value
+            var currentProjectId = (window.ProjectConfig && window.ProjectConfig.projectId)
+                ? window.ProjectConfig.projectId
+                : projectId;
+            fd.append('project_id', currentProjectId);
             if (editId) fd.append('id', editId);
             if (editId && expectedUpdatedAt) fd.append('expected_updated_at', expectedUpdatedAt);
             if (editId) fd.append('expected_history_id', (document.getElementById('finalIssueModal') || {}).dataset.expectedHistoryId || '0');

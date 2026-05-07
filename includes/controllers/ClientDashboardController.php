@@ -26,8 +26,9 @@ class ClientDashboardController {
         $this->auditLogger = new AuditLogger();
         $this->securityValidator = new SecurityValidator($this->auditLogger);
         
-        // Start session if not already started
+        // Ensure secure session initialization
         if (session_status() === PHP_SESSION_NONE) {
+            session_name('PMS_SESSION');
             session_start();
         }
     }

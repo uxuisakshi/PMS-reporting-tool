@@ -369,6 +369,7 @@ function createNotification($db, $userId, $type, $message, $link = null) {
 
         // Restart session if it was closed for email sending
         if (session_status() === PHP_SESSION_NONE) {
+            session_name('PMS_SESSION');
             @session_start();
         }
 

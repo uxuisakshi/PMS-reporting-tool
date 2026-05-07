@@ -140,8 +140,9 @@ class ClientUser {
             return false;
         }
         
-        // Start session if not already started
+        // Ensure secure session initialization
         if (session_status() === PHP_SESSION_NONE) {
+            session_name('PMS_SESSION');
             session_start();
         }
         
@@ -176,6 +177,7 @@ class ClientUser {
      */
     public static function validateSession() {
         if (session_status() === PHP_SESSION_NONE) {
+            session_name('PMS_SESSION');
             session_start();
         }
         
@@ -208,6 +210,7 @@ class ClientUser {
      */
     public static function destroySession() {
         if (session_status() === PHP_SESSION_NONE) {
+            session_name('PMS_SESSION');
             session_start();
         }
         

@@ -2,6 +2,7 @@
 require_once __DIR__ . '/../../config/constants.php';
 require_once __DIR__ . '/../../includes/auth.php';
 require_once __DIR__ . '/../../includes/helpers.php';
+require_once __DIR__ . '/../../includes/captcha_helper.php';
 
 $auth = new Auth();
 $error = '';
@@ -37,6 +38,7 @@ if ($auth->isLoggedIn()) {
 }
 
 // Store form load time in session for time-based check
+// Always generate a fresh CAPTCHA token on every page load (GET or POST failure)
 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     $_SESSION['login_form_load_time'] = time();
 }
@@ -51,6 +53,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Time-based check — bots submit too fast (under 2 seconds)
     } elseif (isset($_SESSION['login_form_load_time']) && (time() - $_SESSION['login_form_load_time']) < 2) {
         $error = "Invalid username or password";
+    // CAPTCHA validation
+    } elseif (!captcha_validate(trim($_POST['captcha_input'] ?? ''))) {
+        $error = "Incorrect CAPTCHA. Please try again.";
     } else {
         $username = sanitizeInput($_POST['username'] ?? '');
         $password = $_POST['password'] ?? '';
@@ -86,6 +91,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     unset($_SESSION['login_form_load_time']);
 }
+
+// Always generate a fresh CAPTCHA for the form (every page render)
+$captchaToken = captcha_generate();
+$captchaSvg   = captcha_render_svg($captchaToken);
 
 include __DIR__ . '/../../includes/header.php';
 ?>
@@ -128,10 +137,216 @@ include __DIR__ . '/../../includes/header.php';
                             </div>
                             <div id="password-error" class="invalid-feedback d-block" style="display:none!important"></div>
                         </div>
+
+                        <!-- CAPTCHA — WCAG 2.1 AA compliant (SC 1.1.1, 1.4.3, 2.1.1, 4.1.2) -->
+                        <div class="mb-3" id="captchaGroup">
+                            <label class="form-label fw-semibold" id="captcha-label">
+                                CAPTCHA <span class="text-danger" aria-hidden="true">*</span>
+                            </label>
+
+                            <!-- Image + controls row -->
+                            <div class="d-flex align-items-center gap-2 mb-2">
+                                <img
+                                    id="captchaImage"
+                                    src="<?php echo $captchaSvg; ?>"
+                                    alt="CAPTCHA security image — enter the 5 characters shown"
+                                    width="160"
+                                    height="50"
+                                    style="border:1px solid #ced4da;border-radius:4px;display:block;"
+                                    aria-describedby="captcha-hint">
+
+                                <!-- Refresh button — WCAG 2.1.1 keyboard accessible -->
+                                <button
+                                    type="button"
+                                    id="captchaRefreshBtn"
+                                    class="btn btn-outline-secondary btn-sm"
+                                    title="Get a new CAPTCHA image"
+                                    aria-label="Refresh CAPTCHA — get a new image">
+                                    <i class="fas fa-sync-alt" aria-hidden="true"></i>
+                                    <span class="visually-hidden">Refresh CAPTCHA</span>
+                                </button>
+
+                                <!-- Audio button — WCAG SC 1.1.1 audio alternative -->
+                                <button
+                                    type="button"
+                                    id="captchaAudioBtn"
+                                    class="btn btn-outline-secondary btn-sm"
+                                    title="Listen to CAPTCHA characters"
+                                    aria-label="Play CAPTCHA as audio — listen to the characters">
+                                    <i class="fas fa-volume-up" aria-hidden="true"></i>
+                                    <span class="visually-hidden">Play audio CAPTCHA</span>
+                                </button>
+                            </div>
+
+                            <!-- Input — WCAG 4.1.2 labelled, 1.4.3 sufficient contrast -->
+                            <input
+                                type="text"
+                                class="form-control<?php echo ($error && strpos($error, 'CAPTCHA') !== false) ? ' is-invalid' : ''; ?>"
+                                id="captcha_input"
+                                name="captcha_input"
+                                autocomplete="off"
+                                autocorrect="off"
+                                autocapitalize="off"
+                                spellcheck="false"
+                                maxlength="5"
+                                aria-labelledby="captcha-label"
+                                aria-describedby="captcha-hint"
+                                aria-required="true"
+                                placeholder="Enter 5 characters"
+                                required>
+
+                            <!-- Hint — WCAG 1.3.1 programmatically associated -->
+                            <div id="captcha-hint" class="form-text">
+                                Type the 5 characters shown in the image. Not case-sensitive.
+                                Use the <strong>audio</strong> <i class="fas fa-volume-up" aria-hidden="true"></i> button if you cannot see the image.
+                            </div>
+
+                            <?php if ($error && strpos($error, 'CAPTCHA') !== false): ?>
+                                <div class="invalid-feedback d-block" role="alert">
+                                    <?php echo e($error); ?>
+                                </div>
+                            <?php endif; ?>
+                        </div>
+                        <!-- /CAPTCHA -->
+
                         <button type="submit" class="btn btn-primary w-100">Login</button>
                     </form>
                     <script src="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/assets/js/auth-login.js"></script>
-                    
+                    <script>
+                    (function () {
+                        'use strict';
+                        var base = <?php echo json_encode($baseDir); ?>;
+
+                        /* ── Reload image with new signed URL ── */
+                        function reloadCaptchaImage(svgDataUri) {
+                            var img = document.getElementById('captchaImage');
+                            if (!img) return;
+                            if (svgDataUri) {
+                                img.src = svgDataUri;
+                            }
+                        }
+
+                        /* ── Refresh button ── */
+                        var refreshBtn = document.getElementById('captchaRefreshBtn');
+                        if (refreshBtn) {
+                            refreshBtn.addEventListener('click', function () {
+                                fetch(base + '/api/captcha.php?mode=refresh', { credentials: 'same-origin' })
+                                    .then(function (r) { return r.json(); })
+                                    .then(function (d) {
+                                        if (d.ok && d.svg) {
+                                            reloadCaptchaImage(d.svg);
+                                            // Update audio token to match new image
+                                            if (d.token) _captchaAudioToken = d.token;
+                                        }
+                                        var inp = document.getElementById('captcha_input');
+                                        if (inp) { inp.value = ''; inp.focus(); }
+                                        announceToScreenReader('CAPTCHA refreshed. Please enter the new characters.');
+                                    })
+                                    .catch(function () {
+                                        announceToScreenReader('Could not refresh CAPTCHA. Please reload the page.');
+                                    });
+                            });
+                        }
+
+                        /* ── Audio button — token embedded from PHP (same request, no race) ── */
+                        var _captchaAudioToken = <?php echo json_encode($captchaToken); ?>;
+                        var audioBtn = document.getElementById('captchaAudioBtn');
+                        if (audioBtn) {
+                            audioBtn.addEventListener('click', function () {
+                                if (_captchaAudioToken) {
+                                    speakCaptcha(_captchaAudioToken);
+                                } else {
+                                    announceToScreenReader('CAPTCHA not available. Please reload the page.');
+                                }
+                            });
+                        }
+
+                        var _noiseSource = null;
+                        var _audioCtx    = null;
+
+                        function speakCaptcha(token) {
+                            if (!token) return;
+
+                            /* Stop any previous noise */
+                            stopNoise();
+
+                            /* Background noise — must start AFTER user gesture (click) */
+                            try {
+                                var AudioCtx = window.AudioContext || window.webkitAudioContext;
+                                if (AudioCtx) {
+                                    _audioCtx = new AudioCtx();
+                                    var bufSize = Math.floor(_audioCtx.sampleRate * 4);
+                                    var buf = _audioCtx.createBuffer(1, bufSize, _audioCtx.sampleRate);
+                                    var data = buf.getChannelData(0);
+                                    for (var i = 0; i < bufSize; i++) {
+                                        data[i] = (Math.random() * 2 - 1) * 0.07;
+                                    }
+                                    _noiseSource = _audioCtx.createBufferSource();
+                                    _noiseSource.buffer = buf;
+                                    _noiseSource.loop = true;
+                                    var gain = _audioCtx.createGain();
+                                    gain.gain.value = 0.2;
+                                    _noiseSource.connect(gain);
+                                    gain.connect(_audioCtx.destination);
+                                    _noiseSource.start(0);
+                                }
+                            } catch (e) {
+                                // Web Audio not available — continue without noise
+                            }
+
+                            /* Speak each character */
+                            if (!window.speechSynthesis) {
+                                stopNoise();
+                                alert('Audio CAPTCHA is not supported in your browser. Please type the characters shown in the image.');
+                                return;
+                            }
+
+                            window.speechSynthesis.cancel();
+                            var chars = token.toUpperCase().split('');
+                            var idx   = 0;
+
+                            announceToScreenReader('Playing audio CAPTCHA. Listen carefully.');
+
+                            function speakNext() {
+                                if (idx >= chars.length) {
+                                    setTimeout(stopNoise, 800);
+                                    announceToScreenReader('Audio CAPTCHA finished. Enter the characters you heard.');
+                                    return;
+                                }
+                                var utt    = new SpeechSynthesisUtterance(chars[idx]);
+                                utt.rate   = 0.65;
+                                utt.pitch  = 1.0;
+                                utt.lang   = 'en-US';
+                                utt.volume = 1.0;
+                                utt.onend  = function () { idx++; setTimeout(speakNext, 500); };
+                                window.speechSynthesis.speak(utt);
+                            }
+                            speakNext();
+                        }
+
+                        function stopNoise() {
+                            if (_noiseSource) {
+                                try { _noiseSource.stop(0); } catch (e) {}
+                                _noiseSource = null;
+                            }
+                        }
+
+                        /* ── Live region for screen reader announcements (WCAG 4.1.3) ── */
+                        var _liveRegion = null;
+                        function announceToScreenReader(msg) {
+                            if (!_liveRegion) {
+                                _liveRegion = document.createElement('div');
+                                _liveRegion.setAttribute('role', 'status');
+                                _liveRegion.setAttribute('aria-live', 'polite');
+                                _liveRegion.setAttribute('aria-atomic', 'true');
+                                _liveRegion.className = 'visually-hidden';
+                                document.body.appendChild(_liveRegion);
+                            }
+                            _liveRegion.textContent = '';
+                            setTimeout(function () { _liveRegion.textContent = msg; }, 50);
+                        }
+                    }());
+                    </script>
 
                 </div>
             </div>

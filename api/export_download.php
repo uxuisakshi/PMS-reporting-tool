@@ -7,9 +7,6 @@ require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/models/ExportEngine.php';
 ob_end_clean();
 
-// Start session for token validation
-session_start();
-
 try {
     // Validate authentication
     $auth = new Auth();

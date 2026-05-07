@@ -17,12 +17,32 @@ if (session_status() === PHP_SESSION_NONE) {
     $isLocalhost = ($host === 'localhost' || $host === '127.0.0.1' || $host === '::1');
     $samesite = $isLocalhost ? 'Lax' : 'Strict';
     ini_set('session.cookie_samesite', $samesite);
-    // Detect HTTPS: check HTTPS server var OR X-Forwarded-Proto (for reverse proxies/load balancers)
-    $isHttps = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on')
+    // Detect HTTPS: check HTTPS server var, X-Forwarded-Proto, or X-Forwarded-Ssl for reverse proxies/load balancers
+    $isHttps = (isset($_SERVER['HTTPS']) && (strtolower($_SERVER['HTTPS']) === 'on' || $_SERVER['HTTPS'] === '1'))
         || (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower($_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https')
+        || (isset($_SERVER['HTTP_X_FORWARDED_SSL']) && strtolower($_SERVER['HTTP_X_FORWARDED_SSL']) === 'on')
         || (isset($_SERVER['SERVER_PORT']) && (int)$_SERVER['SERVER_PORT'] === 443);
+
+    // Redirect to HTTPS for non-localhost requests unless the connection is already secure
+    if (!$isHttps && !$isLocalhost && !empty($_SERVER['HTTP_HOST']) && !empty($_SERVER['REQUEST_URI'])) {
+        $httpsUrl = 'https://' . $_SERVER['HTTP_HOST'] . $_SERVER['REQUEST_URI'];
+        header('Location: ' . $httpsUrl, true, 301);
+        exit;
+    }
+
     // Enforce Secure cookie on HTTPS; allow non-secure only on localhost HTTP
     ini_set('session.cookie_secure', ($isHttps || !$isLocalhost) ? 1 : 0);
+
+    // Explicitly set cookie params to ensure Secure + HttpOnly are applied
+    // (some PHP versions require session_set_cookie_params in addition to ini_set)
+    session_set_cookie_params([
+        'lifetime' => 0,
+        'path'     => '/',
+        'domain'   => '',
+        'secure'   => ($isHttps || !$isLocalhost),
+        'httponly' => true,
+        'samesite' => $samesite,
+    ]);
 
     // Try Redis session handler first — eliminates file-locking under concurrent load
     $redisSessionSet = false;

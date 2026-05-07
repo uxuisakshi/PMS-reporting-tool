@@ -3,7 +3,10 @@
  * Core functionality for Project View: State, Tabs, Modals, Chat, Utilities.
  */
 
-var ProjectConfig = window.ProjectConfig || {};
+// Do NOT reassign ProjectConfig — it is set by the inline script before this file loads.
+// Using window.ProjectConfig directly prevents shadowing issues.
+if (!window.ProjectConfig) { window.ProjectConfig = {}; }
+var ProjectConfig = window.ProjectConfig;
 
 (function () {
     var projectId = ProjectConfig.projectId;

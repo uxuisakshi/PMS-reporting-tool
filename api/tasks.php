@@ -495,17 +495,20 @@ function handleDeleteTask() {
     
     // Check permissions
     $check = $db->prepare("
-        SELECT p.project_lead_id FROM project_pages pp
+        SELECT p.project_lead_id, pp.project_id FROM project_pages pp
         JOIN projects p ON pp.project_id = p.id
         WHERE pp.id = ? AND ? IN ('admin')
     ");
     $check->execute([$pageId, $_SESSION['role']]);
+    $row = $check->fetch(PDO::FETCH_ASSOC);
     
-    if (!$check->fetch()) {
+    if (!$row) {
         http_response_code(403);
         echo json_encode(['error' => 'Permission denied']);
         return;
     }
+    
+    $projectId = (int)$row['project_id'];
     
     try {
         $db->beginTransaction();
@@ -517,7 +520,7 @@ function handleDeleteTask() {
         $db->prepare("DELETE FROM chat_messages WHERE page_id = ?")->execute([$pageId]);
         
         // Delete page
-        $db->prepare("DELETE FROM project_pages WHERE id = ?")->execute([$pageId]);
+        $db->prepare("DELETE FROM project_pages WHERE id = ? AND project_id = ?")->execute([$pageId, $projectId]);
         
         $db->commit();
         jsonResponse(['success' => true, 'message' => 'Page deleted']);
