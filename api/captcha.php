@@ -42,16 +42,18 @@ if ($mode === 'token') {
 
 // ── Image — token comes from URL param, NOT session ───────────────────────────
 if ($mode === 'image') {
-    // Token is passed directly in URL — no session dependency
-    $token = strtoupper(preg_replace('/[^A-Z2-9]/', '', strtoupper(trim($_GET['tok'] ?? ''))));
+    // Read token from session — never expose in URL or HTML
+    $token = !empty($_SESSION['captcha_answer'])
+        ? strtoupper($_SESSION['captcha_answer'])
+        : '';
 
-    // Validate: must be exactly 5 chars from allowed set
-    if (strlen($token) !== 5) {
-        http_response_code(400);
-        header('Content-Type: text/plain');
-        echo 'Invalid token';
-        exit;
+    if (!$token) {
+        $token = captcha_make_token();
+        $_SESSION['captcha_answer'] = strtolower($token);
     }
+
+    // Release session lock so page load isn't blocked by concurrent requests
+    session_write_close();
 
     // SVG fallback (no GD)
     if (!extension_loaded('gd')) {

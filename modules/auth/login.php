@@ -150,11 +150,10 @@ include __DIR__ . '/../../includes/header.php';
                             <div class="d-flex align-items-center gap-2 mb-2">
                                 <img
                                     id="captchaImage"
-                                    src="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/api/captcha.php?mode=image&tok=<?php echo urlencode($captchaData['token']); ?>"
+                                    src="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/api/captcha.php?mode=image&t=<?php echo time(); ?>"
                                     alt="CAPTCHA security image — enter the 5 characters shown"
                                     width="160"
                                     height="50"
-                                    data-token="<?php echo htmlspecialchars($captchaData['token'], ENT_QUOTES, 'UTF-8'); ?>"
                                     style="border:1px solid #ced4da;border-radius:4px;display:block;"
                                     aria-describedby="captcha-hint">
 
@@ -224,10 +223,8 @@ include __DIR__ . '/../../includes/header.php';
                         function reloadCaptchaImage(token) {
                             var img = document.getElementById('captchaImage');
                             if (!img) return;
-                            // Token in URL — no session dependency, no cache
-                            img.src = base + '/api/captcha.php?mode=image&tok='
-                                + encodeURIComponent(token) + '&r=' + Date.now();
-                            img.setAttribute('data-token', token);
+                            // No token in URL — session-based, cache-bust with timestamp
+                            img.src = base + '/api/captcha.php?mode=image&t=' + Date.now();
                         }
 
                         /* ── Refresh button ── */
@@ -237,8 +234,8 @@ include __DIR__ . '/../../includes/header.php';
                                 fetch(base + '/api/captcha.php?mode=refresh', { credentials: 'same-origin' })
                                     .then(function (r) { return r.json(); })
                                     .then(function (d) {
-                                        if (d.ok && d.token) {
-                                            reloadCaptchaImage(d.token);
+                                        if (d.ok) {
+                                            reloadCaptchaImage();
                                         }
                                         var inp = document.getElementById('captcha_input');
                                         if (inp) { inp.value = ''; inp.focus(); }
@@ -250,17 +247,23 @@ include __DIR__ . '/../../includes/header.php';
                             });
                         }
 
-                        /* ── Audio button — reads data-token directly (no fetch) ── */
+                        /* ── Audio button — fetches token from server (never from DOM) ── */
                         var audioBtn = document.getElementById('captchaAudioBtn');
                         if (audioBtn) {
                             audioBtn.addEventListener('click', function () {
-                                var img = document.getElementById('captchaImage');
-                                var token = img ? (img.getAttribute('data-token') || '') : '';
-                                if (token) {
-                                    speakCaptcha(token);
-                                } else {
-                                    announceToScreenReader('CAPTCHA not available. Please refresh the page.');
-                                }
+                                // Always fetch current token from server — never read from DOM
+                                fetch(base + '/api/captcha.php?mode=token', { credentials: 'same-origin' })
+                                    .then(function (r) { return r.json(); })
+                                    .then(function (d) {
+                                        if (d.token) {
+                                            speakCaptcha(d.token);
+                                        } else {
+                                            announceToScreenReader('CAPTCHA not available. Please refresh the page.');
+                                        }
+                                    })
+                                    .catch(function () {
+                                        announceToScreenReader('Could not load audio CAPTCHA. Please try again.');
+                                    });
                             });
                         }
 
