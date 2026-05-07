@@ -8,8 +8,7 @@
 // Set JSON content type
 header('Content-Type: application/json');
 
-// Start session
-session_start();
+require_once __DIR__ . '/../includes/auth.php';
 
 try {
     // Include required files

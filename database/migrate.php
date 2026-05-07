@@ -11,7 +11,11 @@ if (!$MIGRATION_PASSWORD) {
     die('Migration tool is disabled. Set MIGRATION_PASSWORD environment variable to enable.');
 }
 
-session_start();
+// Ensure secure session initialization
+if (session_status() === PHP_SESSION_NONE) {
+    session_name('PMS_SESSION');
+    session_start();
+}
 
 // Handle login
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
