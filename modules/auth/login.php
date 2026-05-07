@@ -38,9 +38,9 @@ if ($auth->isLoggedIn()) {
 }
 
 // Store form load time in session for time-based check
+// Always generate a fresh CAPTCHA token on every page load (GET or POST failure)
 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     $_SESSION['login_form_load_time'] = time();
-    $captchaData = captcha_generate(); // returns ['token' => ..., 'signed' => ...]
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -56,7 +56,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // CAPTCHA validation
     } elseif (!captcha_validate(trim($_POST['captcha_input'] ?? ''))) {
         $error = "Incorrect CAPTCHA. Please try again.";
-        $captchaToken = captcha_generate(); // regenerate on failure
     } else {
         $username = sanitizeInput($_POST['username'] ?? '');
         $password = $_POST['password'] ?? '';
@@ -93,10 +92,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     unset($_SESSION['login_form_load_time']);
 }
 
-// Ensure captcha token is always available for the form
-if (empty($captchaData)) {
-    $captchaData = captcha_generate();
-}
+// Always generate a fresh CAPTCHA for the form (every page render)
+$captchaToken = captcha_generate();
+$captchaSvg   = captcha_render_svg($captchaToken);
 
 include __DIR__ . '/../../includes/header.php';
 ?>
@@ -150,7 +148,7 @@ include __DIR__ . '/../../includes/header.php';
                             <div class="d-flex align-items-center gap-2 mb-2">
                                 <img
                                     id="captchaImage"
-                                    src="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/api/captcha.php?mode=image&t=<?php echo time(); ?>"
+                                    src="<?php echo $captchaSvg; ?>"
                                     alt="CAPTCHA security image — enter the 5 characters shown"
                                     width="160"
                                     height="50"
@@ -220,11 +218,12 @@ include __DIR__ . '/../../includes/header.php';
                         var base = <?php echo json_encode($baseDir); ?>;
 
                         /* ── Reload image with new signed URL ── */
-                        function reloadCaptchaImage(token) {
+                        function reloadCaptchaImage(svgDataUri) {
                             var img = document.getElementById('captchaImage');
                             if (!img) return;
-                            // No token in URL — session-based, cache-bust with timestamp
-                            img.src = base + '/api/captcha.php?mode=image&t=' + Date.now();
+                            if (svgDataUri) {
+                                img.src = svgDataUri;
+                            }
                         }
 
                         /* ── Refresh button ── */
@@ -234,8 +233,10 @@ include __DIR__ . '/../../includes/header.php';
                                 fetch(base + '/api/captcha.php?mode=refresh', { credentials: 'same-origin' })
                                     .then(function (r) { return r.json(); })
                                     .then(function (d) {
-                                        if (d.ok) {
-                                            reloadCaptchaImage();
+                                        if (d.ok && d.svg) {
+                                            reloadCaptchaImage(d.svg);
+                                            // Update audio token to match new image
+                                            if (d.token) _captchaAudioToken = d.token;
                                         }
                                         var inp = document.getElementById('captcha_input');
                                         if (inp) { inp.value = ''; inp.focus(); }
@@ -247,23 +248,16 @@ include __DIR__ . '/../../includes/header.php';
                             });
                         }
 
-                        /* ── Audio button — fetches token from server (never from DOM) ── */
+                        /* ── Audio button — token embedded from PHP (same request, no race) ── */
+                        var _captchaAudioToken = <?php echo json_encode($captchaToken); ?>;
                         var audioBtn = document.getElementById('captchaAudioBtn');
                         if (audioBtn) {
                             audioBtn.addEventListener('click', function () {
-                                // Always fetch current token from server — never read from DOM
-                                fetch(base + '/api/captcha.php?mode=token', { credentials: 'same-origin' })
-                                    .then(function (r) { return r.json(); })
-                                    .then(function (d) {
-                                        if (d.token) {
-                                            speakCaptcha(d.token);
-                                        } else {
-                                            announceToScreenReader('CAPTCHA not available. Please refresh the page.');
-                                        }
-                                    })
-                                    .catch(function () {
-                                        announceToScreenReader('Could not load audio CAPTCHA. Please try again.');
-                                    });
+                                if (_captchaAudioToken) {
+                                    speakCaptcha(_captchaAudioToken);
+                                } else {
+                                    announceToScreenReader('CAPTCHA not available. Please reload the page.');
+                                }
                             });
                         }
 

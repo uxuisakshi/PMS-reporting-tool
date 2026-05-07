@@ -25,9 +25,14 @@ function captcha_make_token(): string {
 if ($mode === 'refresh') {
     $token = captcha_make_token();
     $_SESSION['captcha_answer'] = strtolower($token);
+
+    // Generate inline SVG
+    require_once __DIR__ . '/../includes/captcha_helper.php';
+    $svg = captcha_render_svg($token);
+
     header('Content-Type: application/json');
     header('Cache-Control: no-store');
-    echo json_encode(['ok' => true, 'token' => $token]);
+    echo json_encode(['ok' => true, 'svg' => $svg, 'token' => $token]);
     exit;
 }
 
@@ -51,9 +56,6 @@ if ($mode === 'image') {
         $token = captcha_make_token();
         $_SESSION['captcha_answer'] = strtolower($token);
     }
-
-    // Release session lock so page load isn't blocked by concurrent requests
-    session_write_close();
 
     // SVG fallback (no GD)
     if (!extension_loaded('gd')) {
