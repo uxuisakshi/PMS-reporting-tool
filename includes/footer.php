@@ -1,10 +1,12 @@
     </main>
     </div>
-    <div class="mt-auto py-3 border-top text-center text-white small" style="background-color: #0755C6 !important; background-color: var(--primary) !important;">
-        <div class="container-fluid">
-            &copy; <?php echo date('Y'); ?> PMS. All rights reserved.
+    <footer>
+        <div class="mt-auto py-3 border-top text-center small">
+            <p>Copyright © 2023 || Powered by : <a href="https://sakshiinfotechsolutions.com/" style="text-decoration: underline;" target="_blank">Sakshi Infotech Solutions LLP
+                                        <span class="visually-hidden"> Opens in a new tab </span></a>
+                                    </p>
         </div>
-    </div>
+    </footer>
     
     <?php
     if (!isset($baseDir)) {

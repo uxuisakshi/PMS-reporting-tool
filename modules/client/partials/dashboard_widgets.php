@@ -73,15 +73,15 @@ if (isset($analyticsWidgets['blocker_issues'])) {
     ];
 }
 
-if (isset($analyticsWidgets['page_issues'])) {
-    $reportTabs[] = [
-        'key' => 'page_issues',
-        'label' => 'Pages',
-        'widgetType' => 'analytics',
-        'widgetData' => $analyticsWidgets['page_issues'],
-        'fullWidth' => false,
-    ];
-}
+// if (isset($analyticsWidgets['page_issues'])) {
+//     $reportTabs[] = [
+//         'key' => 'page_issues',
+//         'label' => 'Pages',
+//         'widgetType' => 'analytics',
+//         'widgetData' => $analyticsWidgets['page_issues'],
+//         'fullWidth' => false,
+//     ];
+// }
 
 if (isset($analyticsWidgets['commented_issues'])) {
     $reportTabs[] = [
@@ -117,7 +117,7 @@ if ($activeReport === '' || !in_array($activeReport, $availableReportKeys, true)
 </div>
 
 <?php if (!empty($reportTabs)): ?>
-<div class="analytics-tabs-shell">
+<!-- <div class="analytics-tabs-shell">
     <div class="analytics-tabs-intro">
         <span class="analytics-tabs-label">Report tabs</span>
     </div>
@@ -137,7 +137,7 @@ if ($activeReport === '' || !in_array($activeReport, $availableReportKeys, true)
             ><?php echo htmlspecialchars($reportTab['label'], ENT_QUOTES, 'UTF-8'); ?></button>
         <?php endforeach; ?>
     </div>
-</div>
+</div> -->
 <?php endif; ?>
 
 <!-- Analytics Widgets Grid -->
@@ -151,7 +151,7 @@ if ($activeReport === '' || !in_array($activeReport, $availableReportKeys, true)
             data-report-panel="<?php echo htmlspecialchars($reportTab['key'], ENT_QUOTES, 'UTF-8'); ?>"
             role="tabpanel"
             aria-labelledby="analytics-tab-<?php echo htmlspecialchars($reportTab['key'], ENT_QUOTES, 'UTF-8'); ?>"
-            <?php echo $isActivePanel ? '' : 'hidden'; ?>
+            
         >
             <?php echo $dashboardController->visualization->renderDashboardWidget($reportTab['widgetType'], $reportTab['widgetData']); ?>
         </section>

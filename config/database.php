@@ -4,9 +4,9 @@ $serverHost = $_SERVER['HTTP_HOST'] ?? '';
 $scriptPath = $_SERVER['SCRIPT_NAME'] ?? '';
 
 // Default values (Live)
-$dbName = 'athenaeu_project_management';
-$dbUser = 'athenaeu_pms';
-$dbPass = '$Sis@2026$';
+$dbName = 'project_management';
+$dbUser = 'root';
+$dbPass = '';
 $dbHost = 'localhost';
 
 // UAT overrides

@@ -21,7 +21,7 @@ $cardLinks = [
 ];
 ?>
 
-<div class="section-heading">
+<!-- <div class="section-heading">
     <div>
         <span class="section-kicker">Portfolio Snapshot</span>
         <h2 class="section-title mb-2">Overview statistics</h2>
@@ -107,4 +107,4 @@ $cardLinks = [
         </div>
         </a>
     </div>
-</div>
+</div> -->

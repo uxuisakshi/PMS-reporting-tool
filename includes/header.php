@@ -375,7 +375,7 @@ header("Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-e
     <a href="#main-content" class="sr-only skip">Skip to main content</a>
     <!-- Compact Navbar -->
     <header>
-        <nav class="navbar navbar-expand-lg navbar-dark sticky-top" style="background-color: #0755C6 !important;">
+        <nav class="navbar navbar-expand-lg sticky-top">
             <div class="container-fluid">
                 <!-- Brand -->
                 <a class="navbar-brand d-flex align-items-center gap-2 me-4" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/" aria-label="PMS Home" style="color: white !important;">
@@ -469,31 +469,31 @@ header("Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-e
                                 <?php 
                                 $dashboardLink = ($role === 'client') ? "$baseDir/client/dashboard" : "$baseDir/modules/$moduleDir/dashboard.php";
                                 ?>
-                                <a class="nav-link text-white" href="<?php echo htmlspecialchars($dashboardLink, ENT_QUOTES, 'UTF-8'); ?>">
-                                    <i class="fas fa-home me-1 opacity-50"></i> Dashboard
+                                <a class="nav-link" href="<?php echo htmlspecialchars($dashboardLink, ENT_QUOTES, 'UTF-8'); ?>">
+                                    Dashboard
                                 </a>
                             </li>
                             <?php if ($role === 'client'): ?>
                             <?php $isClientDetailPage = (strpos($currentRequestPath, '/modules/projects/view.php') !== false); ?>
                             <li class="nav-item">
-                                <a class="nav-link text-white <?php echo (strpos($currentRequestPath, '/modules/client/projects.php') !== false) ? 'active' : ''; ?>" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/client/projects.php">
-                                    <i class="fas fa-folder-open me-1 opacity-50"></i> My Digital Assets
+                                <a class="nav-link <?php echo (strpos($currentRequestPath, '/modules/client/projects.php') !== false) ? 'active' : ''; ?>" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/client/projects.php">
+                                    My Digital Assets
                                 </a>
                             </li>
                             <li class="nav-item">
-                                <a class="nav-link text-white <?php echo (strpos($currentRequestPath, '/modules/client/issues_overview.php') !== false) ? 'active' : ''; ?>" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/client/issues_overview.php">
-                                    <i class="fas fa-list-ul me-1 opacity-50"></i> Issue Overview
+                                <a class="nav-link <?php echo (strpos($currentRequestPath, '/modules/client/issues_overview.php') !== false) ? 'active' : ''; ?>" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/client/issues_overview.php">
+                                    Issue Overview
                                 </a>
                             </li>
                             <li class="nav-item">
-                                <a class="nav-link text-white <?php echo (strpos($currentRequestPath, '/modules/client/preferences.php') !== false) ? 'active' : ''; ?>" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/client/preferences.php">
-                                    <i class="fas fa-sliders-h me-1 opacity-50"></i> Preferences
+                                <a class="nav-link <?php echo (strpos($currentRequestPath, '/modules/client/preferences.php') !== false) ? 'active' : ''; ?>" href="<?php echo htmlspecialchars($baseDir, ENT_QUOTES, 'UTF-8'); ?>/modules/client/preferences.php">
+                                    Preferences
                                 </a>
                             </li>
                             <?php if (!empty($clientAssignedProjects)): ?>
                             <li class="nav-item dropdown">
-                                <a class="nav-link dropdown-toggle text-white <?php echo ($isClientDetailPage || strpos($currentRequestPath, '/modules/client/project_dashboard.php') !== false) ? 'active' : ''; ?>" href="#" id="clientProjectDetailsDropdown" data-bs-toggle="dropdown" aria-expanded="false">
-                                    <i class="fas fa-eye me-1 opacity-50"></i> Asset Analytics
+                                <a class="nav-link dropdown-toggle <?php echo ($isClientDetailPage || strpos($currentRequestPath, '/modules/client/project_dashboard.php') !== false) ? 'active' : ''; ?>" href="#" id="clientProjectDetailsDropdown" data-bs-toggle="dropdown" aria-expanded="false">
+                                    Asset Analytics
                                 </a>
                                 <ul class="dropdown-menu shadow-sm" aria-labelledby="clientProjectDetailsDropdown">
                                     <li>
@@ -796,8 +796,8 @@ header("Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-e
 
                             <!-- User Profile -->
                             <li class="nav-item dropdown">
-                                <a class="nav-link dropdown-toggle d-flex align-items-center gap-2 text-white" href="#" id="userDropdown" data-bs-toggle="dropdown" aria-expanded="false">
-                                    <div class="rounded-circle bg-secondary d-flex align-items-center justify-content-center text-white small fw-bold" style="width: 32px; height: 32px; border: 2px solid rgba(255,255,255,0.2);">
+                                <a class="nav-link dropdown-toggle d-flex align-items-center gap-2" href="#" id="userDropdown" data-bs-toggle="dropdown" aria-expanded="false">
+                                    <div class="rounded-circle bg-secondary d-flex align-items-center justify-content-center small fw-bold" style="width: 32px; height: 32px; border: 2px solid rgba(255,255,255,0.2);">
                                         <?php echo strtoupper(substr($_SESSION['full_name'] ?? 'U', 0, 1)); ?>
                                     </div>
                                     <span class="d-none d-lg-block small fw-semibold text-truncate" style="max-width: 150px;">

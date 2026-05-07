@@ -1,179 +1,185 @@
-/* Header Styling Fixes - Client Interface */
+/* ===============================
+   Header Styling Fixes - Cleaned
+================================= */
 
-/* Primary navbar styling */
+/* Base Navbar */
 .navbar {
-    background-color: #0755C6 !important;
-    background: #0755C6 !important;
+    background: #ffffff;
+    border-bottom: 2px solid var(--primary);
+    height: 75px;
+    padding: 4px 0;
+    box-shadow: var(--shadow-md);
+    transition: all 0.3s ease;
 }
 
-.navbar-dark .navbar-brand,
-.navbar-dark .navbar-brand:hover,
-.navbar-dark .navbar-brand:focus {
-    color: white !important;
-    text-decoration: none !important;
+/* Logo */
+.brand-logo {
+    max-height: 32px;
+    width: auto;
+    filter: brightness(1.1);
 }
 
-.navbar-dark .navbar-nav .nav-link {
-    color: rgba(255, 255, 255, 0.9) !important;
+.navbar .nav-link {
+    font-size: 0.85rem;
+    font-weight: 500;
+    padding: 0.2rem var(--space-sm) !important;
+    border-radius: var(--radius-sm) !important;
+    transition: background 0.15s;
+}
+/* ===============================
+   LIGHT MODE (default)
+================================= */
+.navbar:not(.navbar-dark) {
+    background: #ffffff;
+    box-shadow: 0 4px 8px 0 #334FAF, 0 6px 20px 0 #334FAF;
 }
 
-.navbar-dark .navbar-nav .nav-link:hover,
-.navbar-dark .navbar-nav .nav-link:focus {
-    color: white !important;
-    background-color: rgba(255, 255, 255, 0.1) !important;
-    border-radius: 4px !important;
+.navbar:not(.navbar-dark) .navbar-brand {
+    color: #fefefe;
+    font-weight: 600;
 }
 
-.navbar-dark .navbar-nav .dropdown-toggle::after {
-    border-top-color: rgba(255, 255, 255, 0.8) !important;
+.navbar:not(.navbar-dark) .nav-link {
+    color: #374151;
+    border-radius: 4px;
+    transition: 0.2s ease;
 }
 
+.navbar:not(.navbar-dark) .nav-link:hover,
+.navbar:not(.navbar-dark) .nav-link:focus {
+    color: #000;
+    background: rgba(0, 0, 0, 0.05);
+}
+footer
+{
+    background: #ffffff;
+    color:#000000
+}
+
+/* ===============================
+   DARK MODE (.navbar-dark)
+================================= */
+.navbar-dark {
+    background: #0f172a;
+}
+
+.navbar-dark .navbar-brand {
+    color: #ffffff;
+    font-weight: 600;
+}
+
+.navbar-dark .nav-link {
+    color: rgba(255, 255, 255, 0.85);
+    border-radius: 4px;
+    transition: 0.2s ease;
+}
+
+.navbar-dark .nav-link:hover,
+.navbar-dark .nav-link:focus {
+    color: #ffffff;
+    background: rgba(255, 255, 255, 0.1);
+}
+
+/* Toggler (dark mode fix) */
 .navbar-dark .navbar-toggler {
-    border-color: rgba(255, 255, 255, 0.3) !important;
+    border-color: rgba(255, 255, 255, 0.3);
 }
 
 .navbar-dark .navbar-toggler-icon {
-    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 30 30'%3e%3cpath stroke='rgba%28255, 255, 255, 0.8%29' stroke-linecap='round' stroke-miterlimit='10' stroke-width='2' d='M4 7h22M4 15h22M4 23h22'/%3e%3c/svg%3e") !important;
+    filter: invert(1);
 }
 
-/* Logo styling */
-.brand-logo {
-    max-height: 32px !important;
-    width: auto !important;
-    filter: brightness(1.1) !important;
+.navbar-dark .dropdown-toggle::after {
+    border-top-color: rgba(255, 255, 255, 0.8);
+}
+.navbar-dark footer 
+{
+    background: #1e293b;
+    color:#ffffff
 }
 
-/* Force all navbar text to be white */
-.navbar * {
-    color: white !important;
-}
-
-/* Override for dropdown menus (should not be white) */
-.navbar .dropdown-menu,
-.navbar .dropdown-menu * {
-    color: initial !important;
+/* ===============================
+   Dropdown Styling
+================================= */
+.navbar .dropdown-menu {
+    border: none;
+    border-radius: 8px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
 }
 
 .navbar .dropdown-item {
-    color: #212529 !important;
+    padding: 8px 16px;
+    color: #212529;
+    transition: 0.2s ease;
 }
 
 .navbar .dropdown-item:hover {
-    background-color: #f8f9fa !important;
-    color: #2563eb !important;
+    background-color: #f8f9fa;
+    color: #2563eb;
+}
+
+/* Fix text colors inside dropdown */
+.navbar .dropdown-menu * {
+    color: inherit;
 }
 
 .navbar .text-muted {
-    color: #6c757d !important;
+    color: #6c757d;
 }
 
 .navbar .text-danger {
-    color: #dc3545 !important;
+    color: #dc3545;
 }
 
-/* Dropdown menu styling - scoped to navbar */
-.navbar .dropdown-menu {
-    border: none !important;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15) !important;
-    border-radius: 8px !important;
-}
-
-.navbar .dropdown-item {
-    padding: 8px 16px !important;
-    transition: all 0.2s ease !important;
-}
-
-.navbar .dropdown-item:hover {
-    background-color: #f8f9fa !important;
-    color: #2563eb !important;
-}
-
-/* User profile dropdown */
+/* Align dropdown right */
 .navbar-nav .dropdown-menu-end {
-    right: 0 !important;
-    left: auto !important;
+    right: 0;
+    left: auto;
 }
 
-/* Notification badge */
+
+/* ===============================
+   Icons & Avatar
+================================= */
+.navbar .fas,
+.navbar .far {
+    color: inherit;
+}
+
+.navbar .rounded-circle {
+    border: 2px solid rgba(255, 255, 255, 0.2);
+}
+
+/* ===============================
+   Badge
+================================= */
 .badge.bg-danger {
-    background-color: #dc3545 !important;
+    background-color: #dc3545;
 }
 
-/* Mobile responsive fixes */
+/* ===============================
+   Mobile Responsive
+================================= */
 @media (max-width: 991px) {
     .navbar-collapse {
-        background-color: rgba(7, 85, 198, 0.95) !important;
-        margin-top: 10px !important;
-        border-radius: 8px !important;
-        padding: 15px !important;
+        margin-top: 10px;
+        border-radius: 8px;
+        padding: 15px;
+    }
+
+    /* Light mobile */
+    .navbar:not(.navbar-dark) .navbar-collapse {
+        background: rgba(255, 255, 255, 0.95);
+    }
+
+    /* Dark mobile */
+    .navbar-dark .navbar-collapse {
+        background: rgba(15, 23, 42, 0.95);
     }
 
     .navbar-nav .nav-link {
-        padding: 8px 12px !important;
-        margin: 2px 0 !important;
-        border-radius: 4px !important;
+        padding: 8px 12px;
+        margin: 2px 0;
+        border-radius: 4px;
     }
-}
-
-/* Ensure consistent header across all client pages */
-header nav.navbar,
-header .navbar,
-nav.navbar {
-    background-color: #0755C6 !important;
-    background: #0755C6 !important;
-}
-
-/* Brand link specific styling */
-.navbar .navbar-brand {
-    color: white !important;
-    text-decoration: none !important;
-    font-weight: 600 !important;
-}
-
-.navbar .navbar-brand:hover,
-.navbar .navbar-brand:focus {
-    color: white !important;
-    text-decoration: none !important;
-}
-
-/* Navigation links */
-.navbar .nav-link {
-    color: rgba(255, 255, 255, 0.9) !important;
-    background-color: transparent !important;
-    transition: all 0.2s ease !important;
-}
-
-.navbar .nav-link:hover,
-.navbar .nav-link:focus {
-    color: white !important;
-    background-color: rgba(255, 255, 255, 0.1) !important;
-    border-radius: 4px !important;
-}
-
-/* Ensure icons in navbar are visible */
-.navbar .fas,
-.navbar .far {
-    color: inherit !important;
-}
-
-/* Fix for user avatar circle */
-.navbar .rounded-circle {
-    border: 2px solid rgba(255, 255, 255, 0.2) !important;
-}
-
-/* Additional specificity for stubborn elements */
-html body .navbar {
-    background-color: #0755C6 !important;
-}
-
-html body .navbar .navbar-brand {
-    color: white !important;
-}
-
-html body .navbar .nav-link {
-    color: rgba(255, 255, 255, 0.9) !important;
-}
-
-html body .navbar .nav-link:hover {
-    color: white !important;
 }

@@ -17,7 +17,7 @@ $projectIds = array_column($assignedProjects, 'id');
 require_once __DIR__ . '/../../header.php';
 ?>
 
-<div class="container-fluid py-4 px-lg-4">
+<div>
     <div class="client-dashboard dashboard-shell">
             <?php 
             // Map local variables to what partials expect
@@ -31,7 +31,7 @@ require_once __DIR__ . '/../../header.php';
             }
             
             try {
-                echo '<section id="dashboard-overview" class="dashboard-section">';
+                echo '<section id="dashboard-overview" class="dashboard-section container">';
                 include __DIR__ . '/../../../modules/client/partials/dashboard_summary.php'; 
                 echo '</section>';
             } catch (Throwable $e) {
@@ -40,7 +40,7 @@ require_once __DIR__ . '/../../header.php';
             }
             
             try {
-                echo '<section id="dashboard-reports" class="dashboard-section">';
+                echo '<section id="dashboard-reports" class="dashboard-section container">';
                 include __DIR__ . '/../../../modules/client/partials/dashboard_widgets.php'; 
                 echo '</section>';
             } catch (Throwable $e) {
@@ -49,7 +49,7 @@ require_once __DIR__ . '/../../header.php';
             }
             
             try {
-                echo '<section id="dashboard-next-steps" class="dashboard-section">';
+                echo '<section id="dashboard-next-steps" class="dashboard-section container">';
                 include __DIR__ . '/../../../modules/client/partials/dashboard_actions.php'; 
                 echo '</section>';
             } catch (Throwable $e) {

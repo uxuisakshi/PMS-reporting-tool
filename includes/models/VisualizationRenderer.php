@@ -434,19 +434,41 @@ class VisualizationRenderer implements VisualizationInterface {
                 'borderRadius' => 6,
                 'pointPadding' => 0.08,
                 'groupPadding' => 0.12,
-                'dataLabels' => ['enabled' => false]
+                'dataLabels' => [
+                    'enabled' => true,
+                    'format' => '{point.y}',
+                    'style' => ['fontSize' => '12px', 'fontWeight' => '600']
+                ]
             ]
         ];
+ 
         $config['series'] = [];
-
+        $patternDefs = [
+            ['id' => 'pattern-0', 'path' => 'M 0 10 L 10 0', 'color' => '#fca5a5'],
+            ['id' => 'pattern-1', 'path' => 'M 0 10 L 10 0', 'color' => '#fcd34d'],
+            ['id' => 'pattern-2', 'path' => 'M 0 10 L 10 0', 'color' => '#86efac'],
+            ['id' => 'pattern-3', 'path' => 'M 0 10 L 10 0', 'color' => '#93c5fd'],
+        ];
+ 
         foreach ($data['datasets'] as $index => $dataset) {
+            $bgColors = $dataset['backgroundColor'] ?? [];
+            $pointData = [];
+            $lightColors = ['#fca5a59f', '#fcd34da0', '#86efad9b', '#93c4fd94'];
+            foreach (($dataset['data'] ?? []) as $i => $val) {
+                $point = [
+                    'y' => floatval($val),
+                    'color' => $lightColors[$i] ?? '#6c757d',
+                    'borderColor' => $patternDefs[$i % count($patternDefs)]['color'],
+                    'borderWidth' => 2,
+                ];
+                $pointData[] = $point;
+            }
             $config['series'][] = [
                 'name' => (string) ($dataset['label'] ?? ('Series ' . ($index + 1))),
-                'data' => array_map('floatval', $dataset['data'] ?? []),
-                'color' => $dataset['backgroundColor'] ?? $palette[$index % count($palette)]
+                'data' => $pointData,
             ];
         }
-
+ 
         return $config;
     }
 
@@ -461,19 +483,45 @@ class VisualizationRenderer implements VisualizationInterface {
             'min' => 0,
             'title' => ['text' => $options['yAxisTitle'] ?? null]
         ];
+        // $config['plotOptions'] = [
+        //     'series' => [
+        //         'marker' => ['enabled' => true, 'radius' => 4],
+        //         'lineWidth' => 3
+        //     ]
+        // ];
+        // $config['series'] = [];
+
+        // foreach ($data['datasets'] as $index => $dataset) {
+        //     $config['series'][] = [
+        //         'name' => (string) ($dataset['label'] ?? ('Series ' . ($index + 1))),
+        //         'data' => array_map('floatval', $dataset['data'] ?? []),
+        //         'color' => $dataset['borderColor'] ?? $dataset['backgroundColor'] ?? $palette[$index % count($palette)]
+        //     ];
+        // }
         $config['plotOptions'] = [
-            'series' => [
-                'marker' => ['enabled' => true, 'radius' => 4],
-                'lineWidth' => 3
+            $chartType => [
+                'borderRadius' => 6,
+                'pointPadding' => 0.08,
+                'groupPadding' => 0.12,
+                'dataLabels' => ['enabled' => false]
             ]
         ];
         $config['series'] = [];
-
+ 
         foreach ($data['datasets'] as $index => $dataset) {
+            $bgColors = $dataset['backgroundColor'] ?? [];
+            $pointData = [];
+            foreach (($dataset['data'] ?? []) as $i => $val) {
+                $point = ['y' => floatval($val)];
+                if (is_array($bgColors) && isset($bgColors[$i])) {
+                    $point['color'] = $bgColors[$i];
+                }
+                $pointData[] = $point;
+            }
             $config['series'][] = [
                 'name' => (string) ($dataset['label'] ?? ('Series ' . ($index + 1))),
-                'data' => array_map('floatval', $dataset['data'] ?? []),
-                'color' => $dataset['borderColor'] ?? $dataset['backgroundColor'] ?? $palette[$index % count($palette)]
+                'data' => $pointData,
+                'color' => is_string($bgColors) ? $bgColors : ($palette[$index % count($palette)] ?? '#6c757d')
             ];
         }
 
@@ -811,9 +859,38 @@ class VisualizationRenderer implements VisualizationInterface {
         }
         
         // Quick chart if provided
+        // if (isset($data['quickChart'])) {
+        //     $html .= '<div class="quick-chart">';
+        //     $html .= $this->renderPieChart($data['quickChart'], ['height' => 320]);
+        //     $html .= '</div>';
+        // }
+        // Quick chart if provided
         if (isset($data['quickChart'])) {
             $html .= '<div class="quick-chart">';
-            $html .= $this->renderPieChart($data['quickChart'], ['height' => 320]);
+            if (($data['quickChart']['type'] ?? 'pie') === 'bar') {
+                $html .= $this->renderBarChart($data['quickChart'], ['height' => 280]);
+            } else {
+                $html .= $this->renderPieChart($data['quickChart'], ['height' => 320]);
+            }
+            $html .= '</div>';
+        }
+        // Progress bars if provided
+        if (isset($data['progressBars'])) {
+            $html .= '<div class="quick-chart progress-bars-widget">';
+            foreach ($data['progressBars'] as $bar) {
+                $barLabel = htmlspecialchars($bar['label'] ?? '');
+                $barValue = round((float) ($bar['value'] ?? 0), 1);
+                $barColor = htmlspecialchars($bar['color'] ?? '#2563eb');
+                $html .= '<div class="progress-bar-row">';
+                $html .= '<div class="progress-bar-meta">';
+                $html .= '<span class="progress-bar-label">' . $barLabel . '</span>';
+                $html .= '<span class="progress-bar-value">' . $barValue . ' / 100</span>';
+                $html .= '</div>';
+                $html .= '<div class="progress-bar-track">';
+                $html .= '<div class="progress-bar-fill" style="width:' . $barValue . '%;background:' . $barColor . ';border: 2px solid ' . $barColor . ';box-sizing:border-box;"></div>';
+                $html .= '</div>';
+                $html .= '</div>';
+            }
             $html .= '</div>';
         }
 

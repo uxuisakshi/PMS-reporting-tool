@@ -343,7 +343,7 @@ class UnifiedDashboardController {
                 }, array_values($data['distribution'] ?? [])),
                 'datasets' => [[
                     'data' => array_column(array_values($data['distribution'] ?? []), 'count'),
-                    'backgroundColor' => ['#28a745', '#ffc107', '#fd7e14', '#dc3545', '#20c997', '#0dcaf0', '#6f42c1', '#d63384']
+                    'backgroundColor' => ['#28a746a9', '#ffc107aa', '#fd7d14a9', '#dc3546a3', '#20c996ac', '#0dcaf0ad', '#6e42c1a6', '#d63384a2']
                 ]]
             ]
         ];
@@ -376,15 +376,32 @@ class UnifiedDashboardController {
                     'value' => round($summary['level_aa_compliance'] ?? 0, 1) . '%'
                 ]
             ],
-            'quickChart' => [
-                'labels' => ['Level A', 'Level AA'],
-                'datasets' => [[
-                    'data' => [
-                        round($summary['level_a_compliance'] ?? 0, 1),
-                        round($summary['level_aa_compliance'] ?? 0, 1)
-                    ],
-                    'backgroundColor' => ['#2563eb', '#16a34a']
-                ]]
+            // 'quickChart' => [
+            //     'labels' => ['Level A', 'Level AA'],
+            //     'datasets' => [[
+            //         'data' => [
+            //             round($summary['level_a_compliance'] ?? 0, 1),
+            //             round($summary['level_aa_compliance'] ?? 0, 1)
+            //         ],
+            //         'backgroundColor' => ['#2563eb', '#16a34a']
+            //     ]]
+            // ]
+            'progressBars' => [
+                [
+                    'label' => 'Overall Score',
+                    'value' => round($summary['overall_compliance_score'] ?? 0, 1),
+                    'color' => '#7f77dd9a'
+                ],
+                [
+                    'label' => 'Level A',
+                    'value' => round($summary['level_a_compliance'] ?? 0, 1),
+                    'color' => '#2564eb95'
+                ],
+                [
+                    'label' => 'Level AA',
+                    'value' => round($summary['level_aa_compliance'] ?? 0, 1),
+                    'color' => '#16a34a93'
+                ]
             ]
         ];
     }
@@ -426,7 +443,8 @@ class UnifiedDashboardController {
                     'value' => $this->getIssueSeverityCount($issueSeverityDistribution, 'Minor')
                 ]
             ],
-            'quickChart' => [
+             'quickChart' => [
+                'type' => 'bar',  
                 'labels' => array_column($issueSeverityDistribution, 'severity'),
                 'datasets' => [[
                     'data' => array_column($issueSeverityDistribution, 'count'),

@@ -140,11 +140,11 @@ a:hover {
 }
 
 /* --- Layout Containers --- */
-main,
 .container,
 .container-fluid {
     padding-top: var(--space-lg);
     padding-bottom: var(--space-lg);
+    background: #ffffff;
 }
 
 /* Screen reader only - hide visually but keep for screen readers */
@@ -189,35 +189,9 @@ main,
 }
 
 /* --- Navigation Bar (Compact) --- */
-.navbar {
-    background: #0755C6 !important;
-    /* Client Blue - Updated for consistency */
-    border-bottom: 2px solid var(--primary);
-    height: 75px;
-    padding-top: 2px;
-    padding-bottom: 2px;
-    box-shadow: var(--shadow-md);
-}
+
 
 /* FORCE ALL NAVBAR TEXT TO BE WHITE - SCOPED TO NAVBAR */
-html body .navbar,
-html body .navbar *:not(.dropdown-menu):not(.dropdown-menu *),
-html body nav.navbar,
-html body nav.navbar *:not(.dropdown-menu):not(.dropdown-menu *),
-html body header .navbar,
-html body header .navbar *:not(.dropdown-menu):not(.dropdown-menu *),
-html body header nav,
-html body header nav *:not(.dropdown-menu):not(.dropdown-menu *),
-body .navbar,
-body .navbar *:not(.dropdown-menu):not(.dropdown-menu *),
-body nav.navbar,
-body nav.navbar *:not(.dropdown-menu):not(.dropdown-menu *),
-body header .navbar,
-body header .navbar *:not(.dropdown-menu):not(.dropdown-menu *),
-body header nav,
-body header nav *:not(.dropdown-menu):not(.dropdown-menu *) {
-    color: white !important;
-}
 
 /* Exception for dropdown menus */
 html body .navbar .dropdown-menu,
@@ -268,43 +242,7 @@ body .navbar .text-danger {
     display: block;
 }
 
-.navbar .nav-link {
-    font-size: 0.85rem;
-    font-weight: 500;
-    padding: 0.2rem var(--space-sm) !important;
-    border-radius: var(--radius-sm) !important;
-    transition: background 0.15s;
-    color: rgba(255, 255, 255, 0.9) !important;
-}
 
-.navbar .nav-link:hover,
-.navbar .nav-link:focus {
-    background: rgba(255, 255, 255, 0.1);
-    color: white !important;
-}
-
-/* Ensure navbar brand is white */
-.navbar-brand {
-    color: white !important;
-}
-
-.navbar-brand:hover,
-.navbar-brand:focus {
-    color: white !important;
-}
-
-/* UNIVERSAL NAVBAR STYLING - APPLY EVERYWHERE */
-html body .navbar,
-html body nav.navbar,
-html body header .navbar,
-html body header nav,
-body .navbar,
-body nav.navbar,
-body header .navbar,
-body header nav {
-    background-color: #0755C6 !important;
-    background: #0755C6 !important;
-}
 
 html body .navbar-brand,
 html body .navbar-brand:hover,
@@ -316,20 +254,6 @@ body .navbar-brand:focus {
     text-decoration: none !important;
 }
 
-html body .navbar .nav-link,
-html body .navbar .navbar-nav .nav-link,
-body .navbar .nav-link,
-body .navbar .navbar-nav .nav-link {
-    color: rgba(255, 255, 255, 0.9) !important;
-}
-
-html body .navbar .nav-link:hover,
-html body .navbar .navbar-nav .nav-link:hover,
-body .navbar .nav-link:hover,
-body .navbar .navbar-nav .nav-link:hover {
-    color: white !important;
-    background-color: rgba(255, 255, 255, 0.1) !important;
-}
 
 .dropdown-menu {
     border-radius: var(--radius-md);
@@ -952,4 +876,4 @@ label {
     pointer-events: none;
     z-index: 10;
     border-radius: var(--radius-sm);
-}
+}
